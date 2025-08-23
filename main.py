@@ -30,7 +30,8 @@ TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 TIMEFRAMES = ("1H", "4H", "1D")
 
 log = logging.getLogger("worker")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
+                    format="%(asctime)s %(levelname)s %(message)s")
 
 def split_into_4_blocks(symbols: List[str]) -> List[List[str]]:
     """Stable split: [s[0], s[4], ...], [s[1], s[5], ...], ..."""
@@ -65,41 +66,57 @@ def _enrich_all(dfs: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
     return out
 
 def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
+    t0 = time.time()
     log.info(f"[{symbol}] fetching OHLCV…")
     # fetch with partial-bar drop for 1H; realtime for 4H/1D (handled in fetch_batch)
+    sleep_between_tf = float(os.getenv("SLEEP_BETWEEN_TF", "0.3"))
     dfs = fetch_batch(
         symbol,
         timeframes=TIMEFRAMES,
         limit=limit,
         drop_partial=True,        # only applied to 1H internally
-        sleep_between_tf=0.3,     # reduce burst per symbol
+        sleep_between_tf=sleep_between_tf,  # reduce burst per symbol
         ex=ex                     # reuse shared exchange to avoid 429
     )
+    t_fetch = time.time() - t0
+    l1 = len(dfs.get("1H") or [])
+    l4 = len(dfs.get("4H") or [])
+    lD = len(dfs.get("1D") or [])
+    log.info(f"[{symbol}] fetched: 1H={l1}, 4H={l4}, 1D={lD} in {t_fetch:.2f}s")
 
     # enrich indicators → features_by_tf
+    t1 = time.time()
     dfs = _enrich_all(dfs)
+    log.info(f"[{symbol}] enrich done in {time.time()-t1:.2f}s")
+    t2 = time.time()
     feats_by_tf = compute_features_by_tf(dfs)   # builds trend/momentum/volatility/levels/vp-bands,…
+    log.info(f"[{symbol}] features done in {time.time()-t2:.2f}s")
     # attach df to 1H for decision (decision engine expects it)
     if '1H' in feats_by_tf:
         feats_by_tf['1H']['df'] = dfs.get('1H')
 
     # evidence bundle (STRUCT JSON)
+    t3 = time.time()
     bundle = build_evidence_bundle(symbol, feats_by_tf, cfg)
+    log.info(f"[{symbol}] bundle done in {time.time()-t3:.2f}s")
 
     # decide on 1H as primary TF
+    t4 = time.time()
     out = decide(symbol, "1H", feats_by_tf, bundle)  # validated DecisionOut + telegram_signal
+    log.info(f"[{symbol}] decide done in {time.time()-t4:.2f}s; total {time.time()-t0:.2f}s")
 
     # log JSON line
-    print(json.dumps(out, ensure_ascii=False))
+    print(json.dumps(out, ensure_ascii=False), flush=True)
     if out.get("telegram_signal"):
         send_telegram(out["telegram_signal"])
 
 def run_block(block_idx: int, symbols: List[str], cfg: Config, limit: int, ex=None):
     log.info(f"=== Running block {block_idx+1}/4 ({len(symbols)} symbols) ===")
+    sleep_between_symbols = float(os.getenv("SLEEP_BETWEEN_SYMBOLS", "0.15"))
     for sym in symbols:
         try:
             process_symbol(sym, cfg, limit, ex=ex)
-            time.sleep(0.15)  # tiny pause between symbols to smooth rate limit
+            time.sleep(sleep_between_symbols)  # tiny pause between symbols to smooth rate limit
         except Exception as e:
             log.exception(f"[{sym}] error: {e}")
 
