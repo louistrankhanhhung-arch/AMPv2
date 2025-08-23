@@ -470,20 +470,20 @@ def decide(symbol: str,
     telegram_signal = None
     if decision == 'ENTER' and direction and plan.sl is not None and plan.tp is not None and (plan.entry is not None or plan.entry2 is not None):
         strategy = state.capitalize()
-        entry_line = f"Entry: {plan.entry}" if plan.entry is not None else ""
+        entry_lines = []
+        if plan.entry is not None:
+            entry_lines.append(f"Entry: {plan.entry}")
         if plan.entry2 is not None:
-            entry_line = (entry_line + ("
-" if entry_line else "")) + f"Entry2: {plan.entry2}"
+            entry_lines.append(f"Entry2: {plan.entry2}")
+        entries_text = "\n".join(entry_lines) if entry_lines else ""
         telegram_signal = (
-            f"{direction.upper()} | {symbol}
-"
-            f"Strategy: {strategy} ({timeframe})
-"
-            f"{entry_line}
-SL: {plan.sl}
-TP: {plan.tp}"
+            f"{direction.upper()} | {symbol}\n"
+            f"Strategy: {strategy} ({timeframe})\n"
+            f"{entries_text}\n"
+            f"SL: {plan.sl}\n"
+            f"TP: {plan.tp}"
         )
-
+    
     out = DecisionOut(
         symbol=symbol,
         timeframe=timeframe,
@@ -495,6 +495,6 @@ TP: {plan.tp}"
         logs=logs,
         telegram_signal=telegram_signal,
     )
-
-    # Return as plain dict
+    
     return out.model_dump() if hasattr(out, 'model_dump') else out.__dict__
+
