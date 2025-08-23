@@ -79,9 +79,12 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
         ex=ex                     # reuse shared exchange to avoid 429
     )
     t_fetch = time.time() - t0
-    l1 = len(dfs.get("1H") or [])
-    l4 = len(dfs.get("4H") or [])
-    lD = len(dfs.get("1D") or [])
+    df1 = dfs.get("1H")
+    df4 = dfs.get("4H")
+    dfD = dfs.get("1D")
+    l1 = 0 if df1 is None else len(df1.index)
+    l4 = 0 if df4 is None else len(df4.index)
+    lD = 0 if dfD is None else len(dfD.index)
     log.info(f"[{symbol}] fetched: 1H={l1}, 4H={l4}, 1D={lD} in {t_fetch:.2f}s")
 
     # enrich indicators → features_by_tf
