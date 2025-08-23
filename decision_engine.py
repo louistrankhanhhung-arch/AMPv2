@@ -271,8 +271,17 @@ def decide(symbol: str,
 
     # Candidate entry plan (revised setups)
     note = ""
+    # --- init plan vars early to avoid UnboundLocalError
+    entry: Optional[float] = None
+    entry2: Optional[float] = None
+    sl: Optional[float] = None
+    tp: Optional[float] = None
+    rr: Optional[float] = None
+    rr2: Optional[float] = None
+    proximity_ok = False
+    proximity_ok2 = False
 
-    # Helper to build a retest entry around a reference level
+# Helper to build a retest entry around a reference level
     def _retest_entry(side: str, ref: float) -> Tuple[Optional[float], Optional[float], Optional[float], str]:
         if not np.isfinite(ref) or atr <= 0:
             return None, None, None, ""
@@ -345,10 +354,7 @@ def decide(symbol: str,
         # state undefined/sideways -> no explicit plan
         pass
 
-    rr = None
-    rr2 = None
-    proximity_ok = False
-    proximity_ok2 = False
+    # Compute RR & proximity for primary/secondary entries (if present)
     if direction and entry is not None and sl is not None and tp is not None and atr > 0:
         rr = _rr(direction, entry, sl, tp)
         proximity_ok = (abs(price_now - entry) <= rules.retest_zone_atr * atr)
@@ -358,39 +364,6 @@ def decide(symbol: str,
         proximity_ok2 = (abs(price_now - float(entry2)) <= rules.proximity_atr * atr)
 
 
-    if direction == 'long':
-        hh = (eb.evidence.price_breakout.ref or {}).get('hh')
-        buf = (eb.evidence.price_breakout.ref or {}).get('buffer', 0.0)
-        if hh is not None:
-            entry = float(hh + buf)
-            sl = _protective_sl(levels, ref_level=hh, atr=atr, side='long')
-            tp = _nearest_band_tp(levels, price_now, side='long')
-            note = "breakout buffer entry"
-    elif direction == 'short':
-        ll = (eb.evidence.price_breakdown.ref or {}).get('ll')
-        buf = (eb.evidence.price_breakdown.ref or {}).get('buffer', 0.0)
-        if ll is not None:
-            entry = float(ll - buf)
-            sl = _protective_sl(levels, ref_level=ll, atr=atr, side='short')
-            tp = _nearest_band_tp(levels, price_now, side='short')
-            note = "breakdown buffer entry"
-    elif state == 'reclaim' and direction in ('long','short'):
-        lvl = (eb.evidence.price_reclaim.ref or {}).get('level')
-        buf = (eb.evidence.price_reclaim.ref or {}).get('buffer', 0.0)
-        if lvl is not None:
-            if direction == 'long':
-                entry = float(lvl + buf); sl = _protective_sl(levels, ref_level=lvl, atr=atr, side='long')
-                tp = _nearest_band_tp(levels, price_now, side='long')
-            else:
-                entry = float(lvl - buf); sl = _protective_sl(levels, ref_level=lvl, atr=atr, side='short')
-                tp = _nearest_band_tp(levels, price_now, side='short')
-            note = "reclaim buffer entry"
-
-    rr = None
-    proximity_ok = False
-    if direction and entry is not None and sl is not None and tp is not None and atr > 0:
-        rr = _rr(direction, entry, sl, tp)
-        proximity_ok = (abs(price_now - entry) <= rules.proximity_atr * atr)
 
     # AVOID conditions
     rsi = float(f1.get('momentum', {}).get('rsi', 50.0))
