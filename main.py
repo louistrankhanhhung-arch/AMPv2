@@ -10,40 +10,21 @@ Main worker for Crypto Signal (Railway ready)
   3) compute features_by_tf (trend/momentum/volatility/SR + volume profile bands)
   4) build evidence bundle (STRUCT JSON)
   5) decide ENTER/WAIT/AVOID; optionally push Telegram
-
-Env:
-  SYMBOLS=BTC/USDT,ETH/USDT,...   # optional, else use DEFAULT_UNIVERSE
-  KUCOIN_API_KEY=... (optional)
-  KUCOIN_API_SECRET=... (optional)
-  KUCOIN_API_PASSPHRASE=... (optional)
-  BATCH_LIMIT=300
-  TELEGRAM_BOT_TOKEN=xxxx (optional)
-  TELEGRAM_CHAT_ID=12345 (optional)
-  RUN_ONCE=1  # run all 4 blocks immediately and exit (for testing)
 """
 import os, sys, time, json, logging
 from typing import Dict, List
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
-import numpy as np
 import pandas as pd
 import requests
 
-from universe import get_universe_from_env  # uses DEFAULT_UNIVERSE if SYMBOLS not set  :contentReference[oaicite:6]{index=6}
-from kucoin_api import fetch_batch, _exchange           # spot-only client; drop partial only for 1H  :contentReference[oaicite:7]{index=7}
+from universe import get_universe_from_env  # uses DEFAULT_UNIVERSE if SYMBOLS not set
+from kucoin_api import fetch_batch, _exchange  # spot-only; 1H drop-partial
 from indicators import enrich_indicators, enrich_more
 from feature_primitives import compute_features_by_tf
 from evidence_evaluators import build_evidence_bundle, Config
 from decision_engine import decide
-from kucoin_api import _exchange, fetch_batch
-ex_shared = _exchange(
-    kucoin_key=os.getenv("KUCOIN_API_KEY"),
-    kucoin_secret=os.getenv("KUCOIN_API_SECRET"),
-    kucoin_passphrase=os.getenv("KUCOIN_API_PASSPHRASE"),
-)
-dfs = fetch_batch(symbol, timeframes=("1H","4H","1D"), limit=limit, drop_partial=True, sleep_between_tf=0.3, ex=ex_shared)
-
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 TIMEFRAMES = ("1H", "4H", "1D")
@@ -90,23 +71,23 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
         symbol,
         timeframes=TIMEFRAMES,
         limit=limit,
-        drop_partial=True,  # only applied to 1H internally
-        sleep_between_tf=0.3,           # reduce burst per symbol
-        ex=ex                           # reuse shared exchange to avoid 429
+        drop_partial=True,        # only applied to 1H internally
+        sleep_between_tf=0.3,     # reduce burst per symbol
+        ex=ex                     # reuse shared exchange to avoid 429
     )
 
     # enrich indicators → features_by_tf
     dfs = _enrich_all(dfs)
-    feats_by_tf = compute_features_by_tf(dfs)   # builds trend/momentum/volatility/levels/vp-bands,…  :contentReference[oaicite:8]{index=8}
+    feats_by_tf = compute_features_by_tf(dfs)   # builds trend/momentum/volatility/levels/vp-bands,…
     # attach df to 1H for decision (decision engine expects it)
     if '1H' in feats_by_tf:
         feats_by_tf['1H']['df'] = dfs.get('1H')
 
     # evidence bundle (STRUCT JSON)
-    bundle = build_evidence_bundle(symbol, feats_by_tf, cfg)  # returns state + evidence blocks  :contentReference[oaicite:9]{index=9}
+    bundle = build_evidence_bundle(symbol, feats_by_tf, cfg)
 
     # decide on 1H as primary TF
-    out = decide(symbol, "1H", feats_by_tf, bundle)          # validated DecisionOut + telegram_signal  :contentReference[oaicite:10]{index=10}
+    out = decide(symbol, "1H", feats_by_tf, bundle)  # validated DecisionOut + telegram_signal
 
     # log JSON line
     print(json.dumps(out, ensure_ascii=False))
