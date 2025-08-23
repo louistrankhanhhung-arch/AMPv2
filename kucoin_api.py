@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import time
+import random
 from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
@@ -94,8 +95,13 @@ def _validate_symbol(ex: ccxt.Exchange, symbol: str) -> str:
             return candidate
 
     raise ValueError(
-        f"Symbol '{symbol}' not found in SPOT markets"
-    )
+        f"Symbol '{symbol}' not found in SPOT markets")
+
+def _is_rate_limit(e: Exception) -> bool:
+    """Detect KuCoin user-level rate limit (429000) and generic 429 messages."""
+    s = str(e)
+    return isinstance(e, ccxt.RateLimitExceeded) or ("429000" in s) or ("Too many requests" in s)
+
 
 # ---------------------------------
 # DataFrame conversion & cleaning
@@ -168,50 +174,48 @@ def fetch_ohlcv(
     *,
     limit: int = 300,
     since_ms: Optional[int] = None,
-    kucoin_key: Optional[str] = None,
-    kucoin_secret: Optional[str] = None,
-    kucoin_passphrase: Optional[str] = None,
-    timeout_ms: int = _DEF_TIMEOUT_MS,
-    enable_rate_limit: bool = True,
-    proxy: Optional[str] = None,
-    drop_partial: bool = False,
-    max_retries: int = 3,
+    kucoin_key=None, kucoin_secret=None, kucoin_passphrase=None,
+    timeout_ms=_DEF_TIMEOUT_MS, enable_rate_limit=True, proxy=None,
+    max_retries: int = 6,
+    drop_partial: bool = True,
+    ex: Optional[ccxt.kucoin] = None
 ) -> pd.DataFrame:
-    """Fetch OHLCV into a cleaned DataFrame.
-
-    Notes:
-      - SPOT only client
-      - Partial-bar dropping is applied ONLY if `drop_partial=True` **and** timeframe == '1H'.
     """
-    tf_str = _ccxt_timeframe_str(timeframe)
-    ex = _exchange(
-        kucoin_key, kucoin_secret, kucoin_passphrase,
-        timeout_ms=timeout_ms,
-        enable_rate_limit=enable_rate_limit,
-        proxy=proxy,
-    )
-    sym = _validate_symbol(ex, symbol)
+    Fetch OHLCV for a single timeframe.
+    - If `ex` is provided, reuse it (no new load_markets()).
+    - Drop partial bar only for 1H when `drop_partial=True`.
+    - Robust backoff with jitter on 429000 / Too many requests.
+    """
+    tf_str = TIMEFRAME_MAP.get(timeframe.upper(), timeframe)
+    _ex = ex or _exchange(kucoin_key, kucoin_secret, kucoin_passphrase,
+                          timeout_ms=timeout_ms, enable_rate_limit=enable_rate_limit, proxy=proxy)
+    sym = _validate_symbol(_ex, symbol)
 
     # retry loop for robustness
     attempt = 0
     while True:
         try:
-            raw = ex.fetch_ohlcv(sym, timeframe=tf_str, since=since_ms, limit=limit)
+            raw = _ex.fetch_ohlcv(sym, timeframe=tf_str, since=since_ms, limit=limit)
             df = _to_dataframe(raw)
-            # Only drop partial bar for 1H timeframe
-            if drop_partial and tf_str == "1h" and not df.empty:
-                df = _drop_partial_bar(df, _bar_ms(ex, tf_str))
+            # chỉ cắt nến chưa đóng nếu là timeframe 1H (và cờ drop_partial bật)
+            if drop_partial and timeframe.upper() == "1H" and not df.empty:
+                df = _drop_partial_bar(df, _bar_ms(_ex, tf_str))
             return df
-        except (ccxt.NetworkError, ccxt.ExchangeNotAvailable, ccxt.RequestTimeout):
+        except (ccxt.NetworkError, ccxt.ExchangeNotAvailable, ccxt.RequestTimeout) as e:
             if attempt >= max_retries:
                 raise
-            _retry_sleep(attempt)
+            sleep_s = min(20.0, 1.0 * (2 ** attempt)) + random.uniform(0.05, 0.35)
+            time.sleep(sleep_s)
             attempt += 1
-        except ccxt.RateLimitExceeded:
-            if attempt >= max_retries:
-                raise
-            _retry_sleep(attempt, base=1.0, cap=10.0)
-            attempt += 1
+            continue
+        except ccxt.ExchangeError as e:
+            # KuCoin 429 user-level rate limit
+            if _is_rate_limit(e) and attempt < max_retries:
+                sleep_s = min(20.0, 1.0 * (2 ** attempt)) + random.uniform(0.05, 0.35)
+                time.sleep(sleep_s)
+                attempt += 1
+                continue
+            raise
 
 
 def fetch_ohlcv_history(
@@ -316,40 +320,29 @@ def fetch_batch(
     *,
     limit: int = 300,
     since_ms: Optional[int] = None,
-    kucoin_key: Optional[str] = None,
-    kucoin_secret: Optional[str] = None,
-    kucoin_passphrase: Optional[str] = None,
-    timeout_ms: int = _DEF_TIMEOUT_MS,
-    enable_rate_limit: bool = True,
-    proxy: Optional[str] = None,
-    drop_partial: bool = False,
+    kucoin_key=None, kucoin_secret=None, kucoin_passphrase=None,
+    timeout_ms=_DEF_TIMEOUT_MS, enable_rate_limit=True, proxy=None,
+    sleep_between_tf: float = 0.3,
+    drop_partial: bool = True,
+    ex: Optional[ccxt.kucoin] = None
 ) -> Dict[str, pd.DataFrame]:
-    """Fetch multiple timeframes at once, returning a dict {tf: DataFrame}."""
-    ex = _exchange(
-        kucoin_key, kucoin_secret, kucoin_passphrase,
-        timeout_ms=timeout_ms,
-        enable_rate_limit=enable_rate_limit,
-        proxy=proxy,
-    )
-    sym = _validate_symbol(ex, symbol)
+    _ex = ex or _exchange(kucoin_key, kucoin_secret, kucoin_passphrase,
+                          timeout_ms=timeout_ms, enable_rate_limit=enable_rate_limit, proxy=proxy)
+    sym = _validate_symbol(_ex, symbol)
 
     out: Dict[str, pd.DataFrame] = {}
     for tf in timeframes:
         # Apply partial-bar drop only for 1H
         partial_flag = drop_partial and (tf.upper() == "1H")
         out[tf] = fetch_ohlcv(
-            sym,
-            timeframe=tf,
-            limit=limit,
-            since_ms=since_ms,
-            kucoin_key=kucoin_key,
-            kucoin_secret=kucoin_secret,
-            kucoin_passphrase=kucoin_passphrase,
-            timeout_ms=timeout_ms,
-            enable_rate_limit=enable_rate_limit,
-            proxy=proxy,
-            drop_partial=partial_flag,
+            sym, timeframe=tf, limit=limit, since_ms=since_ms,
+            kucoin_key=kucoin_key, kucoin_secret=kucoin_secret, kucoin_passphrase=kucoin_passphrase,
+            timeout_ms=timeout_ms, enable_rate_limit=enable_rate_limit, proxy=proxy,
+            drop_partial=drop_partial, ex=_ex
         )
+        # giảm burst giữa các khung thời gian để tránh 429
+        if sleep_between_tf and sleep_between_tf > 0:
+            time.sleep(float(sleep_between_tf))
     return out
 
 # --------------------------
