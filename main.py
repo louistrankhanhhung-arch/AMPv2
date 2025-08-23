@@ -31,7 +31,7 @@ import pandas as pd
 import requests
 
 from universe import get_universe_from_env  # uses DEFAULT_UNIVERSE if SYMBOLS not set  :contentReference[oaicite:6]{index=6}
-from kucoin_api import fetch_batch           # spot-only client; drop partial only for 1H  :contentReference[oaicite:7]{index=7}
+from kucoin_api import fetch_batch, _exchange           # spot-only client; drop partial only for 1H  :contentReference[oaicite:7]{index=7}
 from indicators import enrich_indicators, enrich_more
 from feature_primitives import compute_features_by_tf
 from evidence_evaluators import build_evidence_bundle, Config
@@ -83,7 +83,7 @@ def _enrich_all(dfs: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
         out[tf] = x
     return out
 
-def process_symbol(symbol: str, cfg: Config, limit: int):
+def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     log.info(f"[{symbol}] fetching OHLCV…")
     # fetch with partial-bar drop for 1H; realtime for 4H/1D (handled in fetch_batch)
     dfs = fetch_batch(
@@ -91,6 +91,8 @@ def process_symbol(symbol: str, cfg: Config, limit: int):
         timeframes=TIMEFRAMES,
         limit=limit,
         drop_partial=True,  # only applied to 1H internally
+        sleep_between_tf=0.3,           # reduce burst per symbol
+        ex=ex                           # reuse shared exchange to avoid 429
     )
 
     # enrich indicators → features_by_tf
@@ -111,11 +113,12 @@ def process_symbol(symbol: str, cfg: Config, limit: int):
     if out.get("telegram_signal"):
         send_telegram(out["telegram_signal"])
 
-def run_block(block_idx: int, symbols: List[str], cfg: Config, limit: int):
+def run_block(block_idx: int, symbols: List[str], cfg: Config, limit: int, ex=None):
     log.info(f"=== Running block {block_idx+1}/4 ({len(symbols)} symbols) ===")
     for sym in symbols:
         try:
-            process_symbol(sym, cfg, limit)
+            process_symbol(sym, cfg, limit, ex=ex)
+            time.sleep(0.15)  # tiny pause between symbols to smooth rate limit
         except Exception as e:
             log.exception(f"[{sym}] error: {e}")
 
@@ -124,11 +127,17 @@ def loop_scheduler():
     blocks = split_into_4_blocks(symbols)
     cfg = Config()  # default thresholds per TF
     limit = int(os.getenv("BATCH_LIMIT", "300"))
+    # Create ONE shared exchange to let ccxt throttler pace requests correctly
+    shared_ex = _exchange(
+        kucoin_key=os.getenv("KUCOIN_API_KEY"),
+        kucoin_secret=os.getenv("KUCOIN_API_SECRET"),
+        kucoin_passphrase=os.getenv("KUCOIN_API_PASSPHRASE"),
+    )
 
     if os.getenv("RUN_ONCE") == "1":
         # Run all blocks immediately (useful for CI/test)
         for i in range(4):
-            run_block(i, blocks[i], cfg, limit)
+            run_block(i, blocks[i], cfg, limit, ex=shared_ex)
         return
 
     log.info(f"Universe size={len(symbols)}; block sizes={[len(b) for b in blocks]}")
@@ -141,7 +150,7 @@ def loop_scheduler():
         tick_key = (now.year, now.month, now.day, now.hour, blk)
         if blk is not None and tick_key != last_tick and now.second < 10:
             last_tick = tick_key
-            run_block(blk, blocks[blk], cfg, limit)
+            run_block(blk, blocks[blk], cfg, limit, ex=shared_ex)
         # sleep until next 5-minute boundary
         secs = now.second + now.minute*60
         to_next = 300 - (secs % 300)
