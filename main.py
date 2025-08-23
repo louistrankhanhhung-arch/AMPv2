@@ -36,6 +36,14 @@ from indicators import enrich_indicators, enrich_more
 from feature_primitives import compute_features_by_tf
 from evidence_evaluators import build_evidence_bundle, Config
 from decision_engine import decide
+from kucoin_api import _exchange, fetch_batch
+ex_shared = _exchange(
+    kucoin_key=os.getenv("KUCOIN_API_KEY"),
+    kucoin_secret=os.getenv("KUCOIN_API_SECRET"),
+    kucoin_passphrase=os.getenv("KUCOIN_API_PASSPHRASE"),
+)
+dfs = fetch_batch(symbol, timeframes=("1H","4H","1D"), limit=limit, drop_partial=True, sleep_between_tf=0.3, ex=ex_shared)
+
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 TIMEFRAMES = ("1H", "4H", "1D")
