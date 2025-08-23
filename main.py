@@ -105,8 +105,24 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
 
     # decide on 1H as primary TF
     t4 = time.time()
-    out = decide(symbol, "1H", feats_by_tf, bundle)  # validated DecisionOut + telegram_signal
-    log.info(f"[{symbol}] decide done in {time.time()-t4:.2f}s; total {time.time()-t0:.2f}s")
+    out = decide(symbol, "1H", feats_by_tf, bundle)
+    elapsed_dec = time.time() - t4
+    total_time = time.time() - t0
+    dec = out.get("decision")
+    state = out.get("state")
+    plan = out.get("plan") or {}
+    log.info(f"[{symbol}] decide done in {elapsed_dec:.2f}s; total {total_time:.2f}s")
+    log.info(
+        f"[{symbol}] DECISION={dec} | STATE={state} | "
+        f"entry={plan.get('entry')} entry2={plan.get('entry2')} "
+        f"sl={plan.get('sl')} tp={plan.get('tp')} rr={plan.get('rr')} rr2={plan.get('rr2')}"
+    )
+    if dec == "WAIT":
+        miss = (out.get("logs", {}).get("WAIT", {}).get("missing"))
+        log.info(f"[{symbol}] WAIT missing={miss}")
+    if dec == "AVOID":
+        reasons = (out.get("logs", {}).get("AVOID", {}).get("reasons"))
+        log.info(f"[{symbol}] AVOID reasons={reasons}")
 
     # log JSON line
     print(json.dumps(out, ensure_ascii=False), flush=True)
