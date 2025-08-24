@@ -73,6 +73,7 @@ class MomentumBundleIn(BaseModel):
     confirm: Optional[EvidenceItemIn] = None
     model_config = ConfigDict(extra="ignore")
 
+
 class EvidenceIn(BaseModel):
     price_breakout: EvidenceItemIn
     price_breakdown: EvidenceItemIn
@@ -83,7 +84,22 @@ class EvidenceIn(BaseModel):
     trend: EvidenceItemIn
     candles: EvidenceItemIn
     liquidity: EvidenceItemIn
+    # --- new evidences ---
+    bb: Optional[EvidenceItemIn] = None
+    volume_explosive: Optional[EvidenceItemIn] = None
+    throwback: Optional[EvidenceItemIn] = None
+    pullback: Optional[EvidenceItemIn] = None
+    mean_reversion: Optional[EvidenceItemIn] = None
+    false_breakout: Optional[EvidenceItemIn] = None
+    false_breakdown: Optional[EvidenceItemIn] = None
+    trend_follow_up: Optional[EvidenceItemIn] = None
+    trend_follow_down: Optional[EvidenceItemIn] = None
+    rejection: Optional[EvidenceItemIn] = None
+    divergence: Optional[EvidenceItemIn] = None
+    compression_ready: Optional[EvidenceItemIn] = None
+    volatility_breakout: Optional[EvidenceItemIn] = None
     model_config = ConfigDict(extra="ignore")
+
 
 class EvidenceBundleIn(BaseModel):
     symbol: str
@@ -145,6 +161,55 @@ class DecisionRules:
     retest_zone_atr: float = 0.15     # acceptable distance from price to retest entry to consider ENTER
     trend_break_buf_atr: float = 0.20 # trend-follow Entry1 uses break of nearest swing with this buffer
 
+
+# =====================================================
+# 2.5) State mapping helpers (new trade types)
+# =====================================================
+
+STATE_TO_DIR = {
+    'breakout': 'long',
+    'breakdown': 'short',
+    'reclaim': None,          # derived from evidence.price_reclaim.ref.side
+    'trend_follow_up': 'long',
+    'trend_follow_down': 'short',
+    'trend_follow_pullback': None,  # derive from momentum side if available
+    'false_breakout': 'short',
+    'false_breakdown': 'long',
+    'mean_reversion': None,   # derive from evidence.mean_reversion.side
+    'rejection': None,        # derive from evidence.rejection.side
+    'divergence_up': 'long',
+    'divergence_down': 'short',
+
+    'sideways': None,
+    'compression_ready': None,
+    'volatility_breakout': None,  # infer from price breakout/breakdown flags
+    'throwback_long': 'long',
+    'throwback_short': 'short',
+}
+
+# Required evidence keys per state (must be True to ENTER)
+REQUIRED_BY_STATE = {
+    'breakout': ['price_breakout', 'volume', 'trend', 'bb'],
+    'breakdown': ['price_breakdown', 'volume', 'trend', 'bb'],
+    'reclaim': ['price_reclaim', 'volume'],
+    'trend_follow_up': ['trend', 'momentum'],
+    'trend_follow_down': ['trend', 'momentum'],
+    'trend_follow_pullback': ['pullback', 'trend'],
+    'false_breakout': ['false_breakout'],
+    'false_breakdown': ['false_breakdown'],
+    'mean_reversion': ['mean_reversion'],
+    'rejection': ['rejection'],
+    'divergence_up': ['divergence'],
+    'divergence_down': ['divergence'],
+
+    'sideways': ['sideways'],
+    'range': ['sideways'],
+    'compression_ready': ['sideways'],  # wait for break
+    'volatility_breakout': ['volatility_breakout', 'bb'],
+    'throwback_long': ['throwback'],
+    'throwback_short': ['throwback'],
+}
+
 # =====================================================
 # 3) Helpers
 # =====================================================
@@ -192,7 +257,29 @@ def _protective_sl(levels: Dict[str, Any], ref_level: float, atr: float, side: s
 
 
 def _rr(direction: str, entry: float, sl: float, tp: float) -> float:
-    if direction == 'long':
+    if state == 'throwback_long' and direction == 'long':
+        hh = (eb.evidence.price_breakout.ref or {}).get('hh') if hasattr(eb.evidence, 'price_breakout') else None
+        entry, sl, tp, note = _retest_entry('long', float(hh) if hh is not None else price_now)
+    elif state == 'trend_follow_pullback' and direction == 'long':
+        # Prefer EMA20/BB mid zone from pullback evidence if available
+        z = ((eb.evidence.__dict__.get('pullback') or {}).get('zone') if hasattr(eb.evidence, '__dict__') else None)
+        if z and isinstance(z, (list, tuple)):
+            entry = float((z[0] + z[1]) / 2.0); sl = _protective_sl(levels, ref_level=z[0], atr=atr, side='long'); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'pullback_zone_entry'
+        else:
+            e1, e2 = _trend_follow_entries('long'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='long'); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'trend_follow_pullback_fallback'
+    elif state == 'false_breakout' and direction == 'short':
+        ll = (eb.evidence.price_breakdown.ref or {}).get('ll') if hasattr(eb.evidence, 'price_breakdown') else None
+        ref = ll if ll is not None else float(df1['low'].iloc[-2])
+        entry, sl, tp, note = _retest_entry('short', float(ref))
+    elif state == 'mean_reversion' and direction == 'long':
+        ref = float(df1['low'].iloc[-2]); entry = price_now; sl = float(ref - 0.2*atr); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'mean_reversion_rebound'
+    elif state == 'rejection' and direction == 'long':
+        ref = float(df1['low'].iloc[-2]); entry = price_now; sl = float(ref - 0.2*atr); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'rejection_long'
+    elif state == 'divergence_up' and direction == 'long':
+        e1, e2 = _trend_follow_entries('long'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='long'); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'divergence_break_entry'
+    elif state == 'volatility_breakout' and direction == 'long':
+        hh = (eb.evidence.price_breakout.ref or {}).get('hh'); entry, sl, tp, note = _retest_entry('long', float(hh) if hh is not None else price_now)
+    elif direction == 'long':
         risk = max(1e-9, entry - sl)
         reward = max(0.0, tp - entry)
     else:
@@ -230,43 +317,72 @@ def decide(symbol: str,
     state = eb.state
     confidence = float(eb.confidence)
     direction: Optional[str] = None
-    if state == 'breakout':
+    if state == 'reclaim':
+        side_ref = (eb.evidence.price_reclaim.ref or {}).get('side')
+        direction = side_ref if side_ref in ('long','short') else None
+    elif state == 'mean_reversion':
+        side_ref = (eb.evidence.__dict__.get('mean_reversion') or {}).get('side') if hasattr(eb.evidence, '__dict__') else None
+        direction = side_ref if side_ref in ('long','short') else None
+    elif state == 'rejection':
+        side_ref = (eb.evidence.__dict__.get('rejection') or {}).get('side') if hasattr(eb.evidence, '__dict__') else None
+        direction = side_ref if side_ref in ('long','short') else None
+    elif state == 'false_breakout':
+        direction = 'short'
+    elif state == 'false_breakdown':
+        direction = 'long'
+    elif state == 'trend_follow_up':
+        direction = 'long'
+    elif state == 'trend_follow_down':
+        direction = 'short'
+    elif state == 'breakout':
         direction = 'long'
     elif state == 'breakdown':
         direction = 'short'
-    elif state == 'reclaim':
-        # infer side from reclaim ref if provided
-        side_ref = (eb.evidence.price_reclaim.ref or {}).get('side')
-        direction = side_ref if side_ref in ('long','short') else None
+    elif state == 'volatility_breakout':
+        # infer from price evidences
+        if eb.evidence.price_breakout.ok: direction = 'long'
+        elif eb.evidence.price_breakdown.ok: direction = 'short'
+        else: direction = None
+    elif state == 'divergence_up':
+        direction = 'long'
+    elif state == 'divergence_down':
+        direction = 'short'
+    elif state == 'throwback_long':
+        direction = 'long'
+    elif state == 'throwback_short':
+        direction = 'short'
+    elif state == 'trend_follow_pullback':
+        # derive from momentum bias
+        rsi = float(features_by_tf.get('1H', {}).get('momentum', {}).get('rsi', 50.0))
+        direction = 'long' if rsi >= 50 else 'short'
 
-    # Required confirmations
+    
+    # Required confirmations per state
     req_ok = []
     miss_reasons: List[str] = []
 
-    # price-action
-    if state == 'reclaim':
-        req_ok.append(eb.evidence.price_reclaim.ok)
-        if not eb.evidence.price_reclaim.ok: miss_reasons.append('price_reclaim')
-    elif state == 'breakout' or direction == 'long':
-        req_ok.append(eb.evidence.price_breakout.ok)
-        if not eb.evidence.price_breakout.ok: miss_reasons.append('price_breakout')
-    elif state == 'breakdown' or direction == 'short':
-        req_ok.append(eb.evidence.price_breakdown.ok)
-        if not eb.evidence.price_breakdown.ok: miss_reasons.append('price_breakdown')
-    else:
-        pass
+    # Compose the evidence dict access helper
+    def _ev(name: str) -> Any:
+        try:
+            return getattr(eb.evidence, name)
+        except Exception:
+            return None
 
-    # volume
-    vol_ok = bool(eb.evidence.volume.ok)
-    req_ok.append(vol_ok)
-    if not vol_ok: miss_reasons.append('volume_ok')
+    req_keys = REQUIRED_BY_STATE.get(state, [])
+    for k in req_keys:
+        item = _ev(k)
+        ok_flag = bool(getattr(item, 'ok', False)) if item is not None else False
+        req_ok.append(ok_flag)
+        if not ok_flag:
+            miss_reasons.append(k)
 
-    # trend alignment
-    tr_ok = bool(eb.evidence.trend.ok)
-    req_ok.append(tr_ok)
-    if not tr_ok: miss_reasons.append('trend_alignment')
-
-    # Optional
+    # Generic guards used across strategies
+    vol_ok = bool(getattr(eb.evidence.volume, 'ok', False))
+    tr_ok = bool(getattr(eb.evidence.trend, 'ok', False))
+    mom_ok = bool(getattr(eb.evidence.momentum.primary, 'ok', False))
+    cdl_ok = bool(getattr(eb.evidence.candles, 'ok', False))
+    liq_ok = bool(getattr(eb.evidence.liquidity, 'ok', False))
+    
     mom_ok = bool(eb.evidence.momentum.primary.ok)
     cdl_ok = bool(eb.evidence.candles.ok)
     liq_ok = bool(eb.evidence.liquidity.ok)
@@ -323,7 +439,29 @@ def decide(symbol: str,
             return None, None
 
     # Build plan according to state with new setups
-    if direction == 'long':
+    if state == 'throwback_long' and direction == 'long':
+        hh = (eb.evidence.price_breakout.ref or {}).get('hh') if hasattr(eb.evidence, 'price_breakout') else None
+        entry, sl, tp, note = _retest_entry('long', float(hh) if hh is not None else price_now)
+    elif state == 'trend_follow_pullback' and direction == 'long':
+        # Prefer EMA20/BB mid zone from pullback evidence if available
+        z = ((eb.evidence.__dict__.get('pullback') or {}).get('zone') if hasattr(eb.evidence, '__dict__') else None)
+        if z and isinstance(z, (list, tuple)):
+            entry = float((z[0] + z[1]) / 2.0); sl = _protective_sl(levels, ref_level=z[0], atr=atr, side='long'); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'pullback_zone_entry'
+        else:
+            e1, e2 = _trend_follow_entries('long'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='long'); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'trend_follow_pullback_fallback'
+    elif state == 'false_breakout' and direction == 'short':
+        ll = (eb.evidence.price_breakdown.ref or {}).get('ll') if hasattr(eb.evidence, 'price_breakdown') else None
+        ref = ll if ll is not None else float(df1['low'].iloc[-2])
+        entry, sl, tp, note = _retest_entry('short', float(ref))
+    elif state == 'mean_reversion' and direction == 'long':
+        ref = float(df1['low'].iloc[-2]); entry = price_now; sl = float(ref - 0.2*atr); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'mean_reversion_rebound'
+    elif state == 'rejection' and direction == 'long':
+        ref = float(df1['low'].iloc[-2]); entry = price_now; sl = float(ref - 0.2*atr); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'rejection_long'
+    elif state == 'divergence_up' and direction == 'long':
+        e1, e2 = _trend_follow_entries('long'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='long'); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'divergence_break_entry'
+    elif state == 'volatility_breakout' and direction == 'long':
+        hh = (eb.evidence.price_breakout.ref or {}).get('hh'); entry, sl, tp, note = _retest_entry('long', float(hh) if hh is not None else price_now)
+    elif direction == 'long':
         hh = (eb.evidence.price_breakout.ref or {}).get('hh')
         if state == 'breakout' and hh is not None:
             entry, sl, tp, note = _retest_entry('long', float(hh))
@@ -338,6 +476,27 @@ def decide(symbol: str,
                 sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr), atr=atr, side='long')
                 tp = _nearest_band_tp(levels, price_now, side='long')
                 note = "trend_follow: break + ema20/bb_mid"
+    elif state == 'throwback_short' and direction == 'short':
+        ll = (eb.evidence.price_breakdown.ref or {}).get('ll') if hasattr(eb.evidence, 'price_breakdown') else None
+        entry, sl, tp, note = _retest_entry('short', float(ll) if ll is not None else price_now)
+    elif state == 'trend_follow_pullback' and direction == 'short':
+        z = ((eb.evidence.__dict__.get('pullback') or {}).get('zone') if hasattr(eb.evidence, '__dict__') else None)
+        if z and isinstance(z, (list, tuple)):
+            entry = float((z[0] + z[1]) / 2.0); sl = _protective_sl(levels, ref_level=z[1], atr=atr, side='short'); tp = _nearest_band_tp(levels, price_now, side='short'); note = 'pullback_zone_entry'
+        else:
+            e1, e2 = _trend_follow_entries('short'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry + rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='short'); tp = _nearest_band_tp(levels, price_now, side='short'); note = 'trend_follow_pullback_fallback'
+    elif state == 'false_breakdown' and direction == 'long':
+        hh = (eb.evidence.price_breakout.ref or {}).get('hh') if hasattr(eb.evidence, 'price_breakout') else None
+        ref = hh if hh is not None else float(df1['high'].iloc[-2])
+        entry, sl, tp, note = _retest_entry('long', float(ref))
+    elif state == 'mean_reversion' and direction == 'short':
+        ref = float(df1['high'].iloc[-2]); entry = price_now; sl = float(ref + 0.2*atr); tp = _nearest_band_tp(levels, price_now, side='short'); note = 'mean_reversion_snapback'
+    elif state == 'rejection' and direction == 'short':
+        ref = float(df1['high'].iloc[-2]); entry = price_now; sl = float(ref + 0.2*atr); tp = _nearest_band_tp(levels, price_now, side='short'); note = 'rejection_short'
+    elif state == 'divergence_down' and direction == 'short':
+        e1, e2 = _trend_follow_entries('short'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry + rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='short'); tp = _nearest_band_tp(levels, price_now, side='short'); note = 'divergence_break_entry'
+    elif state == 'volatility_breakout' and direction == 'short':
+        ll = (eb.evidence.price_breakdown.ref or {}).get('ll'); entry, sl, tp, note = _retest_entry('short', float(ll) if ll is not None else price_now)
     elif direction == 'short':
         ll = (eb.evidence.price_breakdown.ref or {}).get('ll')
         if state == 'breakdown' and ll is not None:
