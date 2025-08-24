@@ -257,35 +257,18 @@ def _protective_sl(levels: Dict[str, Any], ref_level: float, atr: float, side: s
 
 
 def _rr(direction: str, entry: float, sl: float, tp: float) -> float:
-    if state == 'throwback_long' and direction == 'long':
-        hh = (eb.evidence.price_breakout.ref or {}).get('hh') if hasattr(eb.evidence, 'price_breakout') else None
-        entry, sl, tp, note = _retest_entry('long', float(hh) if hh is not None else price_now)
-    elif state == 'trend_follow_pullback' and direction == 'long':
-        # Prefer EMA20/BB mid zone from pullback evidence if available
-        z = ((eb.evidence.__dict__.get('pullback') or {}).get('zone') if hasattr(eb.evidence, '__dict__') else None)
-        if z and isinstance(z, (list, tuple)):
-            entry = float((z[0] + z[1]) / 2.0); sl = _protective_sl(levels, ref_level=z[0], atr=atr, side='long'); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'pullback_zone_entry'
+    try:
+        if direction == 'long':
+            risk = max(1e-9, entry - sl)
+            reward = max(0.0, tp - entry)
+        elif direction == 'short':
+            risk = max(1e-9, sl - entry)
+            reward = max(0.0, entry - tp)
         else:
-            e1, e2 = _trend_follow_entries('long'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='long'); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'trend_follow_pullback_fallback'
-    elif state == 'false_breakout' and direction == 'short':
-        ll = (eb.evidence.price_breakdown.ref or {}).get('ll') if hasattr(eb.evidence, 'price_breakdown') else None
-        ref = ll if ll is not None else float(df1['low'].iloc[-2])
-        entry, sl, tp, note = _retest_entry('short', float(ref))
-    elif state == 'mean_reversion' and direction == 'long':
-        ref = float(df1['low'].iloc[-2]); entry = price_now; sl = float(ref - 0.2*atr); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'mean_reversion_rebound'
-    elif state == 'rejection' and direction == 'long':
-        ref = float(df1['low'].iloc[-2]); entry = price_now; sl = float(ref - 0.2*atr); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'rejection_long'
-    elif state == 'divergence_up' and direction == 'long':
-        e1, e2 = _trend_follow_entries('long'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='long'); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'divergence_break_entry'
-    elif state == 'volatility_breakout' and direction == 'long':
-        hh = (eb.evidence.price_breakout.ref or {}).get('hh'); entry, sl, tp, note = _retest_entry('long', float(hh) if hh is not None else price_now)
-    elif direction == 'long':
-        risk = max(1e-9, entry - sl)
-        reward = max(0.0, tp - entry)
-    else:
-        risk = max(1e-9, sl - entry)
-        reward = max(0.0, entry - tp)
-    return float(reward / risk) if risk > 0 else 0.0
+            return 0.0
+        return float(reward / risk) if risk > 0 else 0.0
+    except Exception:
+        return 0.0
 
 
 def _price(df: pd.DataFrame) -> float:
