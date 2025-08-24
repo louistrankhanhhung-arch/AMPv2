@@ -358,15 +358,49 @@ def decide(symbol: str,
 
     
     # Required confirmations per state
+    # Required confirmations
     req_ok = []
     miss_reasons: List[str] = []
-
-    # Compose the evidence dict access helper
-    def _ev(name: str) -> Any:
-        try:
-            return getattr(eb.evidence, name)
-        except Exception:
-            return None
+    
+    # price-action: ƯU TIÊN state trước, rồi mới tới direction
+    if state == 'reclaim':
+        ok = bool(eb.evidence.price_reclaim.ok)
+        req_ok.append(ok)
+        if not ok:
+            miss_reasons.append('price_reclaim')
+    elif direction == 'long':
+        ok = bool(eb.evidence.price_breakout.ok)
+        req_ok.append(ok)
+        if not ok:
+            miss_reasons.append('price_breakout')
+    elif direction == 'short':
+        ok = bool(eb.evidence.price_breakdown.ok)
+        req_ok.append(ok)
+        if not ok:
+            miss_reasons.append('price_breakdown')
+    else:
+        # không có yêu cầu price-action khi chưa xác định
+        pass
+    
+    # volume
+    vol_ok = bool(eb.evidence.volume.ok)
+    req_ok.append(vol_ok)
+    if not vol_ok:
+        # khuyến nghị đổi 'volume_ok' -> 'volume' để thống nhất tên
+        miss_reasons.append('volume')
+    
+    # trend alignment
+    tr_ok = bool(eb.evidence.trend.ok)
+    req_ok.append(tr_ok)
+    if not tr_ok:
+        miss_reasons.append('trend_alignment')
+    
+        # Compose the evidence dict access helper
+        def _ev(name: str) -> Any:
+            try:
+                return getattr(eb.evidence, name)
+            except Exception:
+                return None
 
     req_keys = REQUIRED_BY_STATE.get(state, [])
     for k in req_keys:
