@@ -192,19 +192,13 @@ def _protective_sl(levels: Dict[str, Any], ref_level: float, atr: float, side: s
 
 
 def _rr(direction: str, entry: float, sl: float, tp: float) -> float:
-    """Pure RR calculator. Do not reference outer scope/state here."""
-    try:
-        if direction == 'long':
-            risk = max(1e-9, entry - sl)
-            reward = max(0.0, tp - entry)
-        elif direction == 'short':
-            risk = max(1e-9, sl - entry)
-            reward = max(0.0, entry - tp)
-        else:
-            return 0.0
-        return float(reward / risk) if risk > 0 else 0.0
-    except Exception:
-        return 0.0
+    if direction == 'long':
+        risk = max(1e-9, entry - sl)
+        reward = max(0.0, tp - entry)
+    else:
+        risk = max(1e-9, sl - entry)
+        reward = max(0.0, entry - tp)
+    return float(reward / risk) if risk > 0 else 0.0
 
 
 def _price(df: pd.DataFrame) -> float:
@@ -250,15 +244,17 @@ def decide(symbol: str,
     miss_reasons: List[str] = []
 
     # price-action
-    if direction == 'long':
-        req_ok.append(eb.evidence.price_breakout.ok)
-        if not eb.evidence.price_breakout.ok: miss_reasons.append('price_breakout')
-    elif direction == 'short':
-        req_ok.append(eb.evidence.price_breakdown.ok)
-        if not eb.evidence.price_breakdown.ok: miss_reasons.append('price_breakdown')
-    elif state == 'reclaim':
+    if state == 'reclaim':
         req_ok.append(eb.evidence.price_reclaim.ok)
         if not eb.evidence.price_reclaim.ok: miss_reasons.append('price_reclaim')
+    elif state == 'breakout' or direction == 'long':
+        req_ok.append(eb.evidence.price_breakout.ok)
+        if not eb.evidence.price_breakout.ok: miss_reasons.append('price_breakout')
+    elif state == 'breakdown' or direction == 'short':
+        req_ok.append(eb.evidence.price_breakdown.ok)
+        if not eb.evidence.price_breakdown.ok: miss_reasons.append('price_breakdown')
+    else:
+        pass
 
     # volume
     vol_ok = bool(eb.evidence.volume.ok)
