@@ -252,20 +252,194 @@ def ev_pullback_valid(df: pd.DataFrame, swings: Dict[str, Any], atr: float, mom:
         return {"ok": bool(ok), "why": "pullback_ok" if ok else "pullback_not_ok", "retrace_pct": round(retr,3), "rsi_ok": bool(rsi<50), "vol_contracting": bool(contracting), "confirm_candle": bool(bear), "zone": zone, "fallback_zone": fzone}
     return {"ok": False, "why": "insufficient_swings"}
 
+
+# --------------------------------------------------------------------------------------
+# 4b) Additional evidences for EARLY recognition
+# --------------------------------------------------------------------------------------
+
+def ev_mean_reversion(df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Early mean-reversion: BB% extreme + RSI extreme.
+    Returns side: long if oversold, short if overbought.
+    Expects columns: bb_percent, rsi14, atr14, close.
+    """
+    try:
+        pct_bb = float(df['bb_percent'].iloc[-1])
+        rsi = float(df['rsi14'].iloc[-1])
+        atr = float(df['atr14'].iloc[-1]) if 'atr14' in df.columns else 0.0
+    except Exception:
+        return {"ok": False, "why": "missing_bb_or_rsi"}
+    long_ok = (pct_bb <= 5.0) and (rsi <= 25.0)
+    short_ok = (pct_bb >= 95.0) and (rsi >= 75.0)
+    if long_ok:
+        return {"ok": True, "score": 0.8, "why": f"bb%={pct_bb:.1f}|rsi={rsi:.1f}", "side": "long", "ref": {"atr": atr}}
+    if short_ok:
+        return {"ok": True, "score": 0.8, "why": f"bb%={pct_bb:.1f}|rsi={rsi:.1f}", "side": "short", "ref": {"atr": atr}}
+    return {"ok": False, "why": f"bb%={pct_bb:.1f}|rsi={rsi:.1f}"}
+
+
+def ev_false_breakout(df: pd.DataFrame, swings: Dict[str, Any], atr: float, cfg: TFThresholds) -> Dict[str, Any]:
+    """Breakout fake: price pokes above HH but closes back inside; weak follow-through volume."""
+    hh = _last_swing(swings, 'HH')
+    if hh is None or atr <= 0:
+        return {"ok": False, "why": "no_HH_or_atr"}
+    # use previous fully closed bar as "poke", last-1
+    if len(df) < 3:
+        return {"ok": False, "why": "insufficient_bars"}
+    poke = df.iloc[-3]; last = _get_last_closed_bar(df)
+    broke = bool(poke['high'] > (hh + cfg.break_buffer_atr * atr))
+    failed = bool(last['close'] <= hh and last['high'] > hh)
+    # weak vol on break; or reversal vol grows
+    vol_break = float(poke.get('volume', 0.0))
+    vs20 = float(df['vol_sma20'].iloc[-1]) if 'vol_sma20' in df.columns else max(1.0, df['volume'].tail(20).mean())
+    weak = vol_break < vs20
+    ok = broke and failed and weak
+    return {"ok": bool(ok), "score": 0.8 if ok else 0.0, "why": "poke>HH_then_close_inside|weak_vol" if ok else "no_fakeout", "side": "short", "ref": {"hh": hh}}
+
+
+def ev_false_breakdown(df: pd.DataFrame, swings: Dict[str, Any], atr: float, cfg: TFThresholds) -> Dict[str, Any]:
+    """Breakdown fake: price pokes below LL but closes back inside; weak follow-through volume."""
+    ll = _last_swing(swings, 'LL')
+    if ll is None or atr <= 0:
+        return {"ok": False, "why": "no_LL_or_atr"}
+    if len(df) < 3:
+        return {"ok": False, "why": "insufficient_bars"}
+    poke = df.iloc[-3]; last = _get_last_closed_bar(df)
+    broke = bool(poke['low'] < (ll - cfg.break_buffer_atr * atr))
+    failed = bool(last['close'] >= ll and last['low'] < ll)
+    vol_break = float(poke.get('volume', 0.0))
+    vs20 = float(df['vol_sma20'].iloc[-1]) if 'vol_sma20' in df.columns else max(1.0, df['volume'].tail(20).mean())
+    weak = vol_break < vs20
+    ok = broke and failed and weak
+    return {"ok": bool(ok), "score": 0.8 if ok else 0.0, "why": "poke<LL_then_close_inside|weak_vol" if ok else "no_fakeout", "side": "long", "ref": {"ll": ll}}
+
+
+def ev_trend_follow_ready(df: pd.DataFrame, momentum: Dict[str, Any], trend: Dict[str, Any], side: str) -> Dict[str, Any]:
+    """
+    Direct trend-follow readiness using: EMA20 vs EMA50, BB%, RSI.
+    side ∈ {'long','short'}
+    """
+    try:
+        e20 = float(df['ema20'].iloc[-1]); e50 = float(df['ema50'].iloc[-1])
+        pct_bb = float(df['bb_percent'].iloc[-1]) if 'bb_percent' in df.columns else 50.0
+        rsi = float(momentum.get('rsi', 50.0))
+        st = trend.get('state')
+    except Exception:
+        return {"ok": False, "why": "missing_inputs", "side": side}
+    if side == 'long':
+        ok = (st == 'up') and (e20 > e50) and (pct_bb >= 70.0) and (rsi >= 55.0)
+    else:
+        ok = (st == 'down') and (e20 < e50) and (pct_bb <= 30.0) and (rsi <= 45.0)
+    return {"ok": bool(ok), "score": 0.8 if ok else 0.0, "why": f"trend={st}|ema20{'> ' if e20>e50 else '<='}ema50|bb%={pct_bb:.1f}|rsi={rsi:.1f}", "side": side}
+
+
+def ev_rejection(df: pd.DataFrame, swings: Dict[str, Any], atr: float) -> Dict[str, Any]:
+    """Strong wick rejection near HH/LL with wick ratio ≥ 60% of bar range."""
+    if atr <= 0 or df is None or len(df) < 2:
+        return {"ok": False, "why": "invalid_input"}
+    last = _get_last_closed_bar(df)
+    hh = _last_swing(swings, 'HH'); ll = _last_swing(swings, 'LL')
+    prox = 0.2 * atr
+    out = {"ok": False, "why": "no_rejection"}
+    # upper rejection near HH
+    if hh is not None and abs(float(last['high']) - hh) <= prox:
+        rng = max(1e-9, float(last['high']) - float(last['low']))
+        upper = float(last['high']) - float(last['close'])
+        if (upper / rng) >= 0.6:
+            return {"ok": True, "score": 0.8, "why": "upper_wick_reject@HH", "side": "short", "ref": {"hh": hh}}
+    # lower rejection near LL
+    if ll is not None and abs(float(last['low']) - ll) <= prox:
+        rng = max(1e-9, float(last['high']) - float(last['low']))
+        lower = float(last['close']) - float(last['low'])
+        if (lower / rng) >= 0.6:
+            return {"ok": True, "score": 0.8, "why": "lower_wick_reject@LL", "side": "long", "ref": {"ll": ll}}
+    return out
+
+
+def ev_divergence_updown(momentum: Dict[str, Any]) -> Dict[str, Any]:
+    """Map momentum.divergence → bullish/bearish divergence with side."""
+    div = momentum.get('divergence', 'none')
+    if div == 'bullish':
+        return {"ok": True, "score": 0.7, "why": "bullish_divergence", "side": "long"}
+    if div == 'bearish':
+        return {"ok": True, "score": 0.7, "why": "bearish_divergence", "side": "short"}
+    return {"ok": False, "why": "no_divergence"}
+
+
+def ev_compression_ready(bbw_last: float, bbw_med: float, atr_last: float) -> Dict[str, Any]:
+    """Compression (squeeze) pre-break: BBW below median + ATR not rising."""
+    squeeze = bool(bbw_last <= bbw_med)
+    low_atr = bool(atr_last <= max(1e-9, atr_last))  # treat as low unless rising (placeholder)
+    ok = squeeze and low_atr
+    return {"ok": ok, "score": 0.6 if ok else 0.0, "why": "squeeze" if ok else "no_squeeze"}
+
+
+def ev_volatility_breakout(vol: Dict[str, Any], bbw_last: float, bbw_med: float, atr_last: float) -> Dict[str, Any]:
+    """Volatility breakout: BB expanding + volume explosive + ATR rising."""
+    vr = float(vol.get('vol_ratio', 1.0)); vz = float(vol.get('vol_z20', 0.0))
+    bb_expand = bool(bbw_last > bbw_med)
+    explosive = (vr >= 2.0) or (vz >= 2.0)
+    atr_rising = bool(atr_last > 0.0)
+    ok = bb_expand and explosive and atr_rising
+    score = 1.0 if ok and ((vr >= 3.0) or (vz >= 3.0)) else (0.8 if ok else 0.0)
+    why = []
+    if bb_expand: why.append("bb_expand")
+    if explosive: why.append("vol_explosive")
+    if atr_rising: why.append("atr_rising")
+    return {"ok": ok, "score": round(score,3), "why": "|".join(why) if why else "weak"}
+
 # --------------------------------------------------------------------------------------
 # 5) State inference (priority) and bundle assembly
 # --------------------------------------------------------------------------------------
 
+
 def infer_state(evs: Dict[str, Any]) -> Tuple[str, float, str]:
+    # Base evidences
     pb = evs.get('price_breakout', {"ok": False, "score": 0.0})
     pdn = evs.get('price_breakdown', {"ok": False, "score": 0.0})
     prc = evs.get('price_reclaim', {"ok": False, "score": 0.0})
     sdw = evs.get('sideways', {"ok": False, "score": 0.0})
-    if pb.get('ok'): return 'breakout', float(pb.get('score', 0.0)), 'price_breakout'
-    if pdn.get('ok'): return 'breakdown', float(pdn.get('score', 0.0)), 'price_breakdown'
-    if prc.get('ok'): return 'reclaim', float(prc.get('score', 0.0)), 'price_reclaim'
-    if sdw.get('ok'): return 'sideways', float(sdw.get('score', 0.0)), 'sideways'
+    # New evidences
+    fk_up = evs.get('false_breakout', {"ok": False, "score": 0.0})
+    fk_dn = evs.get('false_breakdown', {"ok": False, "score": 0.0})
+    volb = evs.get('volatility_breakout', {"ok": False, "score": 0.0})
+    tb = evs.get('throwback', {"ok": False, "score": 0.0})
+    pbk = evs.get('pullback', {"ok": False, "score": 0.0})
+    tf_up = evs.get('trend_follow_up', {"ok": False, "score": 0.0})
+    tf_dn = evs.get('trend_follow_down', {"ok": False, "score": 0.0})
+    mr = evs.get('mean_reversion', {"ok": False, "score": 0.0})
+    div = evs.get('divergence', {"ok": False, "score": 0.0})
+    rjt = evs.get('rejection', {"ok": False, "score": 0.0})
+    cmp = evs.get('compression_ready', {"ok": False, "score": 0.0})
+
+    # Priority:
+    # 1) Fakeouts
+    if fk_up.get('ok'): return 'false_breakout', float(fk_up.get('score', 0.0)), 'false_breakout'
+    if fk_dn.get('ok'): return 'false_breakdown', float(fk_dn.get('score', 0.0)), 'false_breakdown'
+    # 2) Volatility breakout
+    if volb.get('ok'):  return 'volatility_breakout', float(volb.get('score', 0.0)), 'volatility_breakout'
+    # 3) Breakout/breakdown
+    if pb.get('ok'):    return 'breakout', float(pb.get('score', 0.0)), 'price_breakout'
+    if pdn.get('ok'):   return 'breakdown', float(pdn.get('score', 0.0)), 'price_breakdown'
+    # 4) Reclaim
+    if prc.get('ok'):   return 'reclaim', float(prc.get('score', 0.0)), 'price_reclaim'
+    # 5) Trend-follow pullback -> direct trend-follow
+    if pbk.get('ok') and (tf_up.get('ok') or tf_dn.get('ok')):
+        return 'trend_follow_pullback', float(pbk.get('score', 0.0)), 'pullback'
+    if tf_up.get('ok'): return 'trend_follow_up', float(tf_up.get('score', 0.0)), 'trend_follow_up'
+    if tf_dn.get('ok'): return 'trend_follow_down', float(tf_dn.get('score', 0.0)), 'trend_follow_down'
+    # 6) Mean reversion -> divergence up/down -> rejection
+    if mr.get('ok'):    return 'mean_reversion', float(mr.get('score', 0.0)), 'mean_reversion'
+    if div.get('ok'):
+        side = div.get('side')
+        if side == 'long':  return 'divergence_up', float(div.get('score', 0.0)), 'divergence_up'
+        if side == 'short': return 'divergence_down', float(div.get('score', 0.0)), 'divergence_down'
+    if rjt.get('ok'):   return 'rejection', float(rjt.get('score', 0.0)), 'rejection'
+    # 7) Sideways -> compression ready
+    if sdw.get('ok'):   return 'sideways', float(sdw.get('score', 0.0)), 'sideways'
+    if cmp.get('ok'):   return 'compression_ready', float(cmp.get('score', 0.0)), 'compression_ready'
     return 'undefined', 0.0, ''
+
 
 
 def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]], cfg: Config) -> Dict[str, Any]:
