@@ -565,17 +565,17 @@ def decide(symbol: str,
         sl = _ensure_sl_gap(entry, sl, atr, side=direction, rules=rules)
         
     if direction and entry is not None and sl is not None and tp is not None and atr > 0:
-    rr = _rr(direction, entry, sl, tp)
-    # clamp RR to avoid unrealistically large values
-    if rr is not None and rr > rules.rr_max:
-        rr = float(rules.rr_max)
+        rr = _rr(direction, entry, sl, tp)
+        # clamp RR to avoid unrealistically large values
+        if rr is not None and rr > rules.rr_max:
+            rr = float(rules.rr_max)
     proximity_ok = (abs(price_now - entry) <= rules.retest_zone_atr * atr)
 
     # trend-follow secondary entry (EMA20/BB mid)
     if direction and 'entry2' in locals() and entry2 is not None and sl is not None and tp is not None and atr > 0:
-    rr2 = _rr(direction, float(entry2), sl, tp)
-    if rr2 is not None and rr2 > rules.rr_max:
-        rr2 = float(rules.rr_max)
+        rr2 = _rr(direction, float(entry2), sl, tp)
+        if rr2 is not None and rr2 > rules.rr_max:
+            rr2 = float(rules.rr_max)
     proximity_ok2 = (abs(price_now - float(entry2)) <= rules.proximity_atr * atr)
 
 
