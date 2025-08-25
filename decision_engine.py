@@ -575,11 +575,15 @@ def decide(symbol: str,
     proximity_ok = (abs(price_now - entry) <= rules.retest_zone_atr * atr)
 
     # trend-follow secondary entry (EMA20/BB mid)
-    if direction and 'entry2' in locals() and entry2 is not None and sl is not None and tp is not None and atr > 0:
-        rr2 = _rr(direction, float(entry2), sl, tp)
+    rr2 = None
+    proximity_ok2 = False
+    e2 = locals().get('entry2', None)
+    if direction and e2 is not None and isinstance(e2, (int, float)) and sl is not None and tp is not None and atr > 0:
+        e2f = float(e2)
+        rr2 = _rr(direction, e2f, sl, tp)
         if rr2 is not None and rr2 > rules.rr_max:
             rr2 = float(rules.rr_max)
-    proximity_ok2 = (abs(price_now - float(entry2)) <= rules.proximity_atr * atr)
+        proximity_ok2 = (abs(price_now - e2f) <= rules.proximity_atr * atr)
 
 
 
