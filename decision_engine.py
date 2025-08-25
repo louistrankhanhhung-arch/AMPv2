@@ -564,21 +564,20 @@ def decide(symbol: str,
     if direction and entry is not None and sl is not None and atr > 0:
         sl = _ensure_sl_gap(entry, sl, atr, side=direction, rules=rules)
     # Compute RR & proximity for primary/secondary entries (if present)
-    if entry is not None and sl is not None and atr > 0:
-        sl = _ensure_sl_gap(entry, sl, atr, side=direction, rules=rules)
-        
-    if direction and entry is not None and sl is not None and tp is not None and atr > 0:
-        rr = _rr(direction, entry, sl, tp)
-        # clamp RR to avoid unrealistically large values
+    rr = None
+    proximity_ok = False
+    if direction and isinstance(entry, (int, float)) and sl is not None and tp is not None and atr > 0:
+        e1f = float(entry)
+        rr = _rr(direction, e1f, sl, tp)
         if rr is not None and rr > rules.rr_max:
             rr = float(rules.rr_max)
-    proximity_ok = (abs(price_now - entry) <= rules.retest_zone_atr * atr)
+        proximity_ok = (abs(price_now - e1f) <= rules.retest_zone_atr * atr)
 
     # trend-follow secondary entry (EMA20/BB mid)
     rr2 = None
     proximity_ok2 = False
     e2 = locals().get('entry2', None)
-    if direction and e2 is not None and isinstance(e2, (int, float)) and sl is not None and tp is not None and atr > 0:
+    if direction and isinstance(e2, (int, float)) and sl is not None and tp is not None and atr > 0:
         e2f = float(e2)
         rr2 = _rr(direction, e2f, sl, tp)
         if rr2 is not None and rr2 > rules.rr_max:
