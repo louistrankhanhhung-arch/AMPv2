@@ -105,7 +105,20 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
 
     # decide on 1H as primary TF
     t4 = time.time()
-    out = decide(symbol, "1H", feats_by_tf, bundle)
+    try:
+        out = decide(symbol, "1H", feats_by_tf, bundle)
+    except Exception as e:
+        log.exception(f"[{symbol}] decide failed: {e}")
+        # Fallback để tiếp tục vòng lặp, không làm gãy block
+        out = {
+            "symbol": symbol,
+            "decision": "AVOID",
+            "state": None,
+            "plan": {},
+            "logs": {"AVOID": {"reasons": ["internal_error"]}},
+        }
+        print(json.dumps(out, ensure_ascii=False), flush=True)
+        return
     elapsed_dec = time.time() - t4
     total_time = time.time() - t0
     dec = out.get("decision")
