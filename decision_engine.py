@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -118,6 +120,7 @@ class PlanOut(BaseModel):
     entry: Optional[float] = None
     sl: Optional[float] = None
     tp: Optional[float] = None
+    tps: List[float] | None = None   # NEW
     rr: Optional[confloat(ge=0)] = None  # type: ignore
     # Optional secondary entry for trend-follow (EMA20/BB mid pullback)
     entry2: Optional[float] = None
@@ -617,12 +620,13 @@ def decide(symbol: str,
                 miss_reasons.append('rr_min')
 
     # Build plan out
+    _tps = (tps if 'tps' in locals() and tps else ([] if tp is None else [tp]))
     plan = PlanOut(
         direction=direction,
         entry=_smart_round(entry) if isinstance(entry, (int,float)) else None,
         sl=_smart_round(sl) if isinstance(sl, (int,float)) else None,
         tp=_smart_round(tp) if isinstance(tp, (int,float)) else None,
-        "tps": [ _smart_round(x) for x in (tps or ([] if tp is None else [tp])) ],
+        tps=[_smart_round(x) for x in _tps],
         rr=round(rr, 3) if isinstance(rr, (int,float)) else None,
         entry2=_smart_round(entry2) if 'entry2' in locals() and isinstance(entry2, (int,float)) else None,
         rr2=round(rr2, 3) if isinstance(rr2, (int,float)) else None,
