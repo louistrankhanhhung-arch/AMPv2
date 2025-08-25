@@ -150,6 +150,7 @@ class DecisionOut(BaseModel):
 @dataclass
 class DecisionRules:
     rr_min: float = 1.5
+    rr_max: float = 7.0            # chặn RR ảo
     rr_avoid: float = 1.2
     proximity_atr: float = 0.3  # price must be within 0.3*ATR of entry to ENTER
     vol_z_hot: float = 3.0
@@ -160,7 +161,8 @@ class DecisionRules:
     retest_pad_atr: float = 0.05      # small pad above/below level for retest entry
     retest_zone_atr: float = 0.15     # acceptable distance from price to retest entry to consider ENTER
     trend_break_buf_atr: float = 0.20 # trend-follow Entry1 uses break of nearest swing with this buffer
-
+    sl_min_atr: float = 0.35       # SL tối thiểu = 0.35*ATR
+    tp_ladder_n: int = 3           # số bậc TP
 
 # =====================================================
 # 2.5) State mapping helpers (new trade types)
@@ -273,6 +275,43 @@ def _rr(direction: str, entry: float, sl: float, tp: float) -> float:
 
 def _price(df: pd.DataFrame) -> float:
     return float(df['close'].iloc[-1])
+
+# --- Helpers: enforce SL gap & build TP ladder ---
+def _ensure_sl_gap(entry: float, sl: float, atr: float, side: str, rules: DecisionRules) -> float:
+    """Đảm bảo khoảng cách SL tối thiểu theo ATR; giữ đúng phía."""
+    min_gap = max(1e-9, rules.sl_min_atr * atr)
+    if not np.isfinite(entry) or not np.isfinite(sl) or atr <= 0:
+        return sl
+    if side == 'long':
+        gap = entry - sl
+        return float(entry - min_gap) if gap < min_gap else float(sl)
+    else:
+        gap = sl - entry
+        return float(entry + min_gap) if gap < min_gap else float(sl)
+
+def _tp_ladder(levels: Dict[str, Any], entry: float, side: str, atr: float, n: int = 3) -> List[float]:
+    """Chọn n TP: ưu tiên band forward; nếu thiếu, bù bằng ATR multiples."""
+    bands = levels.get('bands_up' if side == 'long' else 'bands_down') or []
+    fwd = []
+    for b in bands:
+        tp = float(b.get('tp', np.nan))
+        if np.isfinite(tp):
+            if (side == 'long' and tp > entry) or (side == 'short' and tp < entry):
+                fwd.append(tp)
+    fwd = sorted(fwd, key=lambda x: abs(x - entry))
+    tps = fwd[:n]
+    # backfill bằng ATR nếu thiếu
+    if atr > 0 and len(tps) < n:
+        mults = [1.0, 1.5, 2.0, 2.5]
+        for m in mults:
+            tp = entry + (m * atr if side == 'long' else -m * atr)
+            if all(abs(tp - x) > 1e-6 for x in tps):
+                tps.append(float(tp))
+            if len(tps) >= n:
+                break
+    # đảm bảo đơn điệu theo hướng
+    tps = sorted(tps, reverse=(side == 'short'))
+    return tps[:n]
 
 # =====================================================
 # 4) Core decision
@@ -409,7 +448,8 @@ def decide(symbol: str,
         if side == 'long':
             e = float(ref + pad)         # enter slightly above reclaimed level
             s = _protective_sl(levels, ref_level=ref, atr=atr, side='long')
-            t = _nearest_band_tp(levels, price_now, side='long')
+            tps = _tp_ladder(levels, entry if entry is not None else price_now, side='long', atr=atr, n=rules.tp_ladder_n)
+            t = tps[0] if tps else None
             return e, s, t, "retest_of_level"
         else:
             e = float(ref - pad)
@@ -516,15 +556,28 @@ def decide(symbol: str,
     else:
         # state undefined/sideways -> no explicit plan
         pass
-
+      
+    # Enforce minimal SL gap before RR calc
+    if direction and entry is not None and sl is not None and atr > 0:
+        sl = _ensure_sl_gap(entry, sl, atr, side=direction, rules=rules)
     # Compute RR & proximity for primary/secondary entries (if present)
+    if entry is not None and sl is not None and atr > 0:
+        sl = _ensure_sl_gap(entry, sl, atr, side=direction, rules=rules)
+        
     if direction and entry is not None and sl is not None and tp is not None and atr > 0:
-        rr = _rr(direction, entry, sl, tp)
-        proximity_ok = (abs(price_now - entry) <= rules.retest_zone_atr * atr)
+    rr = _rr(direction, entry, sl, tp)
+    # clamp RR to avoid unrealistically large values
+    if rr is not None and rr > rules.rr_max:
+        rr = float(rules.rr_max)
+    proximity_ok = (abs(price_now - entry) <= rules.retest_zone_atr * atr)
+
     # trend-follow secondary entry (EMA20/BB mid)
     if direction and 'entry2' in locals() and entry2 is not None and sl is not None and tp is not None and atr > 0:
-        rr2 = _rr(direction, float(entry2), sl, tp)
-        proximity_ok2 = (abs(price_now - float(entry2)) <= rules.proximity_atr * atr)
+    rr2 = _rr(direction, float(entry2), sl, tp)
+    if rr2 is not None and rr2 > rules.rr_max:
+        rr2 = float(rules.rr_max)
+    proximity_ok2 = (abs(price_now - float(entry2)) <= rules.proximity_atr * atr)
+
 
 
 
@@ -569,6 +622,7 @@ def decide(symbol: str,
         entry=_smart_round(entry) if isinstance(entry, (int,float)) else None,
         sl=_smart_round(sl) if isinstance(sl, (int,float)) else None,
         tp=_smart_round(tp) if isinstance(tp, (int,float)) else None,
+        "tps": [ _smart_round(x) for x in (tps or ([] if tp is None else [tp])) ],
         rr=round(rr, 3) if isinstance(rr, (int,float)) else None,
         entry2=_smart_round(entry2) if 'entry2' in locals() and isinstance(entry2, (int,float)) else None,
         rr2=round(rr2, 3) if isinstance(rr2, (int,float)) else None,
