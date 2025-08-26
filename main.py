@@ -2,8 +2,8 @@
 """
 Main worker for Crypto Signal (Railway ready)
 
-- Splits symbols into 4 blocks and scans every hour:
-  block1 at :00, block2 at :05, block3 at :10, block4 at :15 (Asia/Ho_Chi_Minh)
+- Splits symbols into 4 blocks and scans twice per hour:
+  block1 at :00 & :30, block2 at :05 & :35, block3 at :10 & :40, block4 at :15 & :45 (Asia/Ho_Chi_Minh)
 - Workflow per symbol:
   1) fetch OHLCV for 1H/4H/1D (1H drop partial bar; 4H/1D keep realtime)
   2) enrich indicators (EMA/RSI/BB/ATR/volume, candle anatomy)
@@ -38,7 +38,8 @@ def split_into_4_blocks(symbols: List[str]) -> List[List[str]]:
     return [symbols[i::4] for i in range(4)]
 
 def which_block_for_minute(minute: int):
-    mapping = {0:0, 5:1, 10:2, 15:3}
+    # Twice per hour schedule
+    mapping = {0:0, 5:1, 10:2, 15:3, 30:0, 35:1, 40:2, 45:3}
     return mapping.get(minute % 60)
 
 def send_telegram(text: str):
@@ -200,13 +201,17 @@ def loop_scheduler():
         return
 
     log.info(f"Universe size={len(symbols)}; block sizes={[len(b) for b in blocks]}")
-    log.info("Schedule each hour: block0 at :00, block1 at :05, block2 at :10, block3 at :15 (Asia/Ho_Chi_Minh)")
+    log.info("Schedule each hour: block0 at :00 & :30, block1 at :05 & :35, "
+             "block2 at :10 & :40, block3 at :15 & :45 (Asia/Ho_Chi_Minh)")
+ 
 
     last_tick = None
     while True:
         now = datetime.now(TZ)
         blk = which_block_for_minute(now.minute)
-        tick_key = (now.year, now.month, now.day, now.hour, blk)
+        # Include half-hour slot so each block can run twice per hour
+        half = 0 if now.minute < 30 else 1
+        tick_key = (now.year, now.month, now.day, now.hour, half, blk)
         if blk is not None and tick_key != last_tick and now.second < 10:
             last_tick = tick_key
             run_block(blk, blocks[blk], cfg, limit, ex=shared_ex)
