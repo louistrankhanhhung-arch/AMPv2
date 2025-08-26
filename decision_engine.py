@@ -836,6 +836,6 @@ out = DecisionOut(
         headline=headline,
     )
     
-    return out.model_dump() if hasattr(out, 'model_dump') else out.__dict__
+return out.model_dump() if hasattr(out, 'model_dump') else out.__dict__
 
 
