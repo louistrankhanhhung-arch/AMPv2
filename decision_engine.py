@@ -116,15 +116,22 @@ class EvidenceBundleIn(BaseModel):
 # Strict output
 class PlanOut(BaseModel):
     direction: Optional[str] = Field(None, description="long/short or None")
-    # Primary entry (retest for breakout/breakdown; break for trend-follow)
     entry: Optional[float] = None
     sl: Optional[float] = None
-    tp: Optional[float] = None
-    tps: List[float] | None = None   # NEW
-    rr: Optional[confloat(ge=0)] = None  # type: ignore
-    # Optional secondary entry for trend-follow (EMA20/BB mid pullback)
+    tp: Optional[float] = None           # legacy = TP2
+    rr: Optional[confloat(ge=0)] = None  # legacy RR at TP2
+
+    # --- NEW: layered targets ---
+    tp1: Optional[float] = None
+    tp2: Optional[float] = None
+    tp3: Optional[float] = None
+    rr1: Optional[confloat(ge=0)] = None
+    rr2: Optional[confloat(ge=0)] = None
+    rr3: Optional[confloat(ge=0)] = None
+
+    # Secondary entry (giữ nguyên)
     entry2: Optional[float] = None
-    rr2: Optional[confloat(ge=0)] = None  # type: ignore
+    # Lưu ý: rr2 ở trên dùng cho layered; RR của entry2 (EMA/BB mid) nếu bạn cần thì đặt tên khác (vd: rr_entry2)
     note: Optional[str] = None
     model_config = ConfigDict(extra="forbid")
 
@@ -155,17 +162,23 @@ class DecisionRules:
     rr_min: float = 1.5
     rr_max: float = 7.0            # chặn RR ảo
     rr_avoid: float = 1.2
-    proximity_atr: float = 0.3  # price must be within 0.3*ATR of entry to ENTER
+    proximity_atr: float = 0.5  # price must be within 0.5*ATR of entry to ENTER (sửa 0.3 -> 0.5)
     vol_z_hot: float = 3.0
     rsi_overbought: float = 80.0
     rsi_oversold: float = 20.0
     hvn_avoid_atr: float = 0.3  # if heavy zone within 0.3*ATR → avoid
     # --- New: entry setup tuning ---
     retest_pad_atr: float = 0.05      # small pad above/below level for retest entry
-    retest_zone_atr: float = 0.15     # acceptable distance from price to retest entry to consider ENTER
-    trend_break_buf_atr: float = 0.20 # trend-follow Entry1 uses break of nearest swing with this buffer
+    retest_zone_atr: float = 0.30     # acceptable distance from price to retest entry to consider ENTER (sửa 0.3 -> 0.5)
+    trend_break_buf_atr: float = 0.10 # trend-follow Entry1 uses break of nearest swing with this buffer (sửa 0.2 -> 0.1)
     sl_min_atr: float = 0.35       # SL tối thiểu = 0.35*ATR
     tp_ladder_n: int = 3           # số bậc TP
+    # SL pads by setup type (A/B testable)
+    sl_pad_breakout_atr: float = 0.5
+    sl_pad_reclaim_atr: float = 0.5
+    sl_pad_trend_follow_atr: float = 0.6
+    sl_pad_mean_reversion_atr: float = 1.2
+
 
 # =====================================================
 # 2.5) State mapping helpers (new trade types)
@@ -243,9 +256,52 @@ def _nearest_band_tp(levels: Dict[str, Any], price: float, side: str) -> Optiona
     buckets = sorted(buckets, key=lambda b: b.get('score', 0), reverse=True)
     return float(buckets[0]['tp']) if buckets else None
 
+def _layered_tps(levels: Dict[str, Any], side: str, ref_price: float, entry: float, atr: float) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """
+    Chọn tối đa 3 TP theo hướng (forward) tính từ ENTRY.
+    Ưu tiên band sẵn có; nếu thiếu thì fallback về bội số ATR [1.0, 2.0, 3.0] từ ENTRY.
+    Trả về (tp1, tp2, tp3).
+    """
+    try:
+        buckets = levels.get('bands_up' if side == 'long' else 'bands_down') or []
+        forward = []
+        for b in buckets:
+            tpv = float(b.get('tp', float('nan')))
+            if not np.isfinite(tpv):
+                continue
+            if (side == 'long' and tpv > entry) or (side == 'short' and tpv < entry):
+                forward.append(tpv)
+        forward = sorted(set(forward), key=lambda x: abs(x - entry))
+        chosen = forward[:3]
 
-def _protective_sl(levels: Dict[str, Any], ref_level: float, atr: float, side: str) -> Optional[float]:
-    pad = 0.3 * atr
+        # fallback nếu thiếu band
+        multiples = [1.0, 2.0, 3.0]
+        i = 0
+        while len(chosen) < 3 and atr > 0 and i < len(multiples):
+            m = multiples[i]
+            if side == 'long':
+                cand = float(entry + m * atr)
+                chosen.append(cand)
+            else:
+                cand = float(entry - m * atr)
+                chosen.append(cand)
+            i += 1
+
+        # sắp theo thứ tự thực thi (tăng dần cho long, giảm dần cho short)
+        if side == 'long':
+            chosen = sorted(chosen)[:3]
+        else:
+            chosen = sorted(chosen, reverse=True)[:3]
+
+        # pad về đủ 3 phần tử
+        while len(chosen) < 3:
+            chosen.append(None)
+        return tuple(chosen[:3])
+    except Exception:
+        return None, None, None
+
+def _protective_sl(levels: Dict[str, Any], ref_level: float, atr: float, side: str, pad_atr: float = 0.3) -> Optional[float]:
+    pad = float(pad_atr) * atr
     if side == 'long':
         # SL a bit below lower of the band containing ref_level if available
         for b in levels.get('bands_up', []) + levels.get('bands_down', []):
@@ -403,7 +459,7 @@ def decide(symbol: str,
         elif direction == 'short':
             req_keys = ['price_breakdown', 'volume', 'trend']
     # Chỉ giữ các key thực sự tồn tại trong EvidenceIn hiện tại
-    req_keys = [k for k in req_keys if hasattr(eb.evidence, k)]
+    req_keys = [k for k in req_keys if getattr(eb.evidence, k, None) is not None]
 
     for k in req_keys:
         item = _ev(k)
@@ -439,26 +495,25 @@ def decide(symbol: str,
     sl: Optional[float] = None
     tp: Optional[float] = None
     rr: Optional[float] = None
-    rr2: Optional[float] = None
+    rr_entry2: Optional[float] = None
     proximity_ok = False
     proximity_ok2 = False
 
 # Helper to build a retest entry around a reference level
-    def _retest_entry(side: str, ref: float) -> Tuple[Optional[float], Optional[float], Optional[float], str]:
-        if not np.isfinite(ref) or atr <= 0:
-            return None, None, None, ""
-        pad = rules.retest_pad_atr * atr
-        if side == 'long':
-            e = float(ref + pad)         # enter slightly above reclaimed level
-            s = _protective_sl(levels, ref_level=ref, atr=atr, side='long')
-            tps = _tp_ladder(levels, entry if entry is not None else price_now, side='long', atr=atr, n=rules.tp_ladder_n)
-            t = tps[0] if tps else None
-            return e, s, t, "retest_of_level"
-        else:
-            e = float(ref - pad)
-            s = _protective_sl(levels, ref_level=ref, atr=atr, side='short')
-            t = _nearest_band_tp(levels, price_now, side='short')
-            return e, s, t, "retest_of_level"
+    def _retest_entry(side: str, ref: float, sl_pad_atr: float) -> Tuple[Optional[float], Optional[float], Optional[float], str]:
+    if not np.isfinite(ref) or atr <= 0:
+        return None, None, None, ""
+    pad = rules.retest_pad_atr * atr
+    if side == 'long':
+        e = float(ref + pad)
+        s = _protective_sl(levels, ref_level=ref, atr=atr, side='long', pad_atr=sl_pad_atr)
+        t = _nearest_band_tp(levels, price_now, side='long')  # TP sẽ bị layered sau
+        return e, s, t, "retest_of_level"
+    else:
+        e = float(ref - pad)
+        s = _protective_sl(levels, ref_level=ref, atr=atr, side='short', pad_atr=sl_pad_atr)
+        t = _nearest_band_tp(levels, price_now, side='short')
+        return e, s, t, "retest_of_level"
 
     # Helper to build trend-follow entries (Entry1: break nearest swing; Entry2: EMA20/BB mid)
     def _trend_follow_entries(side: str) -> Tuple[Optional[float], Optional[float]]:
@@ -486,24 +541,39 @@ def decide(symbol: str,
     # Build plan according to state with new setups
     if state == 'throwback_long' and direction == 'long':
         hh = (eb.evidence.price_breakout.ref or {}).get('hh') if hasattr(eb.evidence, 'price_breakout') else None
-        entry, sl, tp, note = _retest_entry('long', float(hh) if hh is not None else price_now)
+        entry, sl, tp, note = _retest_entry('long', ref_value, rules.sl_pad_breakout_atr)
     elif state == 'trend_follow_pullback' and direction == 'long':
         # Prefer EMA20/BB mid zone from pullback evidence if available
         z = ((eb.evidence.__dict__.get('pullback') or {}).get('zone') if hasattr(eb.evidence, '__dict__') else None)
         if z and isinstance(z, (list, tuple)):
-            entry = float((z[0] + z[1]) / 2.0); sl = _protective_sl(levels, ref_level=z[0], atr=atr, side='long'); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'pullback_zone_entry'
+            entry = float((z[0] + z[1]) / 2.0); sl = _protective_sl(levels, ref_level=z[0], atr=atr, side='long', pad_atr=rules.sl_pad_trend_follow_atr)
+            piv = float(entry) if entry is not None else price_now
+            tp = _nearest_band_tp(levels, piv, side='long')
+            note = 'pullback_zone_entry'
         else:
-            e1, e2 = _trend_follow_entries('long'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='long'); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'trend_follow_pullback_fallback'
+            e1, e2 = _trend_follow_entries('long'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='long', pad_atr=rules.sl_pad_trend_follow_atr)
+            piv = float(entry) if entry is not None else price_now
+            tp  = _nearest_band_tp(levels, piv, side='long')
+            note = 'trend_follow_pullback_fallback'
     elif state == 'false_breakout' and direction == 'short':
         ll = (eb.evidence.price_breakdown.ref or {}).get('ll') if hasattr(eb.evidence, 'price_breakdown') else None
         ref = ll if ll is not None else float(df1['low'].iloc[-2])
-        entry, sl, tp, note = _retest_entry('short', float(ref))
+        entry, sl, tp, note = _retest_entry('short', ref_value, rules.sl_pad_breakout_atr)
     elif state == 'mean_reversion' and direction == 'long':
-        ref = float(df1['low'].iloc[-2]); entry = price_now; sl = float(ref - 0.2*atr); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'mean_reversion_rebound'
+        ref = float(df1['low'].iloc[-2]); entry = price_now; sl = float(ref - rules.sl_pad_mean_reversion_atr*atr)
+        piv = float(entry) if entry is not None else price_now
+        tp = _nearest_band_tp(levels, piv, side='long')
+        note = 'mean_reversion_rebound'
     elif state == 'rejection' and direction == 'long':
-        ref = float(df1['low'].iloc[-2]); entry = price_now; sl = float(ref - 0.2*atr); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'rejection_long'
+        ref = float(df1['low'].iloc[-2]); entry = price_now; sl = float(ref - rules.sl_pad_mean_reversion_atr*atr)
+        piv = float(entry) if entry is not None else price_now
+        tp = _nearest_band_tp(levels, piv, side='long')
+        note = 'rejection_long'
     elif state == 'divergence_up' and direction == 'long':
-        e1, e2 = _trend_follow_entries('long'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='long'); tp = _nearest_band_tp(levels, price_now, side='long'); note = 'divergence_break_entry'
+        e1, e2 = _trend_follow_entries('long'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='long', pad_atr=rules.sl_pad_trend_follow_atr)
+        piv = float(entry) if entry is not None else price_now
+        tp = _nearest_band_tp(levels, piv, side='long')
+        note = 'divergence_break_entry'
     elif state == 'volatility_breakout' and direction == 'long':
         hh = (eb.evidence.price_breakout.ref or {}).get('hh'); entry, sl, tp, note = _retest_entry('long', float(hh) if hh is not None else price_now)
     elif direction == 'long':
@@ -518,8 +588,9 @@ def decide(symbol: str,
             e1, e2 = _trend_follow_entries('long')
             entry, entry2 = e1, e2
             if entry is not None:
-                sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr), atr=atr, side='long')
-                tp = _nearest_band_tp(levels, price_now, side='long')
+                sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr), atr=atr, side='long', pad_atr=rules.sl_pad_trend_follow_atr)
+                piv = float(entry) if entry is not None else price_now
+                tp = _nearest_band_tp(levels, piv, side='long')
                 note = "trend_follow: break + ema20/bb_mid"
     elif state == 'throwback_short' and direction == 'short':
         ll = (eb.evidence.price_breakdown.ref or {}).get('ll') if hasattr(eb.evidence, 'price_breakdown') else None
@@ -527,19 +598,31 @@ def decide(symbol: str,
     elif state == 'trend_follow_pullback' and direction == 'short':
         z = ((eb.evidence.__dict__.get('pullback') or {}).get('zone') if hasattr(eb.evidence, '__dict__') else None)
         if z and isinstance(z, (list, tuple)):
-            entry = float((z[0] + z[1]) / 2.0); sl = _protective_sl(levels, ref_level=z[1], atr=atr, side='short'); tp = _nearest_band_tp(levels, price_now, side='short'); note = 'pullback_zone_entry'
+            entry = float((z[0] + z[1]) / 2.0); sl = _protective_sl(levels, ref_level=z[1], atr=atr, side='short', pad_atr=rules.sl_pad_trend_follow_atr) 
+            piv = float(entry) if entry is not None else price_now
+            tp  = _nearest_band_tp(levels, piv, side='short')
+            note = 'pullback_zone_entry'
         else:
-            e1, e2 = _trend_follow_entries('short'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry + rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='short'); tp = _nearest_band_tp(levels, price_now, side='short'); note = 'trend_follow_pullback_fallback'
+            e1, e2 = _trend_follow_entries('short'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry + rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='short', pad_atr=rules.sl_pad_trend_follow_atr); tp = _nearest_band_tp(levels, price_now, side='short'); note = 'trend_follow_pullback_fallback'
     elif state == 'false_breakdown' and direction == 'long':
         hh = (eb.evidence.price_breakout.ref or {}).get('hh') if hasattr(eb.evidence, 'price_breakout') else None
         ref = hh if hh is not None else float(df1['high'].iloc[-2])
         entry, sl, tp, note = _retest_entry('long', float(ref))
     elif state == 'mean_reversion' and direction == 'short':
-        ref = float(df1['high'].iloc[-2]); entry = price_now; sl = float(ref + 0.2*atr); tp = _nearest_band_tp(levels, price_now, side='short'); note = 'mean_reversion_snapback'
+        ref = float(df1['high'].iloc[-2]); entry = price_now; sl = float(ref + rules.sl_pad_mean_reversion_atr*atr)
+        piv = float(entry) if entry is not None else price_now
+        tp  = _nearest_band_tp(levels, piv, side='short')
+        note = 'mean_reversion_snapback'
     elif state == 'rejection' and direction == 'short':
-        ref = float(df1['high'].iloc[-2]); entry = price_now; sl = float(ref + 0.2*atr); tp = _nearest_band_tp(levels, price_now, side='short'); note = 'rejection_short'
+        ref = float(df1['high'].iloc[-2]); entry = price_now; sl = float(ref + rules.sl_pad_mean_reversion_atr*atr)
+        piv = float(entry) if entry is not None else price_now
+        tp  = _nearest_band_tp(levels, piv, side='short')
+        note = 'rejection_short'
     elif state == 'divergence_down' and direction == 'short':
-        e1, e2 = _trend_follow_entries('short'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry + rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='short'); tp = _nearest_band_tp(levels, price_now, side='short'); note = 'divergence_break_entry'
+        e1, e2 = _trend_follow_entries('short'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry + rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='short', pad_atr=rules.sl_pad_trend_follow_atr); 
+        piv = float(entry) if entry is not None else price_now
+        tp  = _nearest_band_tp(levels, piv, side='short')
+        note = 'divergence_break_entry'
     elif state == 'volatility_breakout' and direction == 'short':
         ll = (eb.evidence.price_breakdown.ref or {}).get('ll'); entry, sl, tp, note = _retest_entry('short', float(ll) if ll is not None else price_now)
     elif direction == 'short':
@@ -553,8 +636,9 @@ def decide(symbol: str,
             e1, e2 = _trend_follow_entries('short')
             entry, entry2 = e1, e2
             if entry is not None:
-                sl = _protective_sl(levels, ref_level=(entry + rules.trend_break_buf_atr*atr), atr=atr, side='short')
-                tp = _nearest_band_tp(levels, price_now, side='short')
+                sl = _protective_sl(levels, ref_level=(entry + rules.trend_break_buf_atr*atr), atr=atr, side='short', pad_atr=rules.sl_pad_trend_follow_atr)
+                piv = float(entry) if entry is not None else price_now
+                tp  = _nearest_band_tp(levels, piv, side='short')
                 note = "trend_follow: break + ema20/bb_mid"
     else:
         # state undefined/sideways -> no explicit plan
@@ -564,6 +648,22 @@ def decide(symbol: str,
     if direction and entry is not None and sl is not None and atr > 0:
         sl = _ensure_sl_gap(entry, sl, atr, side=direction, rules=rules)
     # Compute RR & proximity for primary/secondary entries (if present)
+    # Build layered TP targets (tp1/tp2/tp3) relative to ENTRY (không dùng price_now)
+    tp1 = tp2 = tp3 = None
+    if direction and atr > 0:
+        piv = float(entry) if entry is not None else float(price_now)
+        t1, t2, t3 = _layered_tps(levels, direction, ref_price=price_now, entry=piv, atr=atr)
+    
+        # Gán legacy tp = TP2 (ưu tiên), nếu thiếu thì TP1/TP3
+        if t2 is not None:
+            tp = float(t2)
+        elif t1 is not None:
+            tp = float(t1)
+        elif t3 is not None:
+            tp = float(t3)
+    
+        tp1, tp2, tp3 = t1, t2, t3
+
     rr = None
     proximity_ok = False
     if direction and isinstance(entry, (int, float)) and sl is not None and tp is not None and atr > 0:
@@ -574,18 +674,15 @@ def decide(symbol: str,
         proximity_ok = (abs(price_now - e1f) <= rules.retest_zone_atr * atr)
 
     # trend-follow secondary entry (EMA20/BB mid)
-    rr2 = None
+    rr_entry2 = None
     proximity_ok2 = False
     e2 = locals().get('entry2', None)
     if direction and isinstance(e2, (int, float)) and sl is not None and tp is not None and atr > 0:
         e2f = float(e2)
-        rr2 = _rr(direction, e2f, sl, tp)
-        if rr2 is not None and rr2 > rules.rr_max:
-            rr2 = float(rules.rr_max)
+        rr_entry2 = _rr(direction, e2f, sl, tp)
+        if rr_entry2 is not None and rr_entry2 > rules.rr_max:
+            rr_entry2 = float(rules.rr_max)
         proximity_ok2 = (abs(price_now - e2f) <= rules.proximity_atr * atr)
-
-
-
 
     # AVOID conditions
     rsi = float(f1.get('momentum', {}).get('rsi', 50.0))
@@ -611,7 +708,7 @@ def decide(symbol: str,
         decision = 'AVOID'
     else:
         any_prox = proximity_ok or proximity_ok2
-        rr_ok_any = (rr is not None and rr >= rules.rr_min) or (rr2 is not None and rr2 >= rules.rr_min)
+        rr_ok_any = (rr is not None and rr >= rules.rr_min) or (rr_entry2 is not None and rr_entry2 >= rules.rr_min)
         if all(req_ok) and any_prox and rr_ok_any:
             decision = 'ENTER'
         else:
@@ -625,16 +722,20 @@ def decide(symbol: str,
     # Build plan out
     _tps = (tps if 'tps' in locals() and tps else ([] if tp is None else [tp]))
     plan = PlanOut(
-        direction=direction,
-        entry=_smart_round(entry) if isinstance(entry, (int,float)) else None,
-        sl=_smart_round(sl) if isinstance(sl, (int,float)) else None,
-        tp=_smart_round(tp) if isinstance(tp, (int,float)) else None,
-        tps=[_smart_round(x) for x in _tps],
-        rr=round(rr, 3) if isinstance(rr, (int,float)) else None,
-        entry2=_smart_round(entry2) if 'entry2' in locals() and isinstance(entry2, (int,float)) else None,
-        rr2=round(rr2, 3) if isinstance(rr2, (int,float)) else None,
-        note=note or None,
-    )
+    direction=direction,
+    entry=_smart_round(entry) if isinstance(entry, (int,float)) else None,
+    sl=_smart_round(sl) if isinstance(sl, (int,float)) else None,
+    tp=_smart_round(tp) if isinstance(tp, (int,float)) else None,     # legacy = TP2
+    rr=round(rr, 3) if isinstance(rr, (int,float)) else None,         # legacy RR at TP (TP2)
+    tp1=_smart_round(tp1) if isinstance(tp1, (int,float)) else None,
+    tp2=_smart_round(tp2) if isinstance(tp2, (int,float)) else None,
+    tp3=_smart_round(tp3) if isinstance(tp3, (int,float)) else None,
+    rr1=round(rr1, 3) if 'rr1' in locals() and isinstance(rr1, (int,float)) else None,
+    rr2=round(rr2, 3) if isinstance(rr2, (int,float)) else None,
+    rr3=round(rr3, 3) if 'rr3' in locals() and isinstance(rr3, (int,float)) else None,
+    entry2=_smart_round(entry2) if 'entry2' in locals() and isinstance(entry2, (int,float)) else None,
+    note=note or None,
+)
 
     # Logs for three buckets
     logs = LogsOut(
@@ -643,7 +744,7 @@ def decide(symbol: str,
             'proximity_ok_primary': proximity_ok,
             'proximity_ok_secondary': proximity_ok2,
             'rr_ok_primary': (rr is not None and rr >= rules.rr_min),
-            'rr_ok_secondary': (rr2 is not None and rr2 >= rules.rr_min),
+            'rr_ok_secondary': (rr_entry2 is not None and rr_entry2 >= rules.rr_min),
             'plan': plan.model_dump() if hasattr(plan, 'model_dump') else plan.__dict__,
         },
         WAIT={
@@ -659,7 +760,7 @@ def decide(symbol: str,
             'divergence': div,
             'vol_z20': vz,
             'rr': rr,
-            'rr2': rr2,
+            'rr_entry2': rr_entry2,
         },
     )
 
