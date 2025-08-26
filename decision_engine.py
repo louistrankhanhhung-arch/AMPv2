@@ -473,13 +473,13 @@ def decide(symbol: str,
         req_ok = [pr_ok, (vol_ok_tmp or mom_ok_tmp or cdl_ok_tmp)]
         miss_reasons.extend([k for ok,k in [(not pr_ok,'price_reclaim'), (not (vol_ok_tmp or mom_ok_tmp or cdl_ok_tmp),'volume|momentum|candles')] if ok])
     else:
-    for k in req_keys:
-        item = _ev(k)
-        ok_flag = bool(getattr(item, 'ok', False)) if item is not None else False
-        req_ok.append(ok_flag)
-        if not ok_flag:
-            # Chuẩn hoá tên thiếu cho volume
-            miss_reasons.append('volume' if k == 'volume' else k)
+        for k in req_keys:
+            ev = _ev(k)
+            if ev is None:
+                miss_reasons.append(k)
+                continue
+            if not getattr(ev, 'ok', False):
+                miss_reasons.append(k)
 
     # Optional/guards (không phải required)
     vol_ok = bool(getattr(eb.evidence.volume, 'ok', False))
