@@ -25,8 +25,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-from dataclasses import dataclass
-from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -169,7 +167,7 @@ class DecisionRules:
     hvn_avoid_atr: float = 0.3  # if heavy zone within 0.3*ATR → avoid
     # --- New: entry setup tuning ---
     retest_pad_atr: float = 0.05      # small pad above/below level for retest entry
-    retest_zone_atr: float = 0.30     # acceptable distance from price to retest entry to consider ENTER (sửa 0.3 -> 0.5)
+    retest_zone_atr: float = 0.30     # acceptable distance from price to retest entry to consider ENTER (sửa 0.15 -> 0.3)
     trend_break_buf_atr: float = 0.10 # trend-follow Entry1 uses break of nearest swing with this buffer (sửa 0.2 -> 0.1)
     sl_min_atr: float = 0.35       # SL tối thiểu = 0.35*ATR
     tp_ladder_n: int = 3           # số bậc TP
@@ -472,20 +470,9 @@ def decide(symbol: str,
     # Optional/guards (không phải required)
     vol_ok = bool(getattr(eb.evidence.volume, 'ok', False))
     tr_ok = bool(getattr(eb.evidence.trend, 'ok', False))
-    mom_ok = bool(getattr(eb.evidence.momentum.primary, 'ok', False))
+    mom_ok = bool(getattr(getattr(eb.evidence, 'momentum', None), 'primary', None).ok) if getattr(eb.evidence, 'momentum', None) else False
     cdl_ok = bool(getattr(eb.evidence.candles, 'ok', False))
     liq_ok = bool(getattr(eb.evidence.liquidity, 'ok', False))
-
-    # Generic guards used across strategies
-    vol_ok = bool(getattr(eb.evidence.volume, 'ok', False))
-    tr_ok = bool(getattr(eb.evidence.trend, 'ok', False))
-    mom_ok = bool(getattr(eb.evidence.momentum.primary, 'ok', False))
-    cdl_ok = bool(getattr(eb.evidence.candles, 'ok', False))
-    liq_ok = bool(getattr(eb.evidence.liquidity, 'ok', False))
-    
-    mom_ok = bool(eb.evidence.momentum.primary.ok)
-    cdl_ok = bool(eb.evidence.candles.ok)
-    liq_ok = bool(eb.evidence.liquidity.ok)
 
     # Candidate entry plan (revised setups)
     note = ""
@@ -731,7 +718,6 @@ def decide(symbol: str,
                 miss_reasons.append('rr_min')
 
     # Build plan out
-    _tps = (tps if 'tps' in locals() and tps else ([] if tp is None else [tp]))
     plan = PlanOut(
     direction=direction,
     entry=_smart_round(entry) if isinstance(entry, (int,float)) else None,
@@ -777,20 +763,29 @@ def decide(symbol: str,
 
     # Telegram signal when ENTER (include both entries if applicable)
     telegram_signal = None
-    if decision == 'ENTER' and direction and plan.sl is not None and plan.tp is not None and (plan.entry is not None or plan.entry2 is not None):
-        strategy = state.capitalize()
+    telegram_signal = None
+    if decision == 'ENTER' and direction and plan.sl is not None and (plan.entry is not None or plan.entry2 is not None):
+        # Đưa đủ TP1/TP2/TP3 (fallback về tp legacy nếu thiếu)
+        strategy = state.replace('_', ' ').title()
         entry_lines = []
         if plan.entry is not None:
             entry_lines.append(f"Entry: {plan.entry}")
         if plan.entry2 is not None:
             entry_lines.append(f"Entry2: {plan.entry2}")
+        tp_lines = []
+        if plan.tp1 is not None: tp_lines.append(f"TP1: {plan.tp1}")
+        if plan.tp2 is not None: tp_lines.append(f"TP2: {plan.tp2}")
+        if plan.tp3 is not None: tp_lines.append(f"TP3: {plan.tp3}")
+        if not tp_lines and plan.tp is not None:
+            tp_lines.append(f"TP: {plan.tp}")
         entries_text = "\n".join(entry_lines) if entry_lines else ""
+        tps_text = "\n".join(tp_lines) if tp_lines else ""
         telegram_signal = (
             f"{direction.upper()} | {symbol}\n"
             f"Strategy: {strategy} ({timeframe})\n"
             f"{entries_text}\n"
             f"SL: {plan.sl}\n"
-            f"TP: {plan.tp}"
+            f"{tps_text}"
         )
     
     out = DecisionOut(
