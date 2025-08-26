@@ -823,7 +823,7 @@ def decide(symbol: str,
         f"entry={plan.entry} entry2={plan.entry2} sl={plan.sl} "
         f"{_tp_text} rr={(plan.rr if plan.rr is not None else plan.rr2)}"
     )
-out = DecisionOut(
+    out = DecisionOut(
         symbol=symbol,
         timeframe=timeframe,
         asof=evidence_bundle.get('asof'),
@@ -833,9 +833,9 @@ out = DecisionOut(
         plan=plan,
         logs=logs,
         telegram_signal=telegram_signal,
-        headline=headline,
     )
-    
-return out.model_dump() if hasattr(out, 'model_dump') else out.__dict__
+
+    return out.model_dump() if hasattr(out, 'model_dump') else out.__dict__
+
 
 
