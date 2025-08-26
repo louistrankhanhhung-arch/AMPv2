@@ -125,11 +125,40 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     state = out.get("state")
     plan = out.get("plan") or {}
     log.info(f"[{symbol}] decide done in {elapsed_dec:.2f}s; total {total_time:.2f}s")
-    log.info(
-        f"[{symbol}] DECISION={dec} | STATE={state} | "
-        f"entry={plan.get('entry')} entry2={plan.get('entry2')} "
-        f"sl={plan.get('sl')} tp={plan.get('tp')} rr={plan.get('rr')} rr2={plan.get('rr2')}"
-    )
+   # Prefer concise headline from decision_engine if available (already includes DIR/TP ladder)
+    headline = out.get("headline")
+    if headline:
+        log.info(headline)
+    else:
+        # Build TP ladder + RR ladder + direction
+        dir_val = (plan.get("direction") or plan.get("dir") or "-")
+        # Backward compatible: if only single tp/rr exists, map to TP1/RR1
+        tp1 = plan.get("tp1", plan.get("tp"))
+        tp2 = plan.get("tp2")
+        tp3 = plan.get("tp3")
+        rr1 = plan.get("rr1", plan.get("rr"))
+        rr2 = plan.get("rr2")
+        rr3 = plan.get("rr3")
+
+        tp_parts = []
+        if tp1 is not None: tp_parts.append(f"TP1={tp1}")
+        if tp2 is not None: tp_parts.append(f"TP2={tp2}")
+        if tp3 is not None: tp_parts.append(f"TP3={tp3}")
+        rr_parts = []
+        if rr1 is not None: rr_parts.append(f"RR1={rr1}")
+        if rr2 is not None: rr_parts.append(f"RR2={rr2}")
+        if rr3 is not None: rr_parts.append(f"RR3={rr3}")
+
+        tp_str = " ".join(tp_parts)
+        rr_str = " ".join(rr_parts)
+
+        log.info(
+            f"[{symbol}] DECISION={dec} | STATE={state} | "
+            f"DIR={str(dir_val).upper()} | "
+            f"entry={plan.get('entry')} entry2={plan.get('entry2')} "
+            f"sl={plan.get('sl')} "
+            f"{(tp_str + ' ' + rr_str).strip()}".strip()
+        )
     if dec == "WAIT":
         miss = (out.get("logs", {}).get("WAIT", {}).get("missing"))
         log.info(f"[{symbol}] WAIT missing={miss}")
