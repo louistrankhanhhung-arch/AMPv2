@@ -167,13 +167,13 @@ class DecisionRules:
     hvn_avoid_atr: float = 0.3  # if heavy zone within 0.3*ATR → avoid
     # --- New: entry setup tuning ---
     retest_pad_atr: float = 0.05      # small pad above/below level for retest entry
-    retest_zone_atr: float = 0.30     # acceptable distance from price to retest entry to consider ENTER (sửa 0.15 -> 0.3)
+    retest_zone_atr: float = 0.50     # acceptable distance from price to retest entry to consider ENTER (sửa 0.15 -> 0.3)
     trend_break_buf_atr: float = 0.10 # trend-follow Entry1 uses break of nearest swing with this buffer (sửa 0.2 -> 0.1)
-    sl_min_atr: float = 0.35       # SL tối thiểu = 0.35*ATR
+    sl_min_atr: float = 0.5       # SL tối thiểu = 0.5*ATR
     tp_ladder_n: int = 3           # số bậc TP
     # SL pads by setup type (A/B testable)
     sl_pad_breakout_atr: float = 0.5
-    sl_pad_reclaim_atr: float = 0.5
+    sl_pad_reclaim_atr: float = 0.8
     sl_pad_trend_follow_atr: float = 0.6
     sl_pad_mean_reversion_atr: float = 1.2
 
@@ -494,12 +494,13 @@ def decide(symbol: str,
         if side == 'long':
             e = float(ref + pad)
             s = _protective_sl(levels, ref_level=ref, atr=atr, side='long', pad_atr=sl_pad_atr)
-            t = _nearest_band_tp(levels, price_now, side='long')  # TP sẽ được layered sau
+            # chọn TP theo ENTRY pivot (đúng hướng RR ngay cả khi chưa layer)
+            t = _nearest_band_tp(levels, e, side='long')
             return e, s, t, "retest_of_level"
         else:
             e = float(ref - pad)
             s = _protective_sl(levels, ref_level=ref, atr=atr, side='short', pad_atr=sl_pad_atr)
-            t = _nearest_band_tp(levels, price_now, side='short')
+            t = _nearest_band_tp(levels, e, side='short')
             return e, s, t, "retest_of_level"
 
     # Helper to build trend-follow entries (Entry1: break nearest swing; Entry2: EMA20/BB mid)
@@ -750,6 +751,13 @@ def decide(symbol: str,
             'momentum_ok': mom_ok,
             'candles_ok': cdl_ok,
             'liquidity_ok': liq_ok,
+            # plan_preview giúp debug khi WAIT: thấy rõ TP1/TP2/TP3 & SL
+            'plan_preview': {
+                'direction': plan.direction,
+                'entry': plan.entry, 'sl': plan.sl,
+                'tp1': plan.tp1, 'tp2': plan.tp2, 'tp3': plan.tp3,
+                'rr1': plan.rr1, 'rr2': plan.rr2, 'rr3': plan.rr3
+            },
         },
         AVOID={
             'reasons': avoid_reasons,
@@ -762,7 +770,6 @@ def decide(symbol: str,
     )
 
     # Telegram signal when ENTER (include both entries if applicable)
-    telegram_signal = None
     telegram_signal = None
     if decision == 'ENTER' and direction and plan.sl is not None and (plan.entry is not None or plan.entry2 is not None):
         # Đưa đủ TP1/TP2/TP3 (fallback về tp legacy nếu thiếu)
