@@ -149,6 +149,8 @@ class DecisionOut(BaseModel):
     plan: PlanOut
     logs: LogsOut
     telegram_signal: Optional[str] = None
+    
+    headline: Optional[str] = None
     model_config = ConfigDict(extra="forbid")
 
 # =====================================================
@@ -168,6 +170,7 @@ class DecisionRules:
     # --- New: entry setup tuning ---
     retest_pad_atr: float = 0.05      # small pad above/below level for retest entry
     retest_zone_atr: float = 0.50     # acceptable distance from price to retest entry to consider ENTER (sửa 0.15 -> 0.3)
+    retest_zone_atr_reclaim: float = 0.80  # looser proximity for 'reclaim' setups
     trend_break_buf_atr: float = 0.10 # trend-follow Entry1 uses break of nearest swing with this buffer (sửa 0.2 -> 0.1)
     sl_min_atr: float = 0.5       # SL tối thiểu = 0.5*ATR
     tp_ladder_n: int = 3           # số bậc TP
@@ -459,6 +462,17 @@ def decide(symbol: str,
     # Chỉ giữ các key thực sự tồn tại trong EvidenceIn hiện tại
     req_keys = [k for k in req_keys if getattr(eb.evidence, k, None) is not None]
 
+    # Special-case: for 'reclaim', allow (volume OR momentum OR candles)
+    if state == 'reclaim':
+        # price_reclaim must exist; second condition is OR over volume/momentum/candles
+        pr_ok = bool(getattr(_ev('price_reclaim'), 'ok', False))
+        vol_ok_tmp = bool(getattr(_ev('volume'), 'ok', False))
+        mom_ok_tmp = bool(getattr(_ev('momentum'), 'ok', False))
+        cdl_ok_tmp = bool(getattr(_ev('candles'), 'ok', False))
+        # Build req_ok as [price_reclaim, any_of_three]
+        req_ok = [pr_ok, (vol_ok_tmp or mom_ok_tmp or cdl_ok_tmp)]
+        miss_reasons.extend([k for ok,k in [(not pr_ok,'price_reclaim'), (not (vol_ok_tmp or mom_ok_tmp or cdl_ok_tmp),'volume|momentum|candles')] if ok])
+    else:
     for k in req_keys:
         item = _ev(k)
         ok_flag = bool(getattr(item, 'ok', False)) if item is not None else False
@@ -670,7 +684,8 @@ def decide(symbol: str,
         if isinstance(rr3, (int, float)) and rr3 > rules.rr_max: rr3 = float(rules.rr_max)
         # legacy rr = ưu tiên TP2, rồi TP1, rồi TP3
         rr = rr2 if rr2 is not None else (rr1 if rr1 is not None else rr3)
-        proximity_ok = (abs(price_now - e1f) <= rules.retest_zone_atr * atr)
+        prox_mult = getattr(rules, 'retest_zone_atr_reclaim', rules.retest_zone_atr) if state == 'reclaim' else rules.retest_zone_atr
+        proximity_ok = (abs(price_now - e1f) <= prox_mult * atr)
 
     # trend-follow secondary entry (EMA20/BB mid)
     rr_entry2 = None
@@ -754,6 +769,7 @@ def decide(symbol: str,
             # plan_preview giúp debug khi WAIT: thấy rõ TP1/TP2/TP3 & SL
             'plan_preview': {
                 'direction': plan.direction,
+                'direction': plan.direction,
                 'entry': plan.entry, 'sl': plan.sl,
                 'tp1': plan.tp1, 'tp2': plan.tp2, 'tp3': plan.tp3,
                 'rr1': plan.rr1, 'rr2': plan.rr2, 'rr3': plan.rr3
@@ -795,7 +811,19 @@ def decide(symbol: str,
             f"{tps_text}"
         )
     
-    out = DecisionOut(
+    
+    # Compose a short headline for logging (includes direction and TP ladder)
+    _tp_parts = []
+    if plan.tp1 is not None: _tp_parts.append(f"TP1={plan.tp1}")
+    if plan.tp2 is not None: _tp_parts.append(f"TP2={plan.tp2}")
+    if plan.tp3 is not None: _tp_parts.append(f"TP3={plan.tp3}")
+    _tp_text = " ".join(_tp_parts) if _tp_parts else (f"TP={plan.tp}" if plan.tp is not None else "")
+    headline = (
+        f"DECISION={decision} | STATE={state} | DIR={(plan.direction or '-').upper()} | "
+        f"entry={plan.entry} entry2={plan.entry2} sl={plan.sl} "
+        f"{_tp_text} rr={(plan.rr if plan.rr is not None else plan.rr2)}"
+    )
+out = DecisionOut(
         symbol=symbol,
         timeframe=timeframe,
         asof=evidence_bundle.get('asof'),
@@ -805,7 +833,9 @@ def decide(symbol: str,
         plan=plan,
         logs=logs,
         telegram_signal=telegram_signal,
+        headline=headline,
     )
     
     return out.model_dump() if hasattr(out, 'model_dump') else out.__dict__
+
 
