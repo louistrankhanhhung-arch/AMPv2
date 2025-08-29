@@ -26,12 +26,29 @@ from feature_primitives import compute_features_by_tf
 from evidence_evaluators import build_evidence_bundle, Config
 from decision_engine import decide
 
+import asyncio
+from notifier_telegram import TelegramNotifier
+
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 TIMEFRAMES = ("1H", "4H", "1D")
 
 log = logging.getLogger("worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
                     format="%(asctime)s %(levelname)s %(message)s")
+
+# --- Telegram Teaser Notifier (init-once, lazy) ---
+TN = None
+def _get_notifier():
+    """Create TelegramNotifier once; return False if init failed."""
+    global TN
+    if TN is None:
+        try:
+            TN = TelegramNotifier()
+        except Exception as e:
+            log.warning(f"TelegramNotifier init failed; disabled. reason={e}")
+            TN = False
+    return TN
+# --- end telegram notifier helper ---
 
 def split_into_4_blocks(symbols: List[str]) -> List[List[str]]:
     """Stable split: [s[0], s[4], ...], [s[1], s[5], ...], ..."""
@@ -168,6 +185,23 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
         log.info(f"[{symbol}] AVOID reasons={reasons}")
 
     # log JSON line
+    # --- post teaser to Telegram Channel when ENTER ---
+    if dec == "ENTER":
+        tn = _get_notifier()
+        if tn:
+            try:
+                plan_for_teaser = dict(plan or {})
+                plan_for_teaser.update({
+                    "symbol": symbol,
+                    "DIRECTION": (plan.get("direction") or plan.get("dir") or "-").upper() if isinstance(plan, dict) else "-",
+                    "STATE": state,
+                    "notes": out.get("notes", []),
+                })
+                asyncio.run(tn.post_teaser(plan_for_teaser))
+            except Exception as e:
+                log.warning(f"[{symbol}] teaser post failed: {e}")
+    # --- end teaser post ---
+
     print(json.dumps(out, ensure_ascii=False), flush=True)
     if out.get("telegram_signal"):
         send_telegram(out["telegram_signal"])
