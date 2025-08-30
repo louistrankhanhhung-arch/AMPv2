@@ -24,12 +24,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id
         uname = update.effective_user.username or ""
         if users.is_plus_active(uid):
-            full = signals.get_full(signal_id)
-            if not full:
-                await update.message.reply_text("Xin lỗi, tín hiệu đã hết hạn cache.", quote=True)
-                return
-            txt = render_full({"symbol": ""}, uname, watermark=False)  # dummy call to ensure import
-            txt = full
+            # Ưu tiên render từ PLAN (để watermark theo user). Fallback text nếu thiếu.
+            plan = signals.get_plan(signal_id)
+            if plan:
+                txt = render_full(plan, uname, watermark=WATERMARK)
+            else:
+                full = signals.get_full(signal_id)
+                if not full:
+                    await update.message.reply_text("Xin lỗi, tín hiệu đã hết hạn cache.", quote=True)
+                    return
+                txt = full
             await update.message.reply_text(txt, parse_mode="HTML", protect_content=PROTECT_CONTENT)
         else:
             await upsell(update, context)
