@@ -2,6 +2,8 @@
 import re
 from typing import Dict, Any, Tuple
 from templates import render_full
+from datetime import datetime, timezone, timedelta
+import math
 from storage import JsonStore, UserDB, SignalCache, PaymentDB
 from config import BOT_TOKEN, OWNER_IDS, DATA_DIR, BANK_INFO, PLAN_DEFAULT_MONTHS, PROTECT_CONTENT, WATERMARK
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
@@ -14,6 +16,19 @@ payments = PaymentDB(store)
 
 def is_owner(uid: int) -> bool:
     return uid in OWNER_IDS
+
+# ===== Helpers =====
+def _fmt_ts(ts: int) -> str:
+    if not ts:
+        return "—"
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+async def _notify_admins(context, text, reply_markup=None):
+    for aid in OWNER_IDS:
+        try:
+            await context.bot.send_message(chat_id=aid, text=text, parse_mode="HTML", reply_markup=reply_markup)
+        except Exception:
+            pass
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Lấy payload từ cả context.args và fallback từ text (khi client chỉ gửi /start)
@@ -130,20 +145,52 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     data = q.data or ""
     if data.startswith("paid"):
-        # data dạng "paid:<order_id>" (vẫn tương thích "paid" cũ)
+        # User xác nhận đã chuyển
         parts = data.split(":", 1)
         order_id = parts[1] if len(parts) == 2 else None
-        payments.add(
-            update.effective_user.id,
-            amount=None,
-            bank_ref=None,
-            months=PLAN_DEFAULT_MONTHS,
-            approved=False,
-            admin_id=None,
-            order_id=order_id,
-        )
+        uid = update.effective_user.id
+        uname = update.effective_user.username or "—"
+        payments.add(uid, amount=None, bank_ref=None, months=PLAN_DEFAULT_MONTHS,
+                     approved=False, admin_id=None, order_id=order_id)
         await q.answer("Đã ghi nhận. Admin sẽ duyệt trong ít phút.")
         await q.edit_message_reply_markup(None)
+
+        # Notify admin ngay với nút duyệt nhanh
+        mention = f'<a href="tg://user?id={uid}">{uname}</a>'
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Duyệt +30d", callback_data=f"admin_approve:{uid}:30:{order_id}")],
+            [InlineKeyboardButton("Duyệt +90d", callback_data=f"admin_approve:{uid}:90:{order_id}")],
+            [InlineKeyboardButton("Từ chối",    callback_data=f"admin_reject:{uid}:{order_id}")]
+        ])
+        txt = (f"📥 <b>Yêu cầu nâng cấp</b>\n"
+               f"• User: {mention} (id={uid})\n"
+               f"• Order: <code>{order_id or '—'}</code>\n"
+               f"• Thời điểm: {_fmt_ts(int(datetime.now().timestamp()))}")
+        await _notify_admins(context, txt, reply_markup=kb)
+        return
+    # Admin inline actions
+    if data.startswith("admin_"):
+        actor = q.from_user.id
+        if not is_owner(actor):
+            await q.answer("Chỉ admin.", show_alert=True); return
+        parts = data.split(":")
+        kind = parts[0]            # admin_approve / admin_reject
+        tgt  = int(parts[1])
+        if kind == "admin_approve":
+            days = int(parts[2])
+            # cộng ngày cho user
+            users.extend_days(tgt, days)
+            new_exp = users.get(tgt).get("expires_at", 0)
+            await q.edit_message_text(f"✅ Đã duyệt +{days}d cho {tgt}. HSD mới: {_fmt_ts(int(new_exp))}")
+            # báo cho user
+            try:
+                await context.bot.send_message(chat_id=tgt,
+                    text=f"🎉 PLUS đã được kích hoạt thêm {days} ngày. HSD mới: {_fmt_ts(int(new_exp))}")
+            except Exception:
+                pass
+        elif kind == "admin_reject":
+            await q.edit_message_text(f"❌ Đã đánh dấu từ chối cho user {tgt}.")
+        return
     elif data == "upgrade":
         await upsell(update, context)
     elif data == "show_latest":
@@ -205,13 +252,62 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def run_bot():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("approve", approve))
+    app.add_handler(CommandHandler("approve", approve))          # cũ, vẫn giữ nếu bạn dùng
+    # ===== Admin commands mới =====
+    app.add_handler(CommandHandler("plus_add", plus_add_cmd))
+    app.add_handler(CommandHandler("plus_remove", plus_remove_cmd))
+    app.add_handler(CommandHandler("plus_status", plus_status_cmd))
     app.add_handler(CommandHandler("upgrade", upsell))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("latest", latest))
     app.add_handler(CommandHandler("show", show_cmd))
     app.add_handler(CallbackQueryHandler(on_callback))
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
+
+# ===== Admin command handlers =====
+async def plus_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text("Chỉ admin."); return
+    try:
+        uid = int(context.args[0]); days = int(context.args[1])
+    except Exception:
+        await update.message.reply_text("Cách dùng: /plus_add <user_id> <số_ngày>"); return
+    users.extend_days(uid, days)
+    exp = users.get(uid).get("expires_at", 0)
+    await update.message.reply_text(f"✅ Đã cộng {days} ngày cho {uid}. HSD mới: {_fmt_ts(int(exp))}")
+    try:
+        await context.bot.send_message(chat_id=uid, text=f"🎉 PLUS đã kích hoạt thêm {days} ngày. HSD mới: {_fmt_ts(int(exp))}")
+    except Exception:
+        pass
+
+async def plus_remove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text("Chỉ admin."); return
+    try:
+        uid = int(context.args[0])
+    except Exception:
+        await update.message.reply_text("Cách dùng: /plus_remove <user_id>"); return
+    users.revoke(uid)
+    await update.message.reply_text(f"🧹 Đã gỡ PLUS của {uid}.")
+    try:
+        await context.bot.send_message(chat_id=uid, text="⚠️ PLUS của bạn đã bị gỡ bởi admin.")
+    except Exception:
+        pass
+
+async def plus_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text("Chỉ admin."); return
+    try:
+        uid = int(context.args[0])
+    except Exception:
+        await update.message.reply_text("Cách dùng: /plus_status <user_id>"); return
+    u = users.get(uid)
+    exp = int(u.get("expires_at", 0))
+    left = max(0, exp - int(datetime.now().timestamp()))
+    days_left = left // 86400
+    await update.message.reply_text(
+        f"👤 {uid}\n• HSD: {_fmt_ts(exp)}\n• Còn lại: {days_left} ngày\n• Trạng thái: {'ACTIVE' if users.is_plus_active(uid) else 'EXPIRED'}"
+    )
     
 if __name__ == "__main__":
     run_bot()
