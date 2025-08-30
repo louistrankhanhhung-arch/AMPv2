@@ -44,7 +44,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif payload.startswith("upgrade"):
         await upsell(update, context)
     else:
-        await update.message.reply_text("Chào mừng! Dùng /latest để xem tín hiệu mới nhất (nếu có Plus), hoặc /help.")
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Xem full mới nhất", callback_data="show_latest")],
+            [InlineKeyboardButton("Nâng cấp Plus", callback_data="upgrade")]
+        ])
+        await update.message.reply_text(
+            "Chào bạn!\n• Nếu bạn vừa bấm từ Channel mà không thấy paywall, hãy dùng các nút dưới đây.",
+            reply_markup=kb
+        )
 
 # New: /latest – xem tín hiệu mới nhất theo tier
 async def latest(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -116,7 +123,25 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         payments.add(update.effective_user.id, amount=None, bank_ref=None, months=PLAN_DEFAULT_MONTHS, approved=False, admin_id=None)
         await q.answer("Đã ghi nhận. Admin sẽ duyệt trong ít phút.")
         await q.edit_message_reply_markup(None)
-
+    elif data == "upgrade":
+        await upsell(update, context)
+    elif data == "show_latest":
+        # Giống lệnh /latest nhưng chạy qua callback
+        sid = signals.get_latest_id()
+        if not sid:
+            await q.answer("Chưa có tín hiệu nào.", show_alert=True)
+            return
+        uid = update.effective_user.id
+        if users.is_plus_active(uid):
+            uname = update.effective_user.username or ""
+            plan = signals.get_plan(sid)
+            if plan:
+                txt = render_full(plan, uname, watermark=WATERMARK)
+                await q.message.reply_text(txt, parse_mode="HTML", protect_content=PROTECT_CONTENT)
+            else:
+                await q.message.reply_text("Tín hiệu mới nhất đã hết hạn cache.")
+        else:
+            await upsell(update, context)
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id):
         return
@@ -160,6 +185,7 @@ def run_bot():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("approve", approve))
+    app.add_handler(CommandHandler("upgrade", upsell))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("latest", latest))
     app.add_handler(CommandHandler("show", show_cmd))
