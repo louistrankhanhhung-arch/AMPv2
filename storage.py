@@ -37,6 +37,15 @@ class JsonStore:
             os.replace(tmp, path)
 
 class UserDB:
+    def list_all(self) -> dict:
+        """Trả về dict {telegram_id: {...}}"""
+        return self.store.read("users")
+
+    def list_active(self) -> dict:
+        now = self._now()
+        users = self.store.read("users")
+        return {uid: u for uid, u in users.items() if int(u.get("expires_at", 0)) > now}
+
     def __init__(self, store: JsonStore):
         self.store = store
 
