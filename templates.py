@@ -61,12 +61,7 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
         
         f"<b>R:R:</b> {rr_txt}{hint}",
     ]
-if watermark and username:
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    lines.append(f"— sent to @{username} • {ts}")
-return "\n".join(lines)
 
-    ]
     if watermark and username:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         lines.append(f"— sent to @{username} • {ts}")
