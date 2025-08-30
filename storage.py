@@ -80,7 +80,17 @@ class PaymentDB:
     def __init__(self, store: JsonStore):
         self.store = store
 
-    def add(self, telegram_id: int, amount: int | None, bank_ref: str | None, months: int = 1, approved: bool = False, admin_id: int | None = None) -> str:
+    # thêm tham số order_id để truy vết
+    def add(
+        self,
+        telegram_id: int,
+        amount: int | None,
+        bank_ref: str | None,
+        months: int = 1,
+        approved: bool = False,
+        admin_id: int | None = None,
+        order_id: str | None = None,
+    ) -> str:
         payments = self.store.read("payments")
         pid = str(int(time.time())) + "-" + str(telegram_id)
         payments[pid] = {
@@ -90,6 +100,7 @@ class PaymentDB:
             "months": months,
             "approved": approved,
             "admin_id": admin_id,
+            "order_id": order_id,
             "created_at": int(time.time())
         }
         self.store.write("payments", payments)
