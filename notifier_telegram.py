@@ -50,14 +50,13 @@ class TelegramNotifier:
 
         # Teaser cho channel + cache PLAN để DM bot render full có watermark
         teaser = render_teaser(plan)
+        # Cache PLAN (bot sẽ render full + watermark từ plan)
         self.cache.put_plan(signal_id, plan)
-
-        kb = {
-            "inline_keyboard": [
-                [{"text": TEASER_SHOW_BUTTON, "url": f"https://t.me/{self.username}?start=show_{signal_id}"}],
-                [{"text": TEASER_UPGRADE_BUTTON, "url": f"https://t.me/{self.username}?start=upgrade"}],
-            ]
-        }
+        # Dùng tg://resolve để client prefill /start <args> tin cậy hơn
+        url_show = f"tg://resolve?domain={self.username}&start=show_{signal_id}"
+        url_upgr = f"tg://resolve?domain={self.username}&start=upgrade"
+        kb = {"inline_keyboard": [[{"text": TEASER_SHOW_BUTTON, "url": url_show}],
+                                  [{"text": TEASER_UPGRADE_BUTTON, "url": url_upgr}]]}
         payload = {
             "chat_id": int(CHANNEL_ID),
             "text": teaser,
