@@ -47,13 +47,12 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
     rr_txt = f"{rr:.2f}" if isinstance(rr, (int,float)) else "-"
     hint = f" — <b>Size:</b> {risk:.1f}x" if isinstance(risk, (int,float)) else ""
     lines = [
-        f"<b>{sym} | {direction}</b>",
-        f"<b>Entry:</b> {entry}", 
-        f"<b>SL:</b> {sl}",
-        f"<b>TP1:</b> {tp1}",
-        f"<b>TP2:</b> {tp2}",
-        f"<b>TP3:</b> {tp3}",
-        f"<b>R:R:</b> {rr_txt}{hint}",
+        header = "\n".join([f"<b>{sym} · {direction}</b>"])
+        block_es = "\n".join([f"<b>Entry:</b> {entry}", f"<b>SL:</b> {sl}"])
+        block_tp = "\n".join([f"<b>TP1:</b> {tp1}", f"<b>TP2:</b> {tp2}", f"<b>TP3:</b> {tp3}"])
+        footer = f"<b>R:R:</b> {rr_txt}{hint}"
+        
+        text = "\n\n".join([header, block_es, block_tp, footer])  # \n\n = 1 dòng trống giữa các khối
     ]
     if watermark and username:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
