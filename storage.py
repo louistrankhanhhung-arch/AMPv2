@@ -116,13 +116,22 @@ class SignalCache:
         s = data.get(signal_id)
         return s.get("text") if s else None
 
-    # New: store plan dict for watermark rendering per user
+    # New: store/retrieve the raw plan to render watermark theo user
     def put_plan(self, signal_id: str, plan: dict):
         data = self.store.read("signals")
         data[signal_id] = {**data.get(signal_id, {}), "plan": plan, "ts": int(time.time())}
+        data["_latest_id"] = signal_id
         self.store.write("signals", data)
 
     def get_plan(self, signal_id: str) -> dict | None:
         data = self.store.read("signals")
         s = data.get(signal_id)
         return s.get("plan") if s else None
+
+    def get_latest_id(self) -> str | None:
+       return self.store.read("signals").get("_latest_id")
+
+    def get_plan(self, signal_id: str) -> dict | None:
+       data = self.store.read("signals")
+       s = data.get(signal_id)
+       return s.get("plan") if s else None
