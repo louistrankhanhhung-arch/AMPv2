@@ -23,6 +23,20 @@ def _fmt_ts(ts: int) -> str:
         return "—"
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
+async def plus_list_cmd(update, context):
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text("Chỉ admin."); return
+    mode = (context.args[0] if context.args else "active").lower()
+    data = users.list_active() if mode == "active" else users.list_all()
+    if not data:
+        await update.message.reply_text("Không có user nào." if mode=="all" else "Chưa có user ACTIVE."); return
+    lines = []
+    for uid, u in data.items():
+        exp = int(u.get("expires_at", 0))
+        lines.append(f"{uid}\tHSD={_fmt_ts(exp)}")
+    text = "Danh sách " + ("ACTIVE" if mode=="active" else "ALL") + f" ({len(lines)}):\n" + "\n".join(lines[:200])
+    await update.message.reply_text(text)
+
 async def _notify_admins(context, text, reply_markup=None):
     for aid in OWNER_IDS:
         try:
@@ -263,6 +277,7 @@ def run_bot():
     app.add_handler(CommandHandler("show", show_cmd))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.run_polling(drop_pending_updates=True)
+    app.add_handler(CommandHandler("plus_list", plus_list_cmd))  # /plus_list [all|active]
 
 # ===== Admin command handlers =====
 async def plus_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
