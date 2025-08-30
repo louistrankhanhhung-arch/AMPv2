@@ -1,5 +1,5 @@
 
-import asyncio, re
+import re
 from typing import Dict, Any, Tuple
 from templates import render_full
 from storage import JsonStore, UserDB, SignalCache, PaymentDB
@@ -16,11 +16,15 @@ def is_owner(uid: int) -> bool:
     return uid in OWNER_IDS
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = ""
-    if context.args:
-        args = " ".join(context.args)
-    if args.startswith("show_"):
-        signal_id = args.split("_", 1)[1]
+    # Lấy payload từ cả context.args và fallback từ text (khi client chỉ gửi /start)
+    payload = " ".join(context.args) if context.args else ""
+    if not payload and update.message and update.message.text:
+        parts = update.message.text.split(" ", 1)
+        if len(parts) == 2:
+            payload = parts[1].strip()
+
+    if payload.startswith("show_"):
+        signal_id = payload.split("_", 1)[1]
         uid = update.effective_user.id
         uname = update.effective_user.username or ""
         if users.is_plus_active(uid):
@@ -37,10 +41,46 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(txt, parse_mode="HTML", protect_content=PROTECT_CONTENT)
         else:
             await upsell(update, context)
-    elif args.startswith("upgrade"):
+    elif payload.startswith("upgrade"):
         await upsell(update, context)
     else:
-        await update.message.reply_text("Chào mừng! Bấm 'Xem full' dưới các teaser trên channel để mở nội dung đầy đủ.")
+        await update.message.reply_text("Chào mừng! Dùng /latest để xem tín hiệu mới nhất (nếu có Plus), hoặc /help.")
+
+# New: /latest – xem tín hiệu mới nhất theo tier
+async def latest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sid = signals.get_latest_id()
+    if not sid:
+        await update.message.reply_text("Chưa có tín hiệu nào được đăng.")
+        return
+    uid = update.effective_user.id
+    if users.is_plus_active(uid):
+        uname = update.effective_user.username or ""
+        plan = signals.get_plan(sid)
+        if plan:
+            txt = render_full(plan, uname, watermark=WATERMARK)
+            await update.message.reply_text(txt, parse_mode="HTML", protect_content=PROTECT_CONTENT)
+        else:
+            await update.message.reply_text("Tín hiệu mới nhất đã hết hạn cache.")
+    else:
+        await upsell(update, context)
+
+# New: /show <id> – xem theo id thủ công
+async def show_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Dùng: /show <signal_id>")
+        return
+    sid = context.args[0]
+    uid = update.effective_user.id
+    if users.is_plus_active(uid):
+        uname = update.effective_user.username or ""
+        plan = signals.get_plan(sid)
+        if plan:
+            txt = render_full(plan, uname, watermark=WATERMARK)
+            await update.message.reply_text(txt, parse_mode="HTML", protect_content=PROTECT_CONTENT)
+        else:
+            await update.message.reply_text("ID này đã hết hạn cache hoặc không tồn tại.")
+    else:
+        await upsell(update, context)
 
 async def upsell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uname = update.effective_user.username or "user"
@@ -121,6 +161,8 @@ def run_bot():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("approve", approve))
     app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("latest", latest))
+    app.add_handler(CommandHandler("show", show_cmd))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.run_polling()
     
