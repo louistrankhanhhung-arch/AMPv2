@@ -53,6 +53,7 @@ class UserDB:
         return exp > self._now()
 
     def upsert(self, telegram_id: int, username: str | None = None, months: int = 1) -> dict:
+        # (giữ nguyên logic cũ của bạn – không sửa ở đây nếu đã ổn)
         users = self.store.read("users")
         key = str(telegram_id)
         now = self._now()
@@ -68,6 +69,29 @@ class UserDB:
         self.store.write("users", users)
         return users[key]
 
+    # ===== New: cộng số ngày trực tiếp =====
+    def extend_days(self, telegram_id: int, days: int):
+        users = self.store.read("users")
+        key = str(telegram_id)
+        now = self._now()
+        delta = int(days) * 24 * 3600
+        if key in users and int(users[key].get("expires_at", 0)) > now:
+            users[key]["expires_at"] = int(users[key]["expires_at"]) + delta
+        else:
+            users[key] = {
+                "username": users.get(key, {}).get("username"),
+                "created_at": users.get(key, {}).get("created_at", now),
+                "expires_at": now + delta
+            }
+        self.store.write("users", users)
+
+    # ===== New: thu hồi ngay =====
+    def revoke(self, telegram_id: int):
+        users = self.store.read("users")
+        key = str(telegram_id)
+        if key in users:
+            users[key]["expires_at"] = 0
+            self.store.write("users", users)
     def set_expiry(self, telegram_id: int, ts: int) -> None:
         users = self.store.read("users")
         key = str(telegram_id)
