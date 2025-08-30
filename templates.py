@@ -3,10 +3,27 @@ from datetime import datetime, timezone
 from typing import Dict, Any
 
 def fmt_price(v):
+    """
+    Auto-format cho CRYPTO:
+    - Tự chọn số lẻ theo biên độ giá
+    - Không dùng dấu phân tách nghìn (tránh nhầm dấu thập phân)
+    """
     try:
-        return "{:,}".format(int(round(float(v)))).replace(",", ".")
+        x = float(v)
     except Exception:
-        return v
+        return "-"
+    ax = abs(x)
+    if   ax >= 1000:  fmt = "{:,.2f}"
+    elif ax >= 100:   fmt = "{:,.2f}"
+    elif ax >= 10:    fmt = "{:,.2f}"
+    elif ax >= 1:     fmt = "{:,.3f}"
+    elif ax >= 0.1:   fmt = "{:,.4f}"
+    elif ax >= 0.01:  fmt = "{:,.5f}"
+    else:             fmt = "{:,.6f}"
+    s = fmt.format(x).replace(",", "")     # bỏ dấu nghìn
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")      # bỏ số 0 thừa cuối
+    return s
 
 def render_teaser(plan: Dict[str, Any]) -> str:
     sym = plan.get("symbol", "")
