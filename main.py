@@ -26,7 +26,6 @@ from feature_primitives import compute_features_by_tf
 from evidence_evaluators import build_evidence_bundle, Config
 from decision_engine import decide
 
-import asyncio
 from notifier_telegram import TelegramNotifier
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
