@@ -22,7 +22,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = update.message.text.split(" ", 1)
         if len(parts) == 2:
             payload = parts[1].strip()
-
+    # log để debug nhanh
+    try:
+        print("START payload=", payload, "uid=", update.effective_user.id)
+    except Exception:
+        pass
     if payload.startswith("show_"):
         signal_id = payload.split("_", 1)[1]
         uid = update.effective_user.id
