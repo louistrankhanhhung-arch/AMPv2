@@ -52,9 +52,9 @@ class TelegramNotifier:
         teaser = render_teaser(plan)
         # Cache PLAN (bot sẽ render full + watermark từ plan)
         self.cache.put_plan(signal_id, plan)
-        # Dùng tg://resolve để client prefill /start <args> tin cậy hơn
-        url_show = f"tg://resolve?domain={self.username}&start=show_{signal_id}"
-        url_upgr = f"tg://resolve?domain={self.username}&start=upgrade"
+        # Dùng https deep-link để client luôn gửi /start <payload>
+        url_show = f"https://t.me/{self.username}?start=show_{signal_id}"
+        url_upgr = f"https://t.me/{self.username}?start=upgrade"
         kb = {"inline_keyboard": [[{"text": TEASER_SHOW_BUTTON, "url": url_show}],
                                   [{"text": TEASER_UPGRADE_BUTTON, "url": url_upgr}]]}
         payload = {
