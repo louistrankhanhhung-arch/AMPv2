@@ -197,7 +197,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     "STATE": state,
                     "notes": out.get("notes", []),
                 })
-                asyncio.run(tn.post_teaser(plan_for_teaser))
+                tn.post_teaser(plan_for_teaser)
             except Exception as e:
                 log.warning(f"[{symbol}] teaser post failed: {e}")
     # --- end teaser post ---
