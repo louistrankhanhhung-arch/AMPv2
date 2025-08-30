@@ -48,8 +48,11 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
     hint = f" — <b>Size:</b> {risk:.1f}x" if isinstance(risk, (int,float)) else ""
     lines = [
         f"<b>{sym} | {direction}</b>",
-        f"<b>Entry:</b> {entry} — <b>SL:</b> {sl}",
-        f"<b>TP1:</b> {tp1} • <b>TP2:</b> {tp2} • <b>TP3:</b> {tp3}",
+        f"<b>Entry:</b> {entry}", 
+        f"<b>SL:</b> {sl}",
+        f"<b>TP1:</b> {tp1}",
+        f"<b>TP2:</b> {tp2}",
+        f"<b>TP3:</b> {tp3}",
         f"<b>R:R:</b> {rr_txt}{hint}",
     ]
     if watermark and username:
