@@ -94,19 +94,26 @@ async def show_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await upsell(update, context)
 
 async def upsell(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uname = update.effective_user.username or "user"
-    months = PLAN_DEFAULT_MONTHS
+    # sinh order ngắn, duy nhất theo thời điểm + 4 số cuối user_id
+    from datetime import datetime
+    uid = update.effective_user.id
+    ts = datetime.now().strftime("%y%m%d%H%M")
+    order_id = f"ORD{ts}-{str(uid)[-4:]}"
+    pay_note = f"{order_id} {uid}"
+
+    # có thể sửa BANK_INFO qua ENV; bên dưới có giá trị mặc định fallback theo yêu cầu của bạn
     text = (
         "Bạn chưa có Plus hoặc đã hết hạn.\n"
-        f"• Quyền lợi: full Entry/SL/TP realtime, digest, cảnh báo TP/SL.\n"
-        f"• Phí: vui lòng chuyển khoản thủ công.\n\n"
-        f"<b>{BANK_INFO.get('name')}</b>\n"
-        f"<b>Chủ TK:</b> {BANK_INFO.get('account_name')}\n"
-        f"<b>Số TK:</b> {BANK_INFO.get('account_number')}\n"
-        f"<b>Nội dung CK:</b> {BANK_INFO.get('note_format').format(username=uname, months=months)}\n\n"
-        "Sau khi chuyển, bấm nút dưới để gửi xác nhận."
+        "Hãy nâng cấp để truy cập full signal.\n"
+        "<b>Phí:</b> 399k/30 ngày\n\n"
+        "Thanh toán qua TK ngân hàng:\n"
+        f"<b>Số TK:</b> {BANK_INFO.get('account_number','0378285345')}\n"
+        f"<b>Chủ TK:</b> {BANK_INFO.get('account_name','TRAN KHANH HUNG')}\n"
+        f"<b>Ngân hàng:</b> {BANK_INFO.get('name','Ngân hàng Quân đội - MBBank')}\n"
+        f"<b>Nội dung CK:</b> <code>{pay_note}</code>\n\n"
+        "Sau khi chuyển, bấm nút bên dưới để gửi xác nhận."
     )
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Đã chuyển xong", callback_data="paid")]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Đã chuyển xong", callback_data=f"paid:{order_id}")]])
     if update.message:
         try:
             qr_path = BANK_INFO.get("qr_image_path")
@@ -122,9 +129,19 @@ async def upsell(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     data = q.data or ""
-    if data == "paid":
-        # Record a pending payment (admin will approve)
-        payments.add(update.effective_user.id, amount=None, bank_ref=None, months=PLAN_DEFAULT_MONTHS, approved=False, admin_id=None)
+    if data.startswith("paid"):
+        # data dạng "paid:<order_id>" (vẫn tương thích "paid" cũ)
+        parts = data.split(":", 1)
+        order_id = parts[1] if len(parts) == 2 else None
+        payments.add(
+            update.effective_user.id,
+            amount=None,
+            bank_ref=None,
+            months=PLAN_DEFAULT_MONTHS,
+            approved=False,
+            admin_id=None,
+            order_id=order_id,
+        )
         await q.answer("Đã ghi nhận. Admin sẽ duyệt trong ít phút.")
         await q.edit_message_reply_markup(None)
     elif data == "upgrade":
