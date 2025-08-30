@@ -47,12 +47,26 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
     rr_txt = f"{rr:.2f}" if isinstance(rr, (int,float)) else "-"
     hint = f" — <b>Size:</b> {risk:.1f}x" if isinstance(risk, (int,float)) else ""
     lines = [
-        header = "\n".join([f"<b>{sym} · {direction}</b>"])
-        block_es = "\n".join([f"<b>Entry:</b> {entry}", f"<b>SL:</b> {sl}"])
-        block_tp = "\n".join([f"<b>TP1:</b> {tp1}", f"<b>TP2:</b> {tp2}", f"<b>TP3:</b> {tp3}"])
-        footer = f"<b>R:R:</b> {rr_txt}{hint}"
+        lines = [
+            f"<b>{sym} | {direction}</b>",
+            "",  # dòng trống sau tiêu đề
         
-        text = "\n\n".join([header, block_es, block_tp, footer])  # \n\n = 1 dòng trống giữa các khối
+            f"<b>Entry:</b> {entry}",
+            f"<b>SL:</b> {sl}",
+            "",  # dòng trống sau Entry/SL
+        
+            f"<b>TP1:</b> {tp1}",
+            f"<b>TP2:</b> {tp2}",
+            f"<b>TP3:</b> {tp3}",
+            "",  # dòng trống sau block TP
+        
+            f"<b>R:R:</b> {rr_txt}{hint}",
+        ]
+if watermark and username:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines.append(f"— sent to @{username} • {ts}")
+return "\n".join(lines)
+
     ]
     if watermark and username:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
