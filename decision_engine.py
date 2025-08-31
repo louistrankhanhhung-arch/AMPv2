@@ -674,13 +674,13 @@ def decide(symbol: str,
         ref = float(ll) if ll is not None else float(df1['low'].iloc[-2])
         entry, sl, tp, note = _retest_entry('short', ref, rules.sl_pad_breakout_atr)
     elif state == 'mean_reversion' and direction == 'long':
-        ref = float(df1['low'].iloc[-2']); entry = price_now
+        ref = float(df1['low'].iloc[-2]); entry = price_now
         sl = _protective_sl_confluence(levels, levels4h, ref_level=ref, atr=atr, side='long', pad_atr=rules.sl_pad_mean_reversion_atr)
         piv = float(entry) if entry is not None else price_now
         tp = _nearest_band_tp(levels, piv, side='long')
         note = 'mean_reversion_rebound'
     elif state == 'rejection' and direction == 'long':
-        ref = float(df1['low'].iloc[-2']); entry = price_now
+        ref = float(df1['low'].iloc[-2]); entry = price_now
         sl = _protective_sl_confluence(levels, levels4h, ref_level=ref, atr=atr, side='long', pad_atr=rules.sl_pad_mean_reversion_atr)
         piv = float(entry) if entry is not None else price_now
         tp = _nearest_band_tp(levels, piv, side='long')
@@ -732,13 +732,13 @@ def decide(symbol: str,
         ref = float(hh) if hh is not None else float(df1['high'].iloc[-2])
         entry, sl, tp, note = _retest_entry('long', float(ref), rules.sl_pad_breakout_atr)
     elif state == 'mean_reversion' and direction == 'short':
-        ref = float(df1['high'].iloc[-2']); entry = price_now
+        ref = float(df1['high'].iloc[-2]); entry = price_now
         sl = _protective_sl_confluence(levels, levels4h, ref_level=ref, atr=atr, side='short', pad_atr=rules.sl_pad_mean_reversion_atr)
         piv = float(entry) if entry is not None else price_now
         tp  = _nearest_band_tp(levels, piv, side='short')
         note = 'mean_reversion_snapback'
     elif state == 'rejection' and direction == 'short':
-        ref = float(df1['high'].iloc[-2']); entry = price_now
+        ref = float(df1['high'].iloc[-2]); entry = price_now
         sl = _protective_sl_confluence(levels, levels4h, ref_level=ref, atr=atr, side='short', pad_atr=rules.sl_pad_mean_reversion_atr)
         piv = float(entry) if entry is not None else price_now
         tp  = _nearest_band_tp(levels, piv, side='short')
