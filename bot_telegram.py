@@ -134,7 +134,7 @@ async def upsell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "Bạn chưa có Plus hoặc đã hết hạn.\n"
         "Hãy nâng cấp để truy cập full signal.\n"
-        "<b>Phí:</b> 399k/30 ngày\n\n"
+        "<b>Phí:</b> 399k/30 ngày - 999k/90 ngày\n\n"
         "Thanh toán qua TK ngân hàng:\n"
         f"<b>Số TK:</b> {BANK_INFO.get('account_number','0378285345')}\n"
         f"<b>Chủ TK:</b> {BANK_INFO.get('account_name','TRAN KHANH HUNG')}\n"
