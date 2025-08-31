@@ -66,19 +66,21 @@ class TelegramNotifier:
         try:
             r = self.session.post(f"{API_BASE}/sendMessage", json=payload, timeout=15)
             r.raise_for_status()
-            log.info(
-                "Posted teaser signal_id=%s symbol=%s dir=%s",
-                signal_id, plan.get("symbol"), plan.get("DIRECTION")
-            )
-            return signal_id
-
+        except requests.RequestException as e:
+            log.warning("teaser post failed: %s", e)
+            raise
+        # Sau khi gửi thành công (ra khỏi try/except) mới log & return
+        log.info(
+            "Posted teaser signal_id=%s symbol=%s dir=%s",
+            signal_id, plan.get("symbol"), plan.get("DIRECTION")
+        )
+        return signal_id
 
     def send_channel(self, html: str):
         payload = {"chat_id": int(CHANNEL_ID), "text": html, "parse_mode": "HTML"}
         r = self.session.post(f"{API_BASE}/sendMessage", json=payload, timeout=15)
         r.raise_for_status()
-    
-    
+
     def send_dm(self, user_id: int, html: str):
         payload = {"chat_id": int(user_id), "text": html, "parse_mode": "HTML"}
         r = self.session.post(f"{API_BASE}/sendMessage", json=payload, timeout=15)
