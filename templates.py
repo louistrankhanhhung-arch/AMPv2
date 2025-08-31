@@ -66,3 +66,17 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         lines.append(f"— sent to @{username} • {ts}")
     return "\n".join(lines)
+
+def render_update(plan_or_trade: dict, event: str, extra: dict|None=None) -> str:
+    sym = plan_or_trade.get("symbol",""); d = plan_or_trade.get("DIRECTION","")
+    rr = extra.get("R_now") if extra else None
+    tail = f"\n<b>Realized:</b> {rr:.2f}R" if isinstance(rr,(int,float)) else ""
+    return f"<b>{sym} | {d}</b>\n<b>Update:</b> {event}{tail}"
+
+def render_summary(kpi: dict, scope: str="Daily") -> str:
+    return (
+      f"<b>PNL {scope}</b>\n"
+      f"• Trades: {kpi['n']}, Win-rate: {kpi['wr']:.0%}\n"
+      f"• Avg R: {kpi['avgR']:.2f}\n"
+      f"• Total R: {kpi['sumR']:.2f}"
+    )
