@@ -170,7 +170,7 @@ class DecisionRules:
     # --- New: entry setup tuning ---
     retest_pad_atr: float = 0.05      # small pad above/below level for retest entry
     retest_zone_atr: float = 0.50     # acceptable distance from price to retest entry to consider ENTER (sửa 0.15 -> 0.3)
-    retest_zone_atr_reclaim: float = 0.80  # looser proximity for 'reclaim' setups
+    retest_zone_atr_reclaim: float = 0.50  
     trend_break_buf_atr: float = 0.10 # trend-follow Entry1 uses break of nearest swing with this buffer (sửa 0.2 -> 0.1)
     sl_min_atr: float = 0.5       # SL tối thiểu = 0.5*ATR
     tp_ladder_n: int = 3           # số bậc TP
@@ -179,7 +179,16 @@ class DecisionRules:
     sl_pad_reclaim_atr: float = 0.8
     sl_pad_trend_follow_atr: float = 0.6
     sl_pad_mean_reversion_atr: float = 1.2
-
+    # --- NEW: multi-TF confluence gates ---
+    rsi1h_long: float = 55.0
+    rsi4h_long_soft: float = 50.0
+    rsi1h_long_ctr: float = 60.0    # yêu cầu khi countertrend 4H
+    rsi1h_short: float = 45.0
+    rsi4h_short_soft: float = 50.0
+    rsi1h_short_ctr: float = 40.0   # yêu cầu khi countertrend 4H
+    confluence_enter_thr: float = 0.55
+    confluence_bonus_ctx: float = 0.10   # thưởng khi 1D đồng hướng
+    confluence_penalty_ctx: float = 0.15 # phạt khi 1D ngược hướng
 
 # =====================================================
 # 2.5) State mapping helpers (new trade types)
@@ -256,6 +265,52 @@ def _nearest_band_tp(levels: Dict[str, Any], price: float, side: str) -> Optiona
     # fallback: highest score band
     buckets = sorted(buckets, key=lambda b: b.get('score', 0), reverse=True)
     return float(buckets[0]['tp']) if buckets else None
+
+def _band_overlap(band: Tuple[float,float], bands4h: List[Dict[str, Any]], tol: float) -> bool:
+    """Kiểm tra band 1H có nằm trong/đụng band 4H (có nới tol) không."""
+    if not bands4h:
+        return True
+    lo, hi = float(band[0]), float(band[1])
+    lo -= tol; hi += tol
+    for b in bands4h:
+        blo, bhi = float(b['band'][0]), float(b['band'][1])
+        inter = max(0.0, min(hi, bhi) - max(lo, blo))
+        if inter > 0:
+            return True
+    return False
+
+def _filter_forward_tps_by_4h(tps: List[float], side: str, levels4h: Dict[str, Any], atr: float) -> List[float]:
+    """Giữ TP1H nào có nằm trong/sát band 4H; nếu thiếu thì trả lại danh sách gốc."""
+    try:
+        bands4h = levels4h.get('bands_up' if side == 'long' else 'bands_down') or []
+        if not bands4h:
+            return tps
+        kept: List[float] = []
+        tol = 0.2 * max(1e-9, atr)
+        for tp in tps:
+            for b in bands4h:
+                blo, bhi = float(b['band'][0]), float(b['band'][1])
+                if (blo - tol) <= tp <= (bhi + tol):
+                    kept.append(tp); break
+        return kept if kept else tps
+    except Exception:
+        return tps
+
+def _protective_sl_confluence(levels1h: Dict[str, Any], levels4h: Optional[Dict[str, Any]], ref_level: float, atr: float, side: str, pad_atr: float = 0.3) -> Optional[float]:
+    """Đặt SL dựa trên band chứa ref_level (ưu tiên 1H) nhưng tránh xuyên band 4H."""
+    base = _protective_sl(levels1h, ref_level, atr, side, pad_atr)
+    if base is None or not levels4h:
+        return base
+    # nếu SL vẫn nằm trong band 4H cùng phía thì đẩy qua mép đối diện một chút
+    pad = float(pad_atr) * atr
+    for b in (levels4h.get('bands_up', []) + levels4h.get('bands_down', [])):
+        lo, hi = float(b['band'][0]), float(b['band'][1])
+        if lo <= ref_level <= hi:
+            if side == 'long':
+                return float(min(lo, ref_level) - pad)
+            else:
+                return float(max(hi, ref_level) + pad)
+    return base
 
 def _layered_tps(levels: Dict[str, Any], side: str, ref_price: float, entry: float, atr: float) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """
@@ -373,6 +428,14 @@ def _tp_ladder(levels: Dict[str, Any], entry: float, side: str, atr: float, n: i
     tps = sorted(tps, reverse=(side == 'short'))
     return tps[:n]
 
+def _tp_ladder_confluence(levels1h: Dict[str, Any], levels4h: Optional[Dict[str, Any]], entry: float, side: str, atr: float, n: int = 3) -> List[float]:
+    """TP ladder 1H nhưng lọc theo band 4H; thiếu thì fallback ATR như cũ."""
+    tps = _tp_ladder(levels1h, entry, side, atr, n)
+    if not levels4h:
+        return tps
+    kept = _filter_forward_tps_by_4h(tps, side, levels4h, atr)
+    return kept if kept else tps
+
 # =====================================================
 # 4) Core decision
 # =====================================================
@@ -394,7 +457,11 @@ def decide(symbol: str,
     atr = float(f1.get('volatility', {}).get('atr', 0.0) or 0.0)
     price_now = _price(df1)
     levels = f1.get('levels', {})
-
+    # 4H & 1D cho confluence
+    f4 = features_by_tf.get('4H', {}) or {}
+    d4: Optional[pd.DataFrame] = f4.get('df')
+    levels4h = f4.get('levels', {}) or {}
+    fD = features_by_tf.get('1D', {}) or {}
     # Determine side by state
     state = eb.state
     confidence = float(eb.confidence)
@@ -462,16 +529,16 @@ def decide(symbol: str,
     # Chỉ giữ các key thực sự tồn tại trong EvidenceIn hiện tại
     req_keys = [k for k in req_keys if getattr(eb.evidence, k, None) is not None]
 
-    # Special-case: for 'reclaim', allow (volume OR momentum OR candles)
+    # Special-case: for 'reclaim' (SIẾT LẠI): price_reclaim AND volume; momentum tùy theo 4H alignment
     if state == 'reclaim':
-        # price_reclaim must exist; second condition is OR over volume/momentum/candles
         pr_ok = bool(getattr(_ev('price_reclaim'), 'ok', False))
         vol_ok_tmp = bool(getattr(_ev('volume'), 'ok', False))
-        mom_ok_tmp = bool(getattr(_ev('momentum'), 'ok', False))
-        cdl_ok_tmp = bool(getattr(_ev('candles'), 'ok', False))
-        # Build req_ok as [price_reclaim, any_of_three]
-        req_ok = [pr_ok, (vol_ok_tmp or mom_ok_tmp or cdl_ok_tmp)]
-        miss_reasons.extend([k for ok,k in [(not pr_ok,'price_reclaim'), (not (vol_ok_tmp or mom_ok_tmp or cdl_ok_tmp),'volume|momentum|candles')] if ok])
+        # momentum bắt buộc nếu 4H đối hướng; nếu 4H cùng/side thì không bắt buộc
+        mom_ev = _ev('momentum')
+        mom_ok_tmp = bool(getattr(mom_ev, 'ok', False)) if mom_ev else False
+        req_ok = [pr_ok, vol_ok_tmp]  # AND
+        if not pr_ok: miss_reasons.append('price_reclaim')
+        if not vol_ok_tmp: miss_reasons.append('volume')
     else:
         for k in req_keys:
             ev = _ev(k)
@@ -500,6 +567,50 @@ def decide(symbol: str,
     proximity_ok = False
     proximity_ok2 = False
 
+# ---------- Multi-TF Confluence (EMA/RSI/Volume + 1D context) ----------
+    def _trend_state(tf: str) -> Optional[str]:
+        try:
+            return (features_by_tf.get(tf, {}).get('trend', {}) or {}).get('state')
+        except Exception:
+            return None
+    def _rsi(tf: str) -> float:
+        try:
+            return float(features_by_tf.get(tf, {}).get('momentum', {}).get('rsi', 50.0))
+        except Exception:
+            return 50.0
+    def _volume_ok(evb: EvidenceBundleIn) -> Tuple[bool, bool]:
+        try:
+            v = evb.evidence.volume
+            p_ok = bool(getattr(v, 'primary', None) and v.primary.ok)
+            c_ok = bool(getattr(v, 'confirm', None) and v.confirm and v.confirm.ok)
+            return p_ok, c_ok
+        except Exception:
+            return False, False
+
+    now_tr, tr4, trD = _trend_state('1H'), _trend_state('4H'), _trend_state('1D')
+    r1, r4 = _rsi('1H'), _rsi('4H')
+    vol1_ok, vol4_ok = _volume_ok(eb)
+
+    # align score: mạnh khi 1H==4H; trung tính khi 4H=side; yếu khi đối hướng
+    align = 0.0
+    if now_tr in ('up','down'):
+        if tr4 == now_tr: align = 1.0
+        elif tr4 in (None, 'side'): align = 0.6
+        else: align = 0.2
+    # rsi gate theo direction sau khi suy ra
+    def _rsi_gate(dirn: Optional[str]) -> float:
+        if dirn == 'long':
+            ok_base = (r1 >= rules.rsi1h_long) and (r4 >= rules.rsi4h_long_soft or tr4 in (None,'side') or tr4=='up')
+            ok_ctr  = (r1 >= rules.rsi1h_long_ctr) if (tr4=='down') else True
+            return 1.0 if (ok_base and ok_ctr) else (0.5 if r1 >= (rules.rsi1h_long-2) else 0.0)
+        if dirn == 'short':
+            ok_base = (r1 <= rules.rsi1h_short) and (r4 <= rules.rsi4h_short_soft or tr4 in (None,'side') or tr4=='down')
+            ok_ctr  = (r1 <= rules.rsi1h_short_ctr) if (tr4=='up') else True
+            return 1.0 if (ok_base and ok_ctr) else (0.5 if r1 <= (rules.rsi1h_short+2) else 0.0)
+        return 0.0
+    vol_score = (1.0 if vol1_ok else 0.0) + (0.5 if vol4_ok else 0.0)
+    # context 1D bonus/penalty áp vào confidence về sau
+
 # Helper to build a retest entry around a reference level
     def _retest_entry(side: str, ref: float, sl_pad_atr: float) -> Tuple[Optional[float], Optional[float], Optional[float], str]:
         if not np.isfinite(ref) or atr <= 0:
@@ -507,13 +618,13 @@ def decide(symbol: str,
         pad = rules.retest_pad_atr * atr
         if side == 'long':
             e = float(ref + pad)
-            s = _protective_sl(levels, ref_level=ref, atr=atr, side='long', pad_atr=sl_pad_atr)
+            s = _protective_sl_confluence(levels, levels4h, ref_level=ref, atr=atr, side='long', pad_atr=sl_pad_atr)
             # chọn TP theo ENTRY pivot (đúng hướng RR ngay cả khi chưa layer)
             t = _nearest_band_tp(levels, e, side='long')
             return e, s, t, "retest_of_level"
         else:
             e = float(ref - pad)
-            s = _protective_sl(levels, ref_level=ref, atr=atr, side='short', pad_atr=sl_pad_atr)
+            s = _protective_sl_confluence(levels, levels4h, ref_level=ref, atr=atr, side='short', pad_atr=sl_pad_atr)
             t = _nearest_band_tp(levels, e, side='short')
             return e, s, t, "retest_of_level"
 
@@ -563,17 +674,20 @@ def decide(symbol: str,
         ref = float(ll) if ll is not None else float(df1['low'].iloc[-2])
         entry, sl, tp, note = _retest_entry('short', ref, rules.sl_pad_breakout_atr)
     elif state == 'mean_reversion' and direction == 'long':
-        ref = float(df1['low'].iloc[-2]); entry = price_now; sl = float(ref - rules.sl_pad_mean_reversion_atr*atr)
+        ref = float(df1['low'].iloc[-2']); entry = price_now
+        sl = _protective_sl_confluence(levels, levels4h, ref_level=ref, atr=atr, side='long', pad_atr=rules.sl_pad_mean_reversion_atr)
         piv = float(entry) if entry is not None else price_now
         tp = _nearest_band_tp(levels, piv, side='long')
         note = 'mean_reversion_rebound'
     elif state == 'rejection' and direction == 'long':
-        ref = float(df1['low'].iloc[-2]); entry = price_now; sl = float(ref - rules.sl_pad_mean_reversion_atr*atr)
+        ref = float(df1['low'].iloc[-2']); entry = price_now
+        sl = _protective_sl_confluence(levels, levels4h, ref_level=ref, atr=atr, side='long', pad_atr=rules.sl_pad_mean_reversion_atr)
         piv = float(entry) if entry is not None else price_now
         tp = _nearest_band_tp(levels, piv, side='long')
         note = 'rejection_long'
     elif state == 'divergence_up' and direction == 'long':
-        e1, e2 = _trend_follow_entries('long'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='long', pad_atr=rules.sl_pad_trend_follow_atr)
+        e1, e2 = _trend_follow_entries('long'); entry, entry2 = e1, e2
+        sl = _protective_sl_confluence(levels, levels4h, ref_level=(entry - rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='long', pad_atr=rules.sl_pad_trend_follow_atr)
         piv = float(entry) if entry is not None else price_now
         tp = _nearest_band_tp(levels, piv, side='long')
         note = 'divergence_break_entry'
@@ -592,7 +706,7 @@ def decide(symbol: str,
             e1, e2 = _trend_follow_entries('long')
             entry, entry2 = e1, e2
             if entry is not None:
-                sl = _protective_sl(levels, ref_level=(entry - rules.trend_break_buf_atr*atr), atr=atr, side='long', pad_atr=rules.sl_pad_trend_follow_atr)
+                sl = _protective_sl_confluence(levels, levels4h, ref_level=(entry - rules.trend_break_buf_atr*atr), atr=atr, side='long', pad_atr=rules.sl_pad_trend_follow_atr)
                 piv = float(entry) if entry is not None else price_now
                 tp = _nearest_band_tp(levels, piv, side='long')
                 note = "trend_follow: break + ema20/bb_mid"
@@ -602,28 +716,36 @@ def decide(symbol: str,
     elif state == 'trend_follow_pullback' and direction == 'short':
         z = ((eb.evidence.__dict__.get('pullback') or {}).get('zone') if hasattr(eb.evidence, '__dict__') else None)
         if z and isinstance(z, (list, tuple)):
-            entry = float((z[0] + z[1]) / 2.0); sl = _protective_sl(levels, ref_level=z[1], atr=atr, side='short', pad_atr=rules.sl_pad_trend_follow_atr) 
+            entry = float((z[0] + z[1]) / 2.0)
+            sl = _protective_sl_confluence(levels, levels4h, ref_level=z[1], atr=atr, side='short', pad_atr=rules.sl_pad_trend_follow_atr)
             piv = float(entry) if entry is not None else price_now
             tp  = _nearest_band_tp(levels, piv, side='short')
             note = 'pullback_zone_entry'
         else:
-            e1, e2 = _trend_follow_entries('short'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry + rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='short', pad_atr=rules.sl_pad_trend_follow_atr); piv = float(entry) if entry is not None else price_now; tp = _nearest_band_tp(levels, piv, side='short'); note = 'trend_follow_pullback_fallback'
+            e1, e2 = _trend_follow_entries('short'); entry, entry2 = e1, e2
+            sl = _protective_sl_confluence(levels, levels4h, ref_level=(entry + rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='short', pad_atr=rules.sl_pad_trend_follow_atr)
+            piv = float(entry) if entry is not None else price_now
+            tp = _nearest_band_tp(levels, piv, side='short')
+            note = 'trend_follow_pullback_fallback'
     elif state == 'false_breakdown' and direction == 'long':
         hh = (eb.evidence.price_breakout.ref or {}).get('hh') if hasattr(eb.evidence, 'price_breakout') else None
         ref = float(hh) if hh is not None else float(df1['high'].iloc[-2])
         entry, sl, tp, note = _retest_entry('long', float(ref), rules.sl_pad_breakout_atr)
     elif state == 'mean_reversion' and direction == 'short':
-        ref = float(df1['high'].iloc[-2]); entry = price_now; sl = float(ref + rules.sl_pad_mean_reversion_atr*atr)
+        ref = float(df1['high'].iloc[-2']); entry = price_now
+        sl = _protective_sl_confluence(levels, levels4h, ref_level=ref, atr=atr, side='short', pad_atr=rules.sl_pad_mean_reversion_atr)
         piv = float(entry) if entry is not None else price_now
         tp  = _nearest_band_tp(levels, piv, side='short')
         note = 'mean_reversion_snapback'
     elif state == 'rejection' and direction == 'short':
-        ref = float(df1['high'].iloc[-2]); entry = price_now; sl = float(ref + rules.sl_pad_mean_reversion_atr*atr)
+        ref = float(df1['high'].iloc[-2']); entry = price_now
+        sl = _protective_sl_confluence(levels, levels4h, ref_level=ref, atr=atr, side='short', pad_atr=rules.sl_pad_mean_reversion_atr)
         piv = float(entry) if entry is not None else price_now
         tp  = _nearest_band_tp(levels, piv, side='short')
         note = 'rejection_short'
     elif state == 'divergence_down' and direction == 'short':
-        e1, e2 = _trend_follow_entries('short'); entry, entry2 = e1, e2; sl = _protective_sl(levels, ref_level=(entry + rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='short', pad_atr=rules.sl_pad_trend_follow_atr); 
+        e1, e2 = _trend_follow_entries('short'); entry, entry2 = e1, e2
+        sl = _protective_sl_confluence(levels, levels4h, ref_level=(entry + rules.trend_break_buf_atr*atr) if entry else price_now, atr=atr, side='short', pad_atr=rules.sl_pad_trend_follow_atr) 
         piv = float(entry) if entry is not None else price_now
         tp  = _nearest_band_tp(levels, piv, side='short')
         note = 'divergence_break_entry'
@@ -641,7 +763,7 @@ def decide(symbol: str,
             e1, e2 = _trend_follow_entries('short')
             entry, entry2 = e1, e2
             if entry is not None:
-                sl = _protective_sl(levels, ref_level=(entry + rules.trend_break_buf_atr*atr), atr=atr, side='short', pad_atr=rules.sl_pad_trend_follow_atr)
+                sl = _protective_sl_confluence(levels, levels4h, ref_level=(entry + rules.trend_break_buf_atr*atr), atr=atr, side='short', pad_atr=rules.sl_pad_trend_follow_atr)
                 piv = float(entry) if entry is not None else price_now
                 tp  = _nearest_band_tp(levels, piv, side='short')
                 note = "trend_follow: break + ema20/bb_mid"
@@ -649,65 +771,79 @@ def decide(symbol: str,
         # state undefined/sideways -> no explicit plan
         pass
       
-    # Enforce minimal SL gap before RR calc
+        # --- post-build: proximity checks, layered TP, RR, decision ---
+
+    # 1) Enforce minimal SL gap before RR calc
     if direction and entry is not None and sl is not None and atr > 0:
         sl = _ensure_sl_gap(entry, sl, atr, side=direction, rules=rules)
-    # Compute RR & proximity for primary/secondary entries (if present)
-    # Build layered TP targets (tp1/tp2/tp3) relative to ENTRY (không dùng price_now)
-    tp1 = tp2 = tp3 = None
-    if direction and atr > 0:
-        piv = float(entry) if entry is not None else float(price_now)
-        t1, t2, t3 = _layered_tps(levels, direction, ref_price=price_now, entry=piv, atr=atr)
-        # Gán legacy tp = TP2 (ưu tiên), nếu thiếu thì TP1/TP3
-        if t2 is not None:
-            tp = float(t2)
-        elif t1 is not None:
-            tp = float(t1)
-        elif t3 is not None:
-            tp = float(t3)
-        tp1, tp2, tp3 = t1, t2, t3
 
+    # 2) Layered TP: dùng 1H nhưng lọc theo band 4H (nếu có). Pivot = ENTRY (không dùng price_now)
+    tp1 = tp2 = tp3 = None
+    if direction in ('long','short') and atr > 0 and entry is not None:
+        piv = float(entry)
+        tps = _tp_ladder_confluence(levels, levels4h, piv, direction, atr, rules.tp_ladder_n)
+        if tps:
+            if len(tps) >= 1: tp1 = float(tps[0])
+            if len(tps) >= 2: tp2 = float(tps[1])
+            if len(tps) >= 3: tp3 = float(tps[2])
+        # legacy tp ưu tiên TP2, fallback TP1 rồi TP3
+        if tp is None:
+            if tp2 is not None: tp = float(tp2)
+            elif tp1 is not None: tp = float(tp1)
+            elif tp3 is not None: tp = float(tp3)
+
+    # 3) RR & proximity cho entry chính
     rr = None
     rr1 = rr2 = rr3 = None
     proximity_ok = False
     if direction and isinstance(entry, (int, float)) and sl is not None and atr > 0:
         e1f = float(entry)
-        if tp1 is not None:
-            rr1 = _rr(direction, e1f, sl, float(tp1))
-        if tp2 is not None:
-            rr2 = _rr(direction, e1f, sl, float(tp2))
-        if tp3 is not None:
-            rr3 = _rr(direction, e1f, sl, float(tp3))
+        if tp1 is not None: rr1 = _rr(direction, e1f, sl, float(tp1))
+        if tp2 is not None: rr2 = _rr(direction, e1f, sl, float(tp2))
+        if tp3 is not None: rr3 = _rr(direction, e1f, sl, float(tp3))
         # cap RR theo rr_max
         if isinstance(rr1, (int, float)) and rr1 > rules.rr_max: rr1 = float(rules.rr_max)
         if isinstance(rr2, (int, float)) and rr2 > rules.rr_max: rr2 = float(rules.rr_max)
         if isinstance(rr3, (int, float)) and rr3 > rules.rr_max: rr3 = float(rules.rr_max)
-        # legacy rr = ưu tiên TP2, rồi TP1, rồi TP3
+        # legacy rr = TP2 ưu tiên, rồi TP1, rồi TP3
         rr = rr2 if rr2 is not None else (rr1 if rr1 is not None else rr3)
-        prox_mult = getattr(rules, 'retest_zone_atr_reclaim', rules.retest_zone_atr) if state == 'reclaim' else rules.retest_zone_atr
-        proximity_ok = (abs(price_now - e1f) <= prox_mult * atr)
 
-    # trend-follow secondary entry (EMA20/BB mid)
+        prox_thr = (rules.retest_zone_atr_reclaim if state == 'reclaim' else rules.retest_zone_atr)
+        proximity_ok = (abs(price_now - e1f) <= prox_thr * atr)
+
+    # 4) trend-follow secondary entry (EMA20/BB mid) nếu có
     rr_entry2 = None
     proximity_ok2 = False
     e2 = locals().get('entry2', None)
     if direction and isinstance(e2, (int, float)) and sl is not None and tp is not None and atr > 0:
         e2f = float(e2)
-        rr_entry2 = _rr(direction, e2f, sl, tp)
+        rr_entry2 = _rr(direction, e2f, sl, float(tp))
         if rr_entry2 is not None and rr_entry2 > rules.rr_max:
             rr_entry2 = float(rules.rr_max)
         proximity_ok2 = (abs(price_now - e2f) <= rules.proximity_atr * atr)
 
-    # AVOID conditions
-    rsi = float(f1.get('momentum', {}).get('rsi', 50.0))
+    # 5) Multi-TF confluence (EMA/RSI/Volume đã tính trước đó)
+    #    - align, vol_score, _rsi_gate(direction), trD đã được chuẩn bị ở phần trên
+    rsi_score = _rsi_gate(direction)
+    confluence_score = min(1.0, 0.45*align + 0.35*rsi_score + 0.20*vol_score)
+
+    # 6) 1D context: bonus/penalty confidence
+    if direction in ('long','short') and trD in ('up','down'):
+        if (direction == 'long' and trD == 'up') or (direction == 'short' and trD == 'down'):
+            confidence = min(1.0, confidence + rules.confluence_bonus_ctx)
+        elif (direction == 'long' and trD == 'down') or (direction == 'short' and trD == 'up'):
+            confidence = max(0.0, confidence - rules.confluence_penalty_ctx)
+
+    # 7) AVOID conditions (giữ nguyên triết lý cũ) + liquidity guard
+    rsi_now = float(f1.get('momentum', {}).get('rsi', 50.0))
     div = (f1.get('momentum', {}).get('divergence') or 'none')
     vz = float(f1.get('volume', {}).get('vol_z20', 0.0))
 
-    rsi_extreme = (rsi >= rules.rsi_overbought) or (rsi <= rules.rsi_oversold)
+    rsi_extreme = (rsi_now >= rules.rsi_overbought) or (rsi_now <= rules.rsi_oversold)
     div_against = (direction == 'long' and div == 'bearish') or (direction == 'short' and div == 'bullish')
     vol_blowoff = (vz >= rules.vol_z_hot)
     rr_bad = (rr is not None and rr < rules.rr_avoid)
-    liq_heavy_close = (not liq_ok) and (eb.evidence.liquidity.why or '').startswith('heavy_zone')
+    liq_heavy_close = (not liq_ok) and (getattr(eb.evidence.liquidity, 'why', '') or '').startswith('heavy_zone')
 
     avoid_reasons = []
     if rsi_extreme: avoid_reasons.append('rsi_extreme')
@@ -716,41 +852,55 @@ def decide(symbol: str,
     if rr_bad: avoid_reasons.append('rr_bad')
     if liq_heavy_close: avoid_reasons.append('heavy_liquidity_ahead')
 
-    # Decision tree with revised proximity rules (allow either entry or entry2)
+    # 8) Quyết định ENTER/WAIT/AVOID (thêm gate confluence + liquidity_ok)
     decision = 'WAIT'
     if avoid_reasons:
         decision = 'AVOID'
     else:
         any_prox = proximity_ok or proximity_ok2
         rr_ok_any = (rr is not None and rr >= rules.rr_min) or (rr_entry2 is not None and rr_entry2 >= rules.rr_min)
-        if all(req_ok) and any_prox and rr_ok_any:
-            decision = 'ENTER'
-        else:
-            if not all(req_ok):
-                pass
-            if not any_prox:
-                miss_reasons.append('price_far_from_entry')
-            if not rr_ok_any:
-                miss_reasons.append('rr_min')
+        confluence_ok = (confluence_score >= rules.confluence_enter_thr)
+        liq_guard_fail = not liq_ok
 
-    # Build plan out
+        gates_ok = all(req_ok) and any_prox and rr_ok_any and confluence_ok and (not liq_guard_fail)
+
+        # riêng RECLAIM: nếu 4H đối hướng bắt buộc momentum.ok
+        if state == 'reclaim' and ((direction == 'long' and tr4 == 'down') or (direction == 'short' and tr4 == 'up')):
+            gates_ok = gates_ok and mom_ok
+
+        if not all(req_ok):
+            pass
+        if not any_prox:
+            miss_reasons.append('price_far_from_entry')
+        if not rr_ok_any:
+            miss_reasons.append('rr_min')
+        if not confluence_ok:
+            miss_reasons.append('confluence_low')
+        if liq_guard_fail:
+            miss_reasons.append('liquidity_guard')
+
+        decision = 'ENTER' if gates_ok else 'WAIT'
+
+    # 9) Build plan out (giữ style PlanOut/LogsOut cũ, thêm confluence vào note)
+    note_str = (note or "")
+    note_str += f"|confluence={confluence_score:.2f}"
+
     plan = PlanOut(
-    direction=direction,
-    entry=_smart_round(entry) if isinstance(entry, (int,float)) else None,
-    sl=_smart_round(sl) if isinstance(sl, (int,float)) else None,
-    tp=_smart_round(tp) if isinstance(tp, (int,float)) else None,     # legacy = TP2
-    rr=round(rr, 3) if isinstance(rr, (int,float)) else None,         # legacy RR at TP (TP2)
-    tp1=_smart_round(tp1) if isinstance(tp1, (int,float)) else None,
-    tp2=_smart_round(tp2) if isinstance(tp2, (int,float)) else None,
-    tp3=_smart_round(tp3) if isinstance(tp3, (int,float)) else None,
-    rr1=round(rr1, 3) if 'rr1' in locals() and isinstance(rr1, (int,float)) else None,
-    rr2=round(rr2, 3) if isinstance(rr2, (int,float)) else None,
-    rr3=round(rr3, 3) if 'rr3' in locals() and isinstance(rr3, (int,float)) else None,
-    entry2=_smart_round(entry2) if 'entry2' in locals() and isinstance(entry2, (int,float)) else None,
-    note=note or None,
-)
+        direction=direction,
+        entry=_smart_round(entry) if isinstance(entry, (int,float)) else None,
+        sl=_smart_round(sl) if isinstance(sl, (int,float)) else None,
+        tp=_smart_round(tp) if isinstance(tp, (int,float)) else None,     # legacy = TP2
+        rr=round(rr, 3) if isinstance(rr, (int,float)) else None,         # legacy RR at TP (TP2)
+        tp1=_smart_round(tp1) if isinstance(tp1, (int,float)) else None,
+        tp2=_smart_round(tp2) if isinstance(tp2, (int,float)) else None,
+        tp3=_smart_round(tp3) if isinstance(tp3, (int,float)) else None,
+        rr1=round(rr1, 3) if 'rr1' in locals() and isinstance(rr1, (int,float)) else None,
+        rr2=round(rr2, 3) if isinstance(rr2, (int,float)) else None,
+        rr3=round(rr3, 3) if 'rr3' in locals() and isinstance(rr3, (int,float)) else None,
+        entry2=_smart_round(entry2) if 'entry2' in locals() and isinstance(entry2, (int,float)) else None,
+        note=note_str or None,
+    )
 
-    # Logs for three buckets
     logs = LogsOut(
         ENTER={
             'required_ok': all(req_ok),
@@ -758,6 +908,7 @@ def decide(symbol: str,
             'proximity_ok_secondary': proximity_ok2,
             'rr_ok_primary': (rr is not None and rr >= rules.rr_min),
             'rr_ok_secondary': (rr_entry2 is not None and rr_entry2 >= rules.rr_min),
+            'confluence_score': confluence_score,
             'plan': plan.model_dump() if hasattr(plan, 'model_dump') else plan.__dict__,
         },
         WAIT={
@@ -766,9 +917,8 @@ def decide(symbol: str,
             'momentum_ok': mom_ok,
             'candles_ok': cdl_ok,
             'liquidity_ok': liq_ok,
-            # plan_preview giúp debug khi WAIT: thấy rõ TP1/TP2/TP3 & SL
+            'confluence_score': confluence_score,
             'plan_preview': {
-                'direction': plan.direction,
                 'direction': plan.direction,
                 'entry': plan.entry, 'sl': plan.sl,
                 'tp1': plan.tp1, 'tp2': plan.tp2, 'tp3': plan.tp3,
@@ -777,13 +927,27 @@ def decide(symbol: str,
         },
         AVOID={
             'reasons': avoid_reasons,
-            'rsi': rsi,
+            'rsi': rsi_now,
             'divergence': div,
             'vol_z20': vz,
             'rr': rr,
             'rr_entry2': rr_entry2,
         },
     )
+
+    out = DecisionOut(
+        symbol=symbol,
+        timeframe=timeframe,
+        asof=eb.asof,
+        state=state,
+        confidence=float(confidence),
+        decision=decision,
+        plan=plan,
+        logs=logs,
+        telegram_signal=None,
+        headline=None,
+    )
+    return out.model_dump()
 
     # Telegram signal when ENTER (include both entries if applicable)
     telegram_signal = None
