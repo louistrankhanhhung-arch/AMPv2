@@ -75,6 +75,12 @@ class SignalPerfDB:
         # tính tổng hợp theo ngày/tuần từ trades.json (đơn giản: dựa theo posted_at)
 
 class UserDB:
+    def __init__(self, store: JsonStore):
+        self.store = store
+
+    def _now(self) -> int:
+        return int(time.time())
+
     def list_all(self) -> dict:
         """Trả về dict {telegram_id: {...}}"""
         return self.store.read("users")
@@ -84,12 +90,6 @@ class UserDB:
         users = self.store.read("users")
         return {uid: u for uid, u in users.items() if int(u.get("expires_at", 0)) > now}
 
-    def __init__(self, store: JsonStore):
-        self.store = store
-
-    def _now(self):
-        return int(time.time())
-
     def get(self, telegram_id: int) -> dict:
         users = self.store.read("users")
         return users.get(str(telegram_id), {})
@@ -98,6 +98,40 @@ class UserDB:
         u = self.get(telegram_id)
         exp = int(u.get("expires_at", 0))
         return exp > self._now()
+
+    def upsert(self, telegram_id: int, username: str | None = None, months: int = 1) -> dict:
+        # gia hạn theo tháng (giữ nguyên logic cũ)
+        users = self.store.read("users")
+        key = str(telegram_id)
+        now = self._now()
+        delta = months * 30 * 24 * 3600
+        if key in users and int(users[key].get("expires_at", 0)) > now:
+            users[key]["expires_at"] = int(users[key]["expires_at"]) + delta
+        else:
+            users[key] = users.get(key, {})
+            users[key]["expires_at"] = now + delta
+        if username:
+            users[key]["username"] = username
+        users[key]["plan"] = "plus"
+        self.store.write("users", users)
+        return users[key]
+
+    # ===== Cộng số ngày trực tiếp =====
+    def extend_days(self, telegram_id: int, days: int) -> dict:
+        users = self.store.read("users")
+        key = str(telegram_id)
+        now = self._now()
+        delta = int(days) * 24 * 3600
+        if key in users and int(users[key].get("expires_at", 0)) > now:
+            users[key]["expires_at"] = int(users[key]["expires_at"]) + delta
+        else:
+            username = users.get(key, {}).get("username")
+            users[key] = {"username": username, "created_at": now}
+            users[key]["expires_at"] = now + delta
+        users[key]["plan"] = "plus"
+        self.store.write("users", users)
+        return users[key]
+
 
     def upsert(self, telegram_id: int, username: str | None = None, months: int = 1) -> dict:
         # (giữ nguyên logic cũ của bạn – không sửa ở đây nếu đã ổn)
