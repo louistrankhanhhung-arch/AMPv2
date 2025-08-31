@@ -36,6 +36,44 @@ class JsonStore:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             os.replace(tmp, path)
 
+class SignalPerfDB:
+    def __init__(self, store: JsonStore):
+        self.store = store
+    def _all(self) -> dict:
+        return self.store.read("trades")
+    def _write(self, data: dict) -> None:
+        self.store.write("trades", data)
+    def open(self, sid: str, plan: dict) -> None:
+        data = self._all()
+        data[sid] = {
+            "sid": sid, "symbol": plan.get("symbol"), "dir": plan.get("DIRECTION"),
+            "entry": plan.get("entry"), "sl": plan.get("sl"),
+            "tp1": plan.get("tp1") or plan.get("tp"), "tp2": plan.get("tp2"), "tp3": plan.get("tp3"),
+            "posted_at": int(__import__("time").time()),
+            "status": "OPEN", "hits": {}, "r_ladder": {
+                "tp1": plan.get("rr1") or plan.get("rr"), "tp2": plan.get("rr2"), "tp3": plan.get("rr3")
+            },
+            "realized_R": 0.0, "close_reason": None
+        }
+        self._write(data)
+    def by_symbol(self, symbol: str) -> list:
+        return [t for t in self._all().values() if t.get("symbol")==symbol and t.get("status") in ("OPEN","TP1","TP2")]
+    def set_hit(self, sid: str, level: str, R: float) -> dict:
+        data = self._all(); t = data.get(sid, {})
+        if not t: return {}
+        t["hits"][level] = int(__import__("time").time())
+        t["status"] = level.upper()
+        t["realized_R"] = float(t.get("realized_R",0.0) + (R or 0.0))
+        data[sid] = t; self._write(data); return t
+    def close(self, sid: str, reason: str) -> dict:
+        data = self._all(); t = data.get(sid, {})
+        if not t: return {}
+        t["status"] = "TP3" if reason=="TP3" else "SL"
+        t["close_reason"] = reason
+        data[sid] = t; self._write(data); return t
+    def kpis(self, period: str="day") -> dict:
+        # tính tổng hợp theo ngày/tuần từ trades.json (đơn giản: dựa theo posted_at)
+
 class UserDB:
     def list_all(self) -> dict:
         """Trả về dict {telegram_id: {...}}"""
