@@ -186,7 +186,7 @@ class DecisionRules:
     rsi1h_short: float = 45.0
     rsi4h_short_soft: float = 50.0
     rsi1h_short_ctr: float = 40.0   # yêu cầu khi countertrend 4H
-    confluence_enter_thr: float = 0.5
+    confluence_enter_thr: float = 0.50
     confluence_bonus_ctx: float = 0.10   # thưởng khi 1D đồng hướng
     confluence_penalty_ctx: float = 0.15 # phạt khi 1D ngược hướng
 
