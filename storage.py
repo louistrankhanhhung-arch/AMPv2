@@ -1,17 +1,19 @@
-
-import os, json, time, datetime, threading
+import os, json, time, threading
 from typing import Optional, Dict, Any, List
 
+# -------------------------------
+# Json store (atomic-ish writes)
+# -------------------------------
 class JsonStore:
     def __init__(self, data_dir: str = "./data"):
         self.data_dir = data_dir
         os.makedirs(self.data_dir, exist_ok=True)
-        self._locks = {}
+        self._locks: Dict[str, threading.Lock] = {}
 
     def _path(self, name: str) -> str:
         return os.path.join(self.data_dir, name + ".json")
 
-    def _lock(self, name: str):
+    def _lock(self, name: str) -> threading.Lock:
         if name not in self._locks:
             self._locks[name] = threading.Lock()
         return self._locks[name]
@@ -36,44 +38,113 @@ class JsonStore:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             os.replace(tmp, path)
 
+
+# --------------------------------
+# Signal performance (R-based)
+# --------------------------------
 class SignalPerfDB:
     def __init__(self, store: JsonStore):
         self.store = store
+
     def _all(self) -> dict:
         return self.store.read("trades")
+
     def _write(self, data: dict) -> None:
         self.store.write("trades", data)
+
     def open(self, sid: str, plan: dict) -> None:
         data = self._all()
         data[sid] = {
-            "sid": sid, "symbol": plan.get("symbol"), "dir": plan.get("DIRECTION"),
-            "entry": plan.get("entry"), "sl": plan.get("sl"),
-            "tp1": plan.get("tp1") or plan.get("tp"), "tp2": plan.get("tp2"), "tp3": plan.get("tp3"),
-            "posted_at": int(__import__("time").time()),
-            "status": "OPEN", "hits": {}, "r_ladder": {
-                "tp1": plan.get("rr1") or plan.get("rr"), "tp2": plan.get("rr2"), "tp3": plan.get("rr3")
+            "sid": sid,
+            "symbol": plan.get("symbol"),
+            "dir": plan.get("DIRECTION"),
+            "entry": plan.get("entry"),
+            "sl": plan.get("sl"),
+            "tp1": plan.get("tp1") or plan.get("tp"),
+            "tp2": plan.get("tp2"),
+            "tp3": plan.get("tp3"),
+            "posted_at": int(time.time()),
+            "status": "OPEN",
+            "hits": {},
+            "r_ladder": {
+                "tp1": plan.get("rr1") or plan.get("rr"),
+                "tp2": plan.get("rr2"),
+                "tp3": plan.get("rr3"),
             },
-            "realized_R": 0.0, "close_reason": None
+            "realized_R": 0.0,
+            "close_reason": None,
         }
         self._write(data)
-    def by_symbol(self, symbol: str) -> list:
-        return [t for t in self._all().values() if t.get("symbol")==symbol and t.get("status") in ("OPEN","TP1","TP2")]
-    def set_hit(self, sid: str, level: str, R: float) -> dict:
-        data = self._all(); t = data.get(sid, {})
-        if not t: return {}
-        t["hits"][level] = int(__import__("time").time())
-        t["status"] = level.upper()
-        t["realized_R"] = float(t.get("realized_R",0.0) + (R or 0.0))
-        data[sid] = t; self._write(data); return t
-    def close(self, sid: str, reason: str) -> dict:
-        data = self._all(); t = data.get(sid, {})
-        if not t: return {}
-        t["status"] = "TP3" if reason=="TP3" else "SL"
-        t["close_reason"] = reason
-        data[sid] = t; self._write(data); return t
-    def kpis(self, period: str="day") -> dict:
-        # tính tổng hợp theo ngày/tuần từ trades.json (đơn giản: dựa theo posted_at)
 
+    def by_symbol(self, symbol: str) -> list:
+        return [
+            t for t in self._all().values()
+            if t.get("symbol") == symbol and t.get("status") in ("OPEN", "TP1", "TP2")
+        ]
+
+    def set_hit(self, sid: str, level: str, R: float) -> dict:
+        data = self._all()
+        t = data.get(sid, {})
+        if not t:
+            return {}
+        t["hits"][level] = int(time.time())
+        t["status"] = level.upper()
+        t["realized_R"] = float(t.get("realized_R", 0.0) + (R or 0.0))
+        data[sid] = t
+        self._write(data)
+        return t
+
+    def close(self, sid: str, reason: str) -> dict:
+        data = self._all()
+        t = data.get(sid, {})
+        if not t:
+            return {}
+        t["status"] = "TP3" if reason == "TP3" else "SL"
+        t["close_reason"] = reason
+        data[sid] = t
+        self._write(data)
+        return t
+
+    def kpis(self, period: str = "day") -> dict:
+        """
+        Trả về KPI PnL đơn giản trong khoảng thời gian:
+        - period='day': từ 00:00 hôm nay
+        - period='week': 7 ngày gần nhất (rolling)
+        Tính dựa trên trades.posted_at và realized_R hiện tại.
+        """
+        trades = list(self._all().values())
+        now = int(time.time())
+
+        if period == "day":
+            lt = time.localtime(now)
+            start_ts = int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, lt.tm_wday, lt.tm_yday, lt.tm_isdst)))
+        elif period == "week":
+            start_ts = now - 7 * 24 * 3600
+        else:
+            # mặc định: 24h gần nhất
+            start_ts = now - 24 * 3600
+
+        sample = [t for t in trades if int(t.get("posted_at", 0)) >= start_ts]
+        n = len(sample)
+        sumR = sum(float(t.get("realized_R", 0.0)) for t in sample)
+        wins = sum(1 for t in sample if float(t.get("realized_R", 0.0)) > 0)
+        wr = (wins / n) if n else 0.0
+        avgR = (sumR / n) if n else 0.0
+
+        return {
+            "period": period,
+            "n": n,
+            "wr": wr,
+            "avgR": avgR,
+            "sumR": sumR,
+            "from_ts": start_ts,
+            "to_ts": now,
+        }
+
+
+# -------------------------------
+# Users / subscriptions
+# -------------------------------
 class UserDB:
     def __init__(self, store: JsonStore):
         self.store = store
@@ -82,7 +153,7 @@ class UserDB:
         return int(time.time())
 
     def list_all(self) -> dict:
-        """Trả về dict {telegram_id: {...}}"""
+        """Trả về dict {telegram_id_str: {...}}"""
         return self.store.read("users")
 
     def list_active(self) -> dict:
@@ -100,7 +171,7 @@ class UserDB:
         return exp > self._now()
 
     def upsert(self, telegram_id: int, username: str | None = None, months: int = 1) -> dict:
-        # gia hạn theo tháng (giữ nguyên logic cũ)
+        """Gia hạn theo tháng (mặc định 1 tháng)."""
         users = self.store.read("users")
         key = str(telegram_id)
         now = self._now()
@@ -116,8 +187,8 @@ class UserDB:
         self.store.write("users", users)
         return users[key]
 
-    # ===== Cộng số ngày trực tiếp =====
     def extend_days(self, telegram_id: int, days: int) -> dict:
+        """Cộng trực tiếp số ngày."""
         users = self.store.read("users")
         key = str(telegram_id)
         now = self._now()
@@ -132,72 +203,42 @@ class UserDB:
         self.store.write("users", users)
         return users[key]
 
-
-    def upsert(self, telegram_id: int, username: str | None = None, months: int = 1) -> dict:
-        # (giữ nguyên logic cũ của bạn – không sửa ở đây nếu đã ổn)
-        users = self.store.read("users")
-        key = str(telegram_id)
-        now = self._now()
-        delta = months * 30 * 24 * 3600
-        if key in users and int(users[key].get("expires_at", 0)) > now:
-            users[key]["expires_at"] += delta
-        else:
-            users[key] = users.get(key, {})
-            users[key]["expires_at"] = now + delta
-        if username:
-            users[key]["username"] = username
-        users[key]["plan"] = "plus"
-        self.store.write("users", users)
-        return users[key]
-
-    # ===== New: cộng số ngày trực tiếp =====
-    def extend_days(self, telegram_id: int, days: int):
-        users = self.store.read("users")
-        key = str(telegram_id)
-        now = self._now()
-        delta = int(days) * 24 * 3600
-        if key in users and int(users[key].get("expires_at", 0)) > now:
-            users[key]["expires_at"] = int(users[key]["expires_at"]) + delta
-        else:
-            users[key] = {
-                "username": users.get(key, {}).get("username"),
-                "created_at": users.get(key, {}).get("created_at", now),
-                "expires_at": now + delta
-            }
-        self.store.write("users", users)
-
-    # ===== New: thu hồi ngay =====
-    def revoke(self, telegram_id: int):
+    def revoke(self, telegram_id: int) -> None:
+        """Thu hồi ngay (set expires_at = 0)."""
         users = self.store.read("users")
         key = str(telegram_id)
         if key in users:
             users[key]["expires_at"] = 0
             self.store.write("users", users)
+
     def set_expiry(self, telegram_id: int, ts: int) -> None:
         users = self.store.read("users")
         key = str(telegram_id)
         u = users.get(key, {})
-        u["expires_at"] = ts
+        u["expires_at"] = int(ts)
         users[key] = u
         self.store.write("users", users)
 
+
+# -------------------------------
+# Payments (manual approve)
+# -------------------------------
 class PaymentDB:
     def __init__(self, store: JsonStore):
         self.store = store
 
-    # thêm tham số order_id để truy vết
     def add(
         self,
         telegram_id: int,
-        amount: int | None,
-        bank_ref: str | None,
+        amount: Optional[int],
+        bank_ref: Optional[str],
         months: int = 1,
         approved: bool = False,
-        admin_id: int | None = None,
-        order_id: str | None = None,
+        admin_id: Optional[int] = None,
+        order_id: Optional[str] = None,
     ) -> str:
         payments = self.store.read("payments")
-        pid = str(int(time.time())) + "-" + str(telegram_id)
+        pid = f"{int(time.time())}-{telegram_id}"
         payments[pid] = {
             "telegram_id": telegram_id,
             "amount": amount,
@@ -206,48 +247,47 @@ class PaymentDB:
             "approved": approved,
             "admin_id": admin_id,
             "order_id": order_id,
-            "created_at": int(time.time())
+            "created_at": int(time.time()),
         }
         self.store.write("payments", payments)
         return pid
 
-    def approve(self, payment_id: str, admin_id: int):
+    def approve(self, payment_id: str, admin_id: int) -> None:
         payments = self.store.read("payments")
         if payment_id in payments:
             payments[payment_id]["approved"] = True
             payments[payment_id]["admin_id"] = admin_id
             self.store.write("payments", payments)
 
+
+# -------------------------------
+# Signal cache (teaser/full/plan)
+# -------------------------------
 class SignalCache:
     def __init__(self, store: JsonStore):
         self.store = store
 
-    def put_full(self, signal_id: str, text: str):
+    def put_full(self, signal_id: str, text: str) -> None:
         data = self.store.read("signals")
-        data[signal_id] = {"text": text, "ts": int(time.time())}
+        data[signal_id] = {**data.get(signal_id, {}), "text": text, "ts": int(time.time())}
         self.store.write("signals", data)
 
-    def get_full(self, signal_id: str) -> str | None:
+    def get_full(self, signal_id: str) -> Optional[str]:
         data = self.store.read("signals")
         s = data.get(signal_id)
         return s.get("text") if s else None
 
-    # New: store/retrieve the raw plan to render watermark theo user
-    def put_plan(self, signal_id: str, plan: dict):
+    def put_plan(self, signal_id: str, plan: dict) -> None:
         data = self.store.read("signals")
         data[signal_id] = {**data.get(signal_id, {}), "plan": plan, "ts": int(time.time())}
         data["_latest_id"] = signal_id
         self.store.write("signals", data)
 
-    def get_plan(self, signal_id: str) -> dict | None:
+    def get_plan(self, signal_id: str) -> Optional[dict]:
         data = self.store.read("signals")
         s = data.get(signal_id)
         return s.get("plan") if s else None
 
-    def get_latest_id(self) -> str | None:
-       return self.store.read("signals").get("_latest_id")
-
-    def get_plan(self, signal_id: str) -> dict | None:
-       data = self.store.read("signals")
-       s = data.get(signal_id)
-       return s.get("plan") if s else None
+    def get_latest_id(self) -> Optional[str]:
+        data = self.store.read("signals")
+        return data.get("_latest_id")
