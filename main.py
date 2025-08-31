@@ -27,6 +27,8 @@ from evidence_evaluators import build_evidence_bundle, Config
 from decision_engine import decide
 
 from notifier_telegram import TelegramNotifier
+from storage import SignalPerfDB, JsonStore, UserDB
+from templates import render_update
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 TIMEFRAMES = ("1H", "4H", "1D")
@@ -197,29 +199,34 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     "notes": out.get("notes", []),
                 })
                 sid = tn.post_teaser(plan_for_teaser)
-                from storage import SignalPerfDB, JsonStore
                 SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data"))).open(sid, plan_for_teaser)
             except Exception as e:
                 log.warning(f"[{symbol}] teaser post failed: {e}")
     # --- end teaser post ---
-    # after process_symbol(...), khi đã có df1 và symbol:
+# --- progress check: update TP/SL hits for existing OPEN trades ---
     try:
-        price_now = float(dfs.get("1H")["close"].iloc[-1])
+        df_1h = dfs.get("1H")
+        if df_1h is None or df_1h.empty:
+            raise ValueError("missing 1H frame")
+        price_now = float(df_1h["close"].iloc[-1])
+
         perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
-        for t in perf.by_symbol(symbol):
-            # logic chạm TP/SL
-            def crossed(side, price, level, kind):
-                return (side=="LONG" and price>=level) or (side=="SHORT" and price<=level)
-            side = t["dir"].upper()
-            if t["status"]=="OPEN" and t.get("tp1") and crossed(side, price_now, t["tp1"], "tp1"):
-                nt = perf.set_hit(t["sid"], "TP1", t["r_ladder"].get("tp1") or 0.0)
-                tn.send_channel(render_update(t, "TP1 hit", {"R_now": nt["realized_R"]}))      # Free ngắn gọn
-                # Plus: DM chi tiết
-                from storage import UserDB
-                udb = UserDB(JsonStore(os.getenv("DATA_DIR","./data")))
-                for uid in udb.list_active().keys():
-                    tn.send_dm(int(uid), render_update(t, "TP1 hit", {"R_now": nt["realized_R"]}))
-            # lặp cho TP2/TP3/SL tương tự; khi TP3/SL thì perf.close(...)
+        open_trades = perf.by_symbol(symbol)
+        if open_trades:
+            tn2 = _get_notifier()
+            for t in open_trades:
+                def crossed(side, price, level):
+                    return (side=="LONG" and price>=level) or (side=="SHORT" and price<=level)
+                side = (t.get("dir") or "").upper()
+                if t.get("status")=="OPEN" and t.get("tp1") and crossed(side, price_now, t["tp1"]):
+                    nt = perf.set_hit(t["sid"], "TP1", (t.get("r_ladder",{}) or {}).get("tp1") or 0.0)
+                    if tn2:
+                        tn2.send_channel(render_update(t, "TP1 hit", {"R_now": nt.get("realized_R",0.0)}))
+                        udb = UserDB(JsonStore(os.getenv("DATA_DIR","./data")))
+                        for uid in udb.list_active().keys():
+                            tn2.send_dm(int(uid), render_update(t, "TP1 hit", {"R_now": nt.get("realized_R",0.0)}))
+                # TODO: TP2/TP3/SL tương tự; dùng perf.close(...) khi TP3/SL
+        # nếu không có open_trades -> không làm gì, không log warning
     except Exception as e:
         log.warning("progress-check failed: %s", e)
 
