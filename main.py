@@ -196,10 +196,32 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     "STATE": state,
                     "notes": out.get("notes", []),
                 })
-                tn.post_teaser(plan_for_teaser)
+                sid = tn.post_teaser(plan_for_teaser)
+                from storage import SignalPerfDB, JsonStore
+                SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data"))).open(sid, plan_for_teaser)
             except Exception as e:
                 log.warning(f"[{symbol}] teaser post failed: {e}")
     # --- end teaser post ---
+    # after process_symbol(...), khi đã có df1 và symbol:
+    try:
+        price_now = float(dfs.get("1H")["close"].iloc[-1])
+        perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
+        for t in perf.by_symbol(symbol):
+            # logic chạm TP/SL
+            def crossed(side, price, level, kind):
+                return (side=="LONG" and price>=level) or (side=="SHORT" and price<=level)
+            side = t["dir"].upper()
+            if t["status"]=="OPEN" and t.get("tp1") and crossed(side, price_now, t["tp1"], "tp1"):
+                nt = perf.set_hit(t["sid"], "TP1", t["r_ladder"].get("tp1") or 0.0)
+                tn.send_channel(render_update(t, "TP1 hit", {"R_now": nt["realized_R"]}))      # Free ngắn gọn
+                # Plus: DM chi tiết
+                from storage import UserDB
+                udb = UserDB(JsonStore(os.getenv("DATA_DIR","./data")))
+                for uid in udb.list_active().keys():
+                    tn.send_dm(int(uid), render_update(t, "TP1 hit", {"R_now": nt["realized_R"]}))
+            # lặp cho TP2/TP3/SL tương tự; khi TP3/SL thì perf.close(...)
+    except Exception as e:
+        log.warning("progress-check failed: %s", e)
 
     print(json.dumps(out, ensure_ascii=False), flush=True)
     if out.get("telegram_signal"):
