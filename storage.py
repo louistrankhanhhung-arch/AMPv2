@@ -83,9 +83,8 @@ class SignalPerfDB:
         for t in self._all().values():
             if t.get("symbol") != symbol: 
                 continue
-            if t.get("status") in ("OPEN", "TP1", "TP2"):
-                if now - int(t.get("posted_at", 0)) < seconds:
-                    return True
+            if t.get("status") in ("OPEN", "TP1", "TP2") and now - int(t.get("posted_at", 0)) < seconds:
+                return True
         return False
         
     def by_symbol(self, symbol: str) -> list:
