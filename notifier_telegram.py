@@ -1,14 +1,12 @@
-import os, uuid, logging, requests
+import os, uuid, logging, requests, time
 from typing import Dict, Any
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from templates import render_teaser
 from storage import JsonStore, SignalCache
 from config import BOT_TOKEN, CHANNEL_ID, TEASER_SHOW_BUTTON, TEASER_UPGRADE_BUTTON, DATA_DIR
-try:
-    from config import DISCUSSION_ID   # optional: id của discussion group link với channel
-except Exception:
-    DISCUSSION_ID = None
+# Optional: đặt CHANNEL_USERNAME trong .env nếu kênh có username công khai (@yourchannel)
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")
 
 log = logging.getLogger("notifier")
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
@@ -86,30 +84,32 @@ class TelegramNotifier:
         r = self.session.post(f"{API_BASE}/sendMessage", json=payload, timeout=15)
         r.raise_for_status()
 
-    def send_channel_reply(self, reply_to_message_id: int, html: str):
+    def _build_origin_link(self, origin_message_id: int) -> str:
         """
-        Nếu channel bật Comments (linked discussion group):
-        - Gửi vào DISCUSSION_ID và set message_thread_id = message_id của post gốc.
-        Ngược lại: fallback reply_to_message_id trực tiếp trên CHANNEL_ID.
+        Ưu tiên dùng username: https://t.me/<username>/<mid>
+        Nếu không có username, dùng channel-id: https://t.me/c/<id_without_-100>/<mid>
         """
-        if DISCUSSION_ID:
-            payload = {
-                "chat_id": int(DISCUSSION_ID),
-                "text": html,
-                "parse_mode": "HTML",
-                "message_thread_id": int(reply_to_message_id)
-            }
-        else:
-            payload = {
-                "chat_id": int(CHANNEL_ID),
-                "text": html,
-                "parse_mode": "HTML",
-                "reply_to_message_id": int(reply_to_message_id),
-                "allow_sending_without_reply": True
-            }
+        if CHANNEL_USERNAME:
+            return f"https://t.me/{CHANNEL_USERNAME}/{origin_message_id}"
+        cid = str(CHANNEL_ID)
+        cid_clean = cid[4:] if cid.startswith("-100") else cid
+        return f"https://t.me/c/{cid_clean}/{origin_message_id}"
+
+    def send_channel_update(self, origin_message_id: int, html: str, buttons: list | None = None):
+        link = self._build_origin_link(int(origin_message_id))
+        body = f"{html}\n\n<a href=\"{link}\">↩️ Xem tín hiệu gốc</a>"
+        payload = {
+            "chat_id": int(CHANNEL_ID),
+            "text": body,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        if buttons:
+            payload["reply_markup"] = {"inline_keyboard": buttons}
         r = self.session.post(f"{API_BASE}/sendMessage", json=payload, timeout=15)
         r.raise_for_status()
-      
+        return r.json()["result"]["message_id"]
+
     def send_dm(self, user_id: int, html: str):
         payload = {"chat_id": int(user_id), "text": html, "parse_mode": "HTML"}
         r = self.session.post(f"{API_BASE}/sendMessage", json=payload, timeout=15)
