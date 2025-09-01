@@ -277,9 +277,13 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                         else:
                             tn2.send_channel(render_update(t, note, extra))
 
-                # SL => đóng lệnh
+                # SL => đóng lệnh (CHỈ khi chưa từng chạm TP nào)
                 slv = t.get("sl")
-                if t.get("status") in ("OPEN","TP1","TP2") and slv and ((side=="LONG" and price_now<=slv) or (side=="SHORT" and price_now>=slv)):
+                has_tp_hit = bool(hits.get("TP1") or hits.get("TP2") or hits.get("TP3"))
+                if t.get("status") == "OPEN" and not has_tp_hit and slv and (
+                    (side == "LONG"  and price_now <= slv) or
+                    (side == "SHORT" and price_now >= slv)
+                ):
                     perf.close(t["sid"], "SL")
                     t["status"] = "SL"
                     note = "SL hit — Đóng lệnh."
