@@ -80,3 +80,35 @@ def render_summary(kpi: dict, scope: str="Daily") -> str:
       f"• Avg R: {kpi['avgR']:.2f}\n"
       f"• Total R: {kpi['sumR']:.2f}"
     )
+# NEW: KPI 24H chi tiết
+def render_kpi_24h(detail: dict, report_date_str: str, upgrade_url: str | None = None) -> str:
+    items = detail["items"]
+    totals = detail["totals"]
+    # 0) Header
+    lines = [f"<b>Kết quả giao dịch 24H qua — {report_date_str}</b>", ""]
+    # 1) Danh sách tín hiệu
+    if not items:
+        lines += ["Không có tín hiệu nào trong 24H qua.", ""]
+    else:
+        for it in items:
+            s = it["symbol"] or "-"
+            pct = f"{it['pct']:+.2f}%"
+            mark = "🟢" if it["win"] else ("⛔" if it["status"]=="SL" else "⚪")
+            lines.append(f"{s:<8} : {pct} {mark}")
+        lines.append("")
+    # 2) Đánh giá
+    lines += [
+        "<b>Đánh giá</b>:",
+        f"• Tổng lệnh đã mở: {totals['n']}",
+        f"• Tổng lợi nhuận: {totals['sum_pct']:.2f}%",
+        f"• Lợi nhuận trung bình/lệnh: {totals['avg_pct']:.2f}%",
+        f"• Tỉ lệ thắng: {totals['win_rate']*100:.2f}%",
+        f"• Số lệnh thắng: {totals['wins']}",
+        f"• Số lệnh thua: {totals['losses']}",
+        ""
+    ]
+    # 3) Lời mời nâng cấp
+    if upgrade_url:
+        lines.append("🔒 <b>Nâng cấp Plus</b> để xem full tín hiệu & nhận thông báo sớm hơn.")
+        lines.append(f'<a href="{upgrade_url}">👉 Nâng cấp ngay</a>')
+    return "\n".join(lines)
