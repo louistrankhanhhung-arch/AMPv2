@@ -96,13 +96,14 @@ class TelegramNotifier:
         return f"https://t.me/c/{cid_clean}/{origin_message_id}"
 
     def send_channel_update(self, origin_message_id: int, html: str, buttons: list | None = None):
-        link = self._build_origin_link(int(origin_message_id))
-        body = f"{html}\n\n<a href=\"{link}\">↩️ Xem tín hiệu gốc</a>"
+        # Trả lời trực tiếp lên message gốc để Telegram hiện snapshot/quote
         payload = {
             "chat_id": int(CHANNEL_ID),
-            "text": body,
+            "text": html,
             "parse_mode": "HTML",
-            "disable_web_page_preview": True
+            "disable_web_page_preview": True,
+            "reply_to_message_id": int(origin_message_id),
+            "allow_sending_without_reply": True
         }
         if buttons:
             payload["reply_markup"] = {"inline_keyboard": buttons}
