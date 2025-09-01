@@ -43,7 +43,7 @@ class TelegramNotifier:
         except Exception as e:
             raise RuntimeError(f"getMe failed: {e}") from e
 
-    def post_teaser(self, plan: Dict[str, Any]) -> str:
+    def post_teaser(self, plan: Dict[str, Any]) -> tuple[str, int]:
         if not self.username:
             raise RuntimeError("Bot username is not available")
         signal_id = str(uuid.uuid4())[:8]
@@ -66,6 +66,7 @@ class TelegramNotifier:
         try:
             r = self.session.post(f"{API_BASE}/sendMessage", json=payload, timeout=15)
             r.raise_for_status()
+            msg_id = int(r.json()["result"]["message_id"])
         except requests.RequestException as e:
             log.warning("teaser post failed: %s", e)
             raise
@@ -74,13 +75,24 @@ class TelegramNotifier:
             "Posted teaser signal_id=%s symbol=%s dir=%s",
             signal_id, plan.get("symbol"), plan.get("DIRECTION")
         )
-        return signal_id
+        return signal_id, msg_id
 
     def send_channel(self, html: str):
         payload = {"chat_id": int(CHANNEL_ID), "text": html, "parse_mode": "HTML"}
         r = self.session.post(f"{API_BASE}/sendMessage", json=payload, timeout=15)
         r.raise_for_status()
 
+    def send_channel_reply(self, reply_to_message_id: int, html: str):
+        payload = {
+            "chat_id": int(CHANNEL_ID),
+            "text": html,
+            "parse_mode": "HTML",
+            "reply_to_message_id": int(reply_to_message_id),
+            "allow_sending_without_reply": True
+        }
+        r = self.session.post(f"{API_BASE}/sendMessage", json=payload, timeout=15)
+        r.raise_for_status()
+      
     def send_dm(self, user_id: int, html: str):
         payload = {"chat_id": int(user_id), "text": html, "parse_mode": "HTML"}
         r = self.session.post(f"{API_BASE}/sendMessage", json=payload, timeout=15)
