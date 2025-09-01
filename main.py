@@ -257,7 +257,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     perf.set_hit(t["sid"], "TP2", (t.get("r_ladder",{}) or {}).get("tp2") or 0.0)
                     hits["TP2"] = int(__import__("time").time())
                     t["status"] = "TP2"
-                    note = "TP2 hit — Nâng SL lên Entry."
+                    note = "TP2 hit — Nâng SL lên Entry để bảo toàn lợi nhuận."
                     extra = {"margin_pct": margin_pct(float(t["tp2"]))}
                     if tn2:
                         if msg_id:
