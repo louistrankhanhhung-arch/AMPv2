@@ -231,52 +231,61 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                         return (hit_price - entry) / entry * 100.0
                     else:
                         return (entry - hit_price) / entry * 100.0
+                # Đã hit rồi thì bỏ qua (idempotent)
+                hits = t.get("hits", {})
+                msg_id = t.get("message_id")
+                entry = float(t.get("entry") or 0.0)
+                def margin_pct(hit_price: float) -> float:
+                    if not entry: return 0.0
+                    return ((hit_price - entry) / entry * 100.0) if side=="LONG" else ((entry - hit_price) / entry * 100.0)
+
                 # TP1
-                if t.get("status")=="OPEN" and t.get("tp1") and crossed(side, price_now, t["tp1"]):
-                    nt = perf.set_hit(t["sid"], "TP1", (t.get("r_ladder",{}) or {}).get("tp1") or 0.0)
+                if t.get("status")=="OPEN" and not hits.get("TP1") and t.get("tp1") and crossed(side, price_now, t["tp1"]):
+                    perf.set_hit(t["sid"], "TP1", (t.get("r_ladder",{}) or {}).get("tp1") or 0.0)
                     note = "TP1 hit — Nâng SL lên Entry để bảo toàn lợi nhuận."
                     extra = {"margin_pct": margin_pct(float(t["tp1"]))}
                     if tn2:
-                        if msg_id: tn2.send_channel_reply(int(msg_id), render_update(t, note, extra))
-                        else: tn2.send_channel(render_update(t, note, extra))
+                        (tn2.send_channel_reply(int(msg_id), render_update(t, note, extra))
+                        if msg_id else tn2.send_channel(render_update(t, note, extra)))
                         udb = UserDB(JsonStore(os.getenv("DATA_DIR","./data")))
                         for uid in udb.list_active().keys():
                             tn2.send_dm(int(uid), render_update(t, note, extra))
                 # TP2
-                if t.get("status") in ("OPEN","TP1") and t.get("tp2") and crossed(side, price_now, t["tp2"]):
-                    nt = perf.set_hit(t["sid"], "TP2", (t.get("r_ladder",{}) or {}).get("tp2") or 0.0)
-                    note = "TP2 hit — Nâng SL lên Entry để bảo toàn lợi nhuận."
+                if t.get("status") in ("OPEN","TP1") and not hits.get("TP2") and t.get("tp2") and crossed(side, price_now, t["tp2"]):
+                    perf.set_hit(t["sid"], "TP2", (t.get("r_ladder",{}) or {}).get("tp2") or 0.0)
+                    note = "TP2 hit — Nâng SL lên TP1."
                     extra = {"margin_pct": margin_pct(float(t["tp2"]))}
                     if tn2:
-                        if msg_id: tn2.send_channel_reply(int(msg_id), render_update(t, note, extra))
-                        else: tn2.send_channel(render_update(t, note, extra))
+                        (tn2.send_channel_reply(int(msg_id), render_update(t, note, extra))
+                        if msg_id else tn2.send_channel(render_update(t, note, extra)))
                         udb = UserDB(JsonStore(os.getenv("DATA_DIR","./data")))
                         for uid in udb.list_active().keys():
                             tn2.send_dm(int(uid), render_update(t, note, extra))
-                # TP3 (đóng lệnh)
+
+                # TP3 => đóng lệnh
                 if t.get("status") in ("OPEN","TP1","TP2") and t.get("tp3") and crossed(side, price_now, t["tp3"]):
-                    nt = perf.close(t["sid"], "TP3")
-                    note = "TP3 hit — Đóng lệnh"
+                    perf.close(t["sid"], "TP3")
+                    note = "TP3 hit — Đóng lệnh."
                     extra = {"margin_pct": margin_pct(float(t["tp3"]))}
                     if tn2:
-                        if msg_id: tn2.send_channel_reply(int(msg_id), render_update(t, note, extra))
-                        else: tn2.send_channel(render_update(t, note, extra))
+                        (tn2.send_channel_reply(int(msg_id), render_update(t, note, extra))
+                        if msg_id else tn2.send_channel(render_update(t, note, extra)))
                         udb = UserDB(JsonStore(os.getenv("DATA_DIR","./data")))
                         for uid in udb.list_active().keys():
                             tn2.send_dm(int(uid), render_update(t, note, extra))
-                # SL (đóng lệnh)
-                if t.get("status") in ("OPEN","TP1","TP2"):
-                    slv = t.get("sl")
-                    if slv and ((side=="LONG" and price_now<=slv) or (side=="SHORT" and price_now>=slv)):
-                        perf.close(t["sid"], "SL")
-                        note = "SL hit — Đóng lệnh"
-                        extra = {"margin_pct": margin_pct(float(slv))}
-                        if tn2:
-                            if msg_id: tn2.send_channel_reply(int(msg_id), render_update(t, note, extra))
-                            else: tn2.send_channel(render_update(t, note, extra))
-                            udb = UserDB(JsonStore(os.getenv("DATA_DIR","./data")))
-                            for uid in udb.list_active().keys():
-                                tn2.send_dm(int(uid), render_update(t, note, extra))
+
+                # SL => đóng lệnh
+                slv = t.get("sl")
+                if t.get("status") in ("OPEN","TP1","TP2") and slv and ((side=="LONG" and price_now<=slv) or (side=="SHORT" and price_now>=slv)):
+                    perf.close(t["sid"], "SL")
+                    note = "SL hit — Đóng lệnh."
+                    extra = {"margin_pct": margin_pct(float(slv))}
+                    if tn2:
+                        (tn2.send_channel_reply(int(msg_id), render_update(t, note, extra))
+                        if msg_id else tn2.send_channel(render_update(t, note, extra)))
+                        udb = UserDB(JsonStore(os.getenv("DATA_DIR","./data")))
+                        for uid in udb.list_active().keys():
+                            tn2.send_dm(int(uid), render_update(t, note, extra))
         # nếu không có open_trades -> không làm gì, không log warning
     except Exception as e:
         log.warning("progress-check failed: %s", e)
