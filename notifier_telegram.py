@@ -5,6 +5,10 @@ from urllib3.util.retry import Retry
 from templates import render_teaser
 from storage import JsonStore, SignalCache
 from config import BOT_TOKEN, CHANNEL_ID, TEASER_SHOW_BUTTON, TEASER_UPGRADE_BUTTON, DATA_DIR
+try:
+    from config import DISCUSSION_ID   # optional: id của discussion group link với channel
+except Exception:
+    DISCUSSION_ID = None
 
 log = logging.getLogger("notifier")
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
@@ -83,13 +87,26 @@ class TelegramNotifier:
         r.raise_for_status()
 
     def send_channel_reply(self, reply_to_message_id: int, html: str):
-        payload = {
-            "chat_id": int(CHANNEL_ID),
-            "text": html,
-            "parse_mode": "HTML",
-            "reply_to_message_id": int(reply_to_message_id),
-            "allow_sending_without_reply": True
-        }
+        """
+        Nếu channel bật Comments (linked discussion group):
+        - Gửi vào DISCUSSION_ID và set message_thread_id = message_id của post gốc.
+        Ngược lại: fallback reply_to_message_id trực tiếp trên CHANNEL_ID.
+        """
+        if DISCUSSION_ID:
+            payload = {
+                "chat_id": int(DISCUSSION_ID),
+                "text": html,
+                "parse_mode": "HTML",
+                "message_thread_id": int(reply_to_message_id)
+            }
+        else:
+            payload = {
+                "chat_id": int(CHANNEL_ID),
+                "text": html,
+                "parse_mode": "HTML",
+                "reply_to_message_id": int(reply_to_message_id),
+                "allow_sending_without_reply": True
+            }
         r = self.session.post(f"{API_BASE}/sendMessage", json=payload, timeout=15)
         r.raise_for_status()
       
