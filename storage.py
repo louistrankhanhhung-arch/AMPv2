@@ -152,7 +152,71 @@ class SignalPerfDB:
             "to_ts": now,
         }
 
-
+# NEW: breakdown 24H theo % dựa trên TP cao nhất/SL đã đạt
+    def kpis_24h_detail(self) -> dict:
+        """
+        Trả về:
+          - items: list[{symbol, status, pct, win(bool)}] cho các lệnh posted trong 24h qua
+          - totals: {n, wins, losses, win_rate, sum_pct, avg_pct}
+        Quy ước %:
+          • TPx: dùng (TPx-entry)/entry * 100 cho LONG; ngược lại cho SHORT
+          • SL: âm tương tự
+          • Nếu chưa chạm TP/SL: pct=0, win=False
+        """
+        import time
+        now = int(time.time())
+        start_ts = now - 24*3600
+        def _pct(t, price_hit):
+            try:
+                e = float(t.get("entry") or 0.0)
+                if not e: return 0.0
+                if (t.get("dir") or "").upper() == "LONG":
+                    return (float(price_hit) - e) / e * 100.0
+                else:
+                    return (e - float(price_hit)) / e * 100.0
+            except Exception:
+                return 0.0
+        items = []
+        for t in self._all().values():
+            if int(t.get("posted_at", 0)) < start_ts:
+                continue
+            status = (t.get("status") or "OPEN").upper()
+            # chọn mức đã đạt cao nhất
+            price_hit = None
+            win = False
+            if status == "TP3" or ("TP3" in (t.get("hits") or {})):
+                price_hit = t.get("tp3"); win = True
+                status = "TP3"
+            elif status == "TP2" or ("TP2" in (t.get("hits") or {})):
+                price_hit = t.get("tp2"); win = True
+                status = "TP2"
+            elif status == "TP1" or ("TP1" in (t.get("hits") or {})):
+                price_hit = t.get("tp1"); win = True
+                status = "TP1"
+            elif status == "SL":
+                price_hit = t.get("sl"); win = False
+            else:
+                price_hit = t.get("entry"); win = False  # chưa hit gì: coi như 0%
+            pct = _pct(t, price_hit)
+            items.append({
+                "symbol": t.get("symbol"),
+                "status": status,
+                "pct": float(pct),
+                "win": bool(win),
+            })
+        n = len(items)
+        wins = sum(1 for i in items if i["win"])
+        losses = sum(1 for i in items if i["status"] == "SL")
+        sum_pct = sum(i["pct"] for i in items)
+        avg_pct = (sum_pct / n) if n else 0.0
+        win_rate = (wins / n) if n else 0.0
+        return {
+            "items": items,
+            "totals": {
+                "n": n, "wins": wins, "losses": losses,
+                "win_rate": win_rate, "sum_pct": sum_pct, "avg_pct": avg_pct
+            }
+        }
 # -------------------------------
 # Users / subscriptions
 # -------------------------------
