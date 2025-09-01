@@ -198,8 +198,13 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     "STATE": state,
                     "notes": out.get("notes", []),
                 })
-                sid = tn.post_teaser(plan_for_teaser)
-                SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data"))).open(sid, plan_for_teaser)
+                perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
+                # 4h cooldown
+                if perf.cooldown_active(symbol, seconds=4*3600):
+                    log.info(f"[{symbol}] skip ENTER due to cooldown (4h)")
+                else:
+                    sid, msg_id = tn.post_teaser(plan_for_teaser)
+                    perf.open(sid, plan_for_teaser, message_id=msg_id)
             except Exception as e:
                 log.warning(f"[{symbol}] teaser post failed: {e}")
     # --- end teaser post ---
