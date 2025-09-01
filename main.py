@@ -277,7 +277,31 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                         else:
                             tn2.send_channel(render_update(t, note, extra))
 
-                # SL => đóng lệnh (CHỈ khi chưa từng chạm TP nào)
+                # NEW: Nếu đã đạt TP1/TP2 mà giá quay ngược về Entry -> ĐÓNG LỆNH,
+                # và hiển thị lợi nhuận theo TP cao nhất đã đạt.
+                if t.get("status") in ("TP1","TP2") and entry:
+                    retraced = (side == "LONG" and price_now <= entry) or (side == "SHORT" and price_now >= entry)
+                    if retraced:
+                        # chọn TP cao nhất đã đạt để tính % lợi nhuận hiển thị
+                        highest = None
+                        hit_price = None
+                        if (t.get("status") == "TP2") or (hits.get("TP2")):
+                            highest = "TP2"
+                            hit_price = float(t.get("tp2") or entry)
+                        else:
+                            highest = "TP1"
+                            hit_price = float(t.get("tp1") or entry)
+                        perf.close(t["sid"], "ENTRY")
+                        t["status"] = "CLOSE"
+                        note = f"Đóng lệnh — Giá quay về Entry sau khi đã đạt {highest}."
+                        extra = {"margin_pct": margin_pct(hit_price)}
+                        if tn2:
+                            if msg_id:
+                                tn2.send_channel_update(int(msg_id), render_update(t, note, extra))
+                            else:
+                                tn2.send_channel(render_update(t, note, extra))
+
+                # --- SL => đóng lệnh (CHỈ khi chưa từng chạm TP nào)
                 slv = t.get("sl")
                 has_tp_hit = bool(hits.get("TP1") or hits.get("TP2") or hits.get("TP3"))
                 if t.get("status") == "OPEN" and not has_tp_hit and slv and (
@@ -293,6 +317,8 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                             tn2.send_channel_update(int(msg_id), render_update(t, note, extra))
                         else:
                             tn2.send_channel(render_update(t, note, extra))
+
+                  
         # nếu không có open_trades -> không làm gì, không log warning
     except Exception as e:
         log.warning("progress-check failed: %s", e)
