@@ -335,6 +335,7 @@ def loop_scheduler():
  
 
     last_tick = None
+    last_kpi_day = None  # NEW: để gửi KPI 1 lần/ngày
     while True:
         now = datetime.now(TZ)
         blk = which_block_for_minute(now.minute)
@@ -344,6 +345,22 @@ def loop_scheduler():
         if blk is not None and tick_key != last_tick and now.second < 10:
             last_tick = tick_key
             run_block(blk, blocks[blk], cfg, limit, ex=shared_ex)
+        # NEW: KPI lúc 08:18 local (VN) ~ 01:18 UTC
+        try:
+            if now.hour == 8 and now.minute == 18 and (last_kpi_day != (now.year, now.month, now.day)):
+                last_kpi_day = (now.year, now.month, now.day)
+                # dựng báo cáo 24H
+                perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
+                detail = perf.kpis_24h_detail()
+                # ngày/tháng cho header
+                report_date_str = now.strftime("%d/%m/%Y")
+                from templates import render_kpi_24h
+                tn = _get_notifier()
+                if tn:
+                    html = render_kpi_24h(detail, report_date_str, upgrade_url=f"https://t.me/{tn.username}?start=upgrade")
+                    tn.send_kpi24(html)
+        except Exception as e:
+            log.warning(f"KPI-24H send failed: {e}")
         # sleep until next 5-minute boundary
         secs = now.second + now.minute*60
         to_next = 300 - (secs % 300)
