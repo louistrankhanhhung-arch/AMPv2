@@ -242,6 +242,9 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 # TP1
                 if t.get("status")=="OPEN" and not hits.get("TP1") and t.get("tp1") and crossed(side, price_now, t["tp1"]):
                     perf.set_hit(t["sid"], "TP1", (t.get("r_ladder",{}) or {}).get("tp1") or 0.0)
+                    # cập nhật snapshot local để tránh bắn lặp trong cùng vòng
+                    hits["TP1"] = int(__import__("time").time())
+                    t["status"] = "TP1"
                     note = "TP1 hit — Nâng SL lên Entry để bảo toàn lợi nhuận."
                     extra = {"margin_pct": margin_pct(float(t["tp1"]))}
                     if tn2:
@@ -253,6 +256,8 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 # TP2
                 if t.get("status") in ("OPEN","TP1") and not hits.get("TP2") and t.get("tp2") and crossed(side, price_now, t["tp2"]):
                     perf.set_hit(t["sid"], "TP2", (t.get("r_ladder",{}) or {}).get("tp2") or 0.0)
+                    hits["TP2"] = int(__import__("time").time())
+                    t["status"] = "TP2"
                     note = "TP2 hit — Nâng SL lên TP1."
                     extra = {"margin_pct": margin_pct(float(t["tp2"]))}
                     if tn2:
@@ -265,6 +270,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 # TP3 => đóng lệnh
                 if t.get("status") in ("OPEN","TP1","TP2") and t.get("tp3") and crossed(side, price_now, t["tp3"]):
                     perf.close(t["sid"], "TP3")
+                    t["status"] = "TP3"
                     note = "TP3 hit — Đóng lệnh."
                     extra = {"margin_pct": margin_pct(float(t["tp3"]))}
                     if tn2:
@@ -278,6 +284,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 slv = t.get("sl")
                 if t.get("status") in ("OPEN","TP1","TP2") and slv and ((side=="LONG" and price_now<=slv) or (side=="SHORT" and price_now>=slv)):
                     perf.close(t["sid"], "SL")
+                    t["status"] = "SL"
                     note = "SL hit — Đóng lệnh."
                     extra = {"margin_pct": margin_pct(float(slv))}
                     if tn2:
