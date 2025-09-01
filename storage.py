@@ -52,7 +52,7 @@ class SignalPerfDB:
     def _write(self, data: dict) -> None:
         self.store.write("trades", data)
 
-    def open(self, sid: str, plan: dict) -> None:
+    def open(self, sid: str, plan: dict, message_id: int | None = None) -> None:
         data = self._all()
         data[sid] = {
             "sid": sid,
@@ -64,6 +64,7 @@ class SignalPerfDB:
             "tp2": plan.get("tp2"),
             "tp3": plan.get("tp3"),
             "posted_at": int(time.time()),
+            "message_id": int(message_id) if message_id is not None else None,
             "status": "OPEN",
             "hits": {},
             "r_ladder": {
@@ -76,6 +77,17 @@ class SignalPerfDB:
         }
         self._write(data)
 
+    def cooldown_active(self, symbol: str, seconds: int = 4*3600) -> bool:
+        """Có lệnh đang mở/TP1/TP2 trong <seconds> gần nhất không?"""
+        now = int(time.time())
+        for t in self._all().values():
+            if t.get("symbol") != symbol: 
+                continue
+            if t.get("status") in ("OPEN", "TP1", "TP2"):
+                if now - int(t.get("posted_at", 0)) < seconds:
+                    return True
+        return False
+        
     def by_symbol(self, symbol: str) -> list:
         return [
             t for t in self._all().values()
