@@ -3,7 +3,7 @@ from typing import Dict, Any
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from templates import render_teaser
-from storage import JsonStore, SignalCache
+from storage import JsonStore, SignalCache, SignalPerfDB
 from config import BOT_TOKEN, CHANNEL_ID, TEASER_SHOW_BUTTON, TEASER_UPGRADE_BUTTON, DATA_DIR
 # Optional: đặt CHANNEL_USERNAME trong .env nếu kênh có username công khai (@yourchannel)
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")
@@ -115,3 +115,18 @@ class TelegramNotifier:
         payload = {"chat_id": int(user_id), "text": html, "parse_mode": "HTML"}
         r = self.session.post(f"{API_BASE}/sendMessage", json=payload, timeout=15)
         r.raise_for_status()
+
+    # NEW: gửi KPI 24H với nút nâng cấp
+    def send_kpi24(self, html: str):
+        # build inline keyboard: nút nâng cấp
+        url_upgr = f"https://t.me/{self.username}?start=upgrade"
+        kb = {"inline_keyboard": [[{"text": "✨ Nâng cấp Plus", "url": url_upgr}]]}
+        payload = {
+            "chat_id": int(CHANNEL_ID),
+            "text": html,
+            "parse_mode": "HTML",
+            "reply_markup": kb
+        }
+        r = self.session.post(f"{API_BASE}/sendMessage", json=payload, timeout=15)
+        r.raise_for_status()
+        return r.json()["result"]["message_id"]
