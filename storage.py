@@ -110,7 +110,13 @@ class SignalPerfDB:
         t = data.get(sid, {})
         if not t:
             return {}
-        t["status"] = "TP3" if reason == "TP3" else "SL"
+        # TP3 => chốt lời cuối; ENTRY => đóng trung tính (sau khi đã đạt TP1/TP2); còn lại => SL
+        if reason == "TP3":
+            t["status"] = "TP3"
+        elif reason == "ENTRY":
+            t["status"] = "CLOSE"
+        else:
+            t["status"] = "SL"
         t["close_reason"] = reason
         data[sid] = t
         self._write(data)
