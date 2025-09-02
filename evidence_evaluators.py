@@ -452,6 +452,12 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
 
     atr1 = float(f1.get('volatility', {}).get('atr', 0.0) or 0.0)
     atr4 = float(f4.get('volatility', {}).get('atr', 0.0) or 0.0) if f4 else 0.0
+    # ⬇️ Lấy BBW trước để dùng cho các evaluator bên dưới
+    bbw1 = f1.get('volatility', {}).get('bbw_last', 0.0)
+    bbw1_med = f1.get('volatility', {}).get('bbw_med', 0.0)
+    # ⬇️ Tính các evaluator cần BBW NGAY sau khi có bbw1/bbw1_med
+    ev_cmp  = ev_compression_ready(bbw1, bbw1_med, atr1)
+    ev_volb = ev_volatility_breakout(f1.get('volume', {}), bbw1, bbw1_med, atr1)
 
     # Price action base (1H)
     ev_pb = ev_price_breakout(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
@@ -463,9 +469,7 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     ev_mr  = ev_mean_reversion(df1)
     ev_div = ev_divergence_updown(f1.get('momentum', {}))
     ev_rjt = ev_rejection(df1, f1.get('swings', {}), atr1)
-    ev_cmp  = ev_compression_ready(bbw1, bbw1_med, atr1)
-    ev_volb = ev_volatility_breakout(f1.get('volume', {}), bbw1, bbw1_med, atr1)
-
+    
     # Reclaim ref (nearest band TP or last swing)
     level_for_reclaim = None
     try:
@@ -478,7 +482,6 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     ev_prc = ev_price_reclaim(df1, float(level_for_reclaim) if level_for_reclaim is not None else float('nan'), atr1, cfg.per_tf['1H'], side='long' if ev_pb.get('ok') else 'short') if df1 is not None else {"ok": False}
 
     # Sideways
-    bbw1 = f1.get('volatility', {}).get('bbw_last', 0.0); bbw1_med = f1.get('volatility', {}).get('bbw_med', 0.0)
     ev_sdw = ev_sideways(df1, bbw1, bbw1_med, atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
 
     # Volume & Momentum
