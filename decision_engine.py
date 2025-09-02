@@ -197,6 +197,7 @@ class DecisionRules:
     rsi4h_short_soft: float = 50.0
     rsi1h_short_ctr: float = 40.0   # yêu cầu khi countertrend 4H
     confluence_enter_thr: float = 0.50
+    confluence_enter_thr_reclaim: float = 0.55
     confluence_bonus_ctx: float = 0.10   # thưởng khi 1D đồng hướng
     confluence_penalty_ctx: float = 0.15 # phạt khi 1D ngược hướng
 
@@ -556,16 +557,6 @@ def decide(symbol: str,
         req_ok = [pr_ok, vol_ok_tmp]  # AND
         if not pr_ok: miss_reasons.append('price_reclaim')
         if not vol_ok_tmp: miss_reasons.append('volume')
-        # --- Siết reclaim theo giờ UTC (11-13 và 23-01) ---
-        from datetime import datetime
-        hour_utc = datetime.utcnow().hour
-        if (11 <= hour_utc <= 13) or (hour_utc >= 23 or hour_utc <= 1):
-            confidence *= 0.7
-            print(f"[{symbol}] Reclaim in low-confidence session (UTC hour={hour_utc}), confidence={confidence:.2f}")
-            # Nếu confidence giảm dưới ngưỡng 0.6, bỏ qua tín hiệu
-            if confidence < 0.6:
-                decision = "WAIT"
-                return decision, None, None
     for k in req_keys:
             # Support OR groups encoded as 'a|b' (any one OK)
             if '|' in k:
@@ -903,7 +894,8 @@ def decide(symbol: str,
     else:
         any_prox = proximity_ok or proximity_ok2
         rr_ok_any = (rr is not None and rr >= rules.rr_min) or (rr_entry2 is not None and rr_entry2 >= rules.rr_min)
-        confluence_ok = (confluence_score >= rules.confluence_enter_thr)
+        thr = (rules.confluence_enter_thr_reclaim if state == 'reclaim' else rules.confluence_enter_thr)
+        confluence_ok = (confluence_score >= thr)
         liq_guard_fail = not liq_ok
 
         gates_ok = all(req_ok) and any_prox and rr_ok_any and confluence_ok and (not liq_guard_fail)
