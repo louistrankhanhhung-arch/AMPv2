@@ -85,6 +85,15 @@ class EvidenceIn(BaseModel):
     trend: EvidenceItemIn
     candles: EvidenceItemIn
     liquidity: EvidenceItemIn
+    false_breakout: EvidenceItemIn
+    false_breakdown: EvidenceItemIn
+    trend_follow_up: EvidenceItemIn
+    trend_follow_down: EvidenceItemIn
+    mean_reversion: EvidenceItemIn
+    divergence: EvidenceItemIn
+    rejection: EvidenceItemIn
+    compression_ready: EvidenceItemIn
+    volatility_breakout: EvidenceItemIn
     # --- new evidences ---
     bb: Optional[EvidenceItemIn] = None
     volume_explosive: Optional[EvidenceItemIn] = None
