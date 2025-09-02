@@ -90,16 +90,21 @@ def render_kpi_24h(detail: dict, report_date_str: str, upgrade_url: str | None =
     if not items:
         lines += ["Không có tín hiệu nào trong 24H qua.", ""]
     else:
-        for it in items:
-            s = it["symbol"] or "-"
-            pct = f"{it['pct']:+.2f}%"
-            mark = "🟢" if it["win"] else ("⛔" if it["status"]=="SL" else "⚪")
-            lines.append(f"{s:<8} : {pct} {mark}")
-        lines.append("")
+        icons = {
+        "TP1": "🟢",
+        "TP2": "🟢",
+        "TP3": "🟢",
+        "SL": "⛔",
+    }
+    for it in detail["items"]:
+        status = it["status"]
+        icon = icons.get(status, "⚪")
+        line = f"{icon} {it['symbol']}: {it['pct']:.2f}%"
+        lines.append(line)
     # 2) Đánh giá
     lines += [
         "<b>Đánh giá</b>:",
-        f"• Tổng lệnh đã mở: {totals['n']}",
+        f"• Tổng lệnh đã đóng: {totals['n']}",
         f"• Tổng lợi nhuận: {totals['sum_pct']:.2f}%",
         f"• Lợi nhuận trung bình/lệnh: {totals['avg_pct']:.2f}%",
         f"• Tỉ lệ thắng: {totals['win_rate']*100:.2f}%",
