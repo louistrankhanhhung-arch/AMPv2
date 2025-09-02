@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
+import os, json, logging
 
 # --------------------------------------------------------------------------------------
 # 1) Types & Config (per-TF thresholds with sensible defaults)
@@ -393,54 +394,160 @@ def ev_volatility_breakout(vol: Dict[str, Any], bbw_last: float, bbw_med: float,
 # --------------------------------------------------------------------------------------
 
 
-def infer_state(evs: Dict[str, Any]) -> Tuple[str, float, str]:
-    # Base evidences
-    pb = evs.get('price_breakout', {"ok": False, "score": 0.0})
-    pdn = evs.get('price_breakdown', {"ok": False, "score": 0.0})
-    prc = evs.get('price_reclaim', {"ok": False, "score": 0.0})
-    sdw = evs.get('sideways', {"ok": False, "score": 0.0})
-    # New evidences
-    fk_up = evs.get('false_breakout', {"ok": False, "score": 0.0})
-    fk_dn = evs.get('false_breakdown', {"ok": False, "score": 0.0})
-    volb = evs.get('volatility_breakout', {"ok": False, "score": 0.0})
-    tb = evs.get('throwback', {"ok": False, "score": 0.0})
-    pbk = evs.get('pullback', {"ok": False, "score": 0.0})
-    tf_up = evs.get('trend_follow_up', {"ok": False, "score": 0.0})
-    tf_dn = evs.get('trend_follow_down', {"ok": False, "score": 0.0})
-    mr = evs.get('mean_reversion', {"ok": False, "score": 0.0})
-    div = evs.get('divergence', {"ok": False, "score": 0.0})
-    rjt = evs.get('rejection', {"ok": False, "score": 0.0})
-    cmp = evs.get('compression_ready', {"ok": False, "score": 0.0})
+# === PRIORS: có thể học dần từ KPI 24H (file DATA_DIR/state_priors.json) ===
+STATE_PRIORS_DEFAULT: Dict[str, float] = {
+    # Momentum/Trend-biased
+    "breakout": 0.52, "breakdown": 0.52, "volatility_breakout": 0.51,
+    "trend_follow_up": 0.53, "trend_follow_down": 0.53, "pullback": 0.52,
+    "throwback_long": 0.50, "throwback_short": 0.50,
+    # Mean-rev / patterns
+    "reclaim": 0.51, "rejection": 0.48, "mean_reversion": 0.49,
+    "divergence_up": 0.47, "divergence_down": 0.47,
+    # Ranging regimes
+    "sideways": 0.40, "compression_ready": 0.43,
+    # Fakeouts
+    "false_breakout": 0.46, "false_breakdown": 0.46,
+}
 
-    # Priority:
-    # 1) Fakeouts
-    if fk_up.get('ok'): return 'false_breakout', float(fk_up.get('score', 0.0)), 'false_breakout'
-    if fk_dn.get('ok'): return 'false_breakdown', float(fk_dn.get('score', 0.0)), 'false_breakdown'
-    # 2) Volatility breakout
-    if volb.get('ok'):  return 'volatility_breakout', float(volb.get('score', 0.0)), 'volatility_breakout'
-    # 3) Breakout/breakdown
-    if pb.get('ok'):    return 'breakout', float(pb.get('score', 0.0)), 'price_breakout'
-    if pdn.get('ok'):   return 'breakdown', float(pdn.get('score', 0.0)), 'price_breakdown'
-    # 4) Reclaim
-    if prc.get('ok'):   return 'reclaim', float(prc.get('score', 0.0)), 'price_reclaim'
-    # 5) Trend-follow pullback -> direct trend-follow
-    if pbk.get('ok') and (tf_up.get('ok') or tf_dn.get('ok')):
-        return 'trend_follow_pullback', float(pbk.get('score', 0.0)), 'pullback'
-    if tf_up.get('ok'): return 'trend_follow_up', float(tf_up.get('score', 0.0)), 'trend_follow_up'
-    if tf_dn.get('ok'): return 'trend_follow_down', float(tf_dn.get('score', 0.0)), 'trend_follow_down'
-    # 6) Mean reversion -> divergence up/down -> rejection
-    if mr.get('ok'):    return 'mean_reversion', float(mr.get('score', 0.0)), 'mean_reversion'
-    if div.get('ok'):
-        side = div.get('side')
-        if side == 'long':  return 'divergence_up', float(div.get('score', 0.0)), 'divergence_up'
-        if side == 'short': return 'divergence_down', float(div.get('score', 0.0)), 'divergence_down'
-    if rjt.get('ok'):   return 'rejection', float(rjt.get('score', 0.0)), 'rejection'
-    # 7) Sideways -> compression ready
-    if sdw.get('ok'):   return 'sideways', float(sdw.get('score', 0.0)), 'sideways'
-    if cmp.get('ok'):   return 'compression_ready', float(cmp.get('score', 0.0)), 'compression_ready'
-    return 'undefined', 0.0, ''
+def _load_state_priors() -> Dict[str, float]:
+    data_dir = os.getenv("DATA_DIR", ".")
+    pri_path = os.path.join(data_dir, "state_priors.json")
+    pri = dict(STATE_PRIORS_DEFAULT)
+    try:
+        if os.path.exists(pri_path):
+            with open(pri_path, "r", encoding="utf-8") as f:
+                user_pri = json.load(f)
+                for k, v in user_pri.items():
+                    if isinstance(v, (int, float)):
+                        pri[k] = float(v)
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Load state_priors.json failed: {e}")
+    return pri
 
+def _ok(evs: Dict, key: str) -> bool:
+    ev = evs.get(key)
+    return bool(getattr(ev, "ok", False)) if ev is not None else False
 
+def _boost_score_for(state: str, evs: Dict) -> float:
+    """
+    Contextual boosts/penalties theo regime:
+    - breakout/breakdown thích BB bung & volume bùng nổ
+    - volatility_breakout thích BB bung + volume explosive
+    - trend_follow/pullback/throwback thích trend/momentum
+    - mean_reversion/divergence thích sideway, ghét BB bung / vol explosive
+    - reclaim linh hoạt trong BB hẹp, cần volume xác nhận
+    """
+    bb = _ok(evs, "bb")
+    vol_exp = _ok(evs, "volume_explosive") or _ok(evs, "volume")  # coarsely treat volume.ok as confirm
+    mom = _ok(evs, "momentum")
+    trd = _ok(evs, "trend")
+    side = _ok(evs, "sideways")
+    cmpy = _ok(evs, "compression_ready")
+    boost = 0.0
+
+    if state in ("breakout", "breakdown"):
+        if bb: boost += 0.04
+        if vol_exp: boost += 0.03
+        if trd: boost += 0.02
+        if mom: boost += 0.02
+    elif state == "volatility_breakout":
+        if bb: boost += 0.05
+        if vol_exp: boost += 0.03
+    elif state in ("trend_follow_up", "trend_follow_down"):
+        if trd: boost += 0.03
+        if mom: boost += 0.02
+        if not vol_exp: boost += 0.01  # trend clean không cần nổ vol
+    elif state == "pullback":
+        if trd: boost += 0.02
+        if mom: boost += 0.01
+        if vol_exp: boost -= 0.01  # pullback đẹp thường vol co
+    elif state in ("throwback_long", "throwback_short"):
+        if trd: boost += 0.02
+    elif state == "reclaim":
+        if vol_exp: boost += 0.02
+        if not bb: boost += 0.01  # reclaim hay xảy ra khi band còn hẹp
+        if mom: boost += 0.01
+    elif state == "mean_reversion":
+        if side: boost += 0.03
+        if bb: boost -= 0.02
+        if vol_exp: boost -= 0.02
+    elif state in ("divergence_up", "divergence_down"):
+        if side: boost += 0.01
+        if mom: boost -= 0.02  # divergence mạnh ít khi đi kèm momentum thuận
+    elif state == "rejection":
+        if vol_exp: boost += 0.01
+    elif state == "compression_ready":
+        if side: boost += 0.02
+        if cmpy: boost += 0.01
+    # sideways, fakeouts: giữ boost mặc định
+
+    # penalty nhẹ nếu hoàn toàn thiếu volume signal
+    if not vol_exp:
+        boost -= 0.01
+    return max(-0.10, min(0.10, boost))  # kẹp an toàn
+
+def _presence_map(evs: Dict) -> List[Tuple[str, float]]:
+    """
+    Xác định danh sách ứng viên (state, base_score_from_prior)
+    Dò theo evidence trực tiếp:
+      - breakout/breakdown → price_breakout/price_breakdown
+      - reclaim → price_reclaim
+      - các state khác → evidence cùng tên
+    """
+    pri = _load_state_priors()
+    candidates: List[Tuple[str, float]] = []
+    def add_if(state: str, evkey: str):
+        if _ok(evs, evkey):
+            candidates.append((state, pri.get(state, 0.50)))
+    # momentum/trend-based
+    add_if("breakout", "price_breakout")
+    add_if("breakdown", "price_breakdown")
+    add_if("volatility_breakout", "volatility_breakout")
+    add_if("trend_follow_up", "trend_follow_up")
+    add_if("trend_follow_down", "trend_follow_down")
+    add_if("pullback", "pullback")
+    add_if("throwback_long", "throwback")   # dir xử lý downstream
+    add_if("throwback_short", "throwback")
+    # mean-rev/patterns
+    add_if("reclaim", "price_reclaim")
+    add_if("rejection", "rejection")
+    add_if("mean_reversion", "mean_reversion")
+    add_if("divergence_up", "divergence")
+    add_if("divergence_down", "divergence")
+    # ranging
+    add_if("sideways", "sideways")
+    add_if("compression_ready", "compression_ready")
+    # fakeouts
+    add_if("false_breakout", "false_breakout")
+    add_if("false_breakdown", "false_breakdown")
+    return candidates
+
+def infer_state(evs):
+    """
+    Xếp hạng state theo điểm: score = prior(state) + context_boost(state, evs)
+    Chọn state có score cao nhất. Nếu không có ứng viên, trả None.
+    """
+    logger = logging.getLogger(__name__)
+    cands = _presence_map(evs)
+    if not cands:
+        return None
+
+    ranked: List[Tuple[str, float, float]] = []  # (state, prior, final_score)
+    for st, prior in cands:
+        boost = _boost_score_for(st, evs)
+        final = max(0.0, min(1.0, prior + boost))
+        ranked.append((st, prior, final))
+
+    # Sắp xếp theo final_score giảm dần, tie-break bằng prior
+    ranked.sort(key=lambda x: (x[2], x[1]), reverse=True)
+    best_state, prior, final = ranked[0]
+
+    # Log nhẹ để debug (có thể tắt bằng LOG_LEVEL)
+    try:
+        logger.info("STATE_RANK: " + " | ".join([f"{s}:{f:.2f}" for s,_,f in ranked[:6]]))
+    except Exception:
+        pass
+    return best_state
 
 def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]], cfg: Config) -> Dict[str, Any]:
     f1 = features_by_tf.get('1H', {})
