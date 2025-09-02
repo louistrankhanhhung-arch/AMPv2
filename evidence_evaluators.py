@@ -524,30 +524,33 @@ def _presence_map(evs: Dict) -> List[Tuple[str, float]]:
 
 def infer_state(evs):
     """
-    Xếp hạng state theo điểm: score = prior(state) + context_boost(state, evs)
-    Chọn state có score cao nhất. Nếu không có ứng viên, trả None.
+    Trả về bộ 3 (state, confidence, why)
+      - state: tên state tốt nhất (hoặc None nếu không có ứng viên)
+      - confidence: [0..1] = prior + context_boost (đã kẹp)
+      - why: list[str] tóm tắt xếp hạng top (để log/debug)
     """
     logger = logging.getLogger(__name__)
     cands = _presence_map(evs)
     if not cands:
-        return None
+        return None, 0.0, ["no_candidate_evidence"]
 
-    ranked: List[Tuple[str, float, float]] = []  # (state, prior, final_score)
+    ranked: List[Tuple[str, float, float, float]] = []  # (state, prior, final, boost)
     for st, prior in cands:
         boost = _boost_score_for(st, evs)
         final = max(0.0, min(1.0, prior + boost))
-        ranked.append((st, prior, final))
+        ranked.append((st, prior, final, boost))
 
     # Sắp xếp theo final_score giảm dần, tie-break bằng prior
     ranked.sort(key=lambda x: (x[2], x[1]), reverse=True)
-    best_state, prior, final = ranked[0]
+    best_state, prior, final, boost = ranked[0]
 
-    # Log nhẹ để debug (có thể tắt bằng LOG_LEVEL)
+    why = [f"{st}: score={sc:.2f} (prior={pr:.2f}, boost={bs:+.2f})"
+           for (st, pr, sc, bs) in ranked[:5]]
     try:
-        logger.info("STATE_RANK: " + " | ".join([f"{s}:{f:.2f}" for s,_,f in ranked[:6]]))
+        logger.info("STATE_RANK: " + " | ".join(why))
     except Exception:
         pass
-    return best_state
+    return best_state, float(final), why
 
 def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]], cfg: Config) -> Dict[str, Any]:
     f1 = features_by_tf.get('1H', {})
