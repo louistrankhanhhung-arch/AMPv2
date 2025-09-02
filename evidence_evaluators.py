@@ -642,13 +642,23 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     }
 
     state, confidence, why = infer_state(evidences)
+    # Chuẩn hóa cho Pydantic: state & why phải là string
+    state = state or "undefined"
+    if isinstance(why, (list, tuple)):
+        why = " | ".join(str(x) for x in why if x is not None)
+    elif why is None:
+        why = ""
+    try:
+        confidence = float(confidence or 0.0)
+    except Exception:
+        confidence = 0.0
 
     out = {
         'symbol': symbol,
         'asof': str(df1.index[-1]) if df1 is not None else None,
         'timeframes': ['1H','4H','1D'],
         'state': state,
-        'confidence': round(confidence,3),
+        'confidence': round(float(confidence), 3),
         'why': why,
         'evidence': evidences,
     }
