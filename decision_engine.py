@@ -227,8 +227,8 @@ STATE_TO_DIR = {
 
 # Required evidence keys per state (must be True to ENTER)
 REQUIRED_BY_STATE = {
-    'breakout': ['price_breakout', 'volume', 'trend', 'bb'],
-    'breakdown': ['price_breakdown', 'volume', 'trend', 'bb'],
+    'breakout': ['price_breakout', 'volume', 'trend', 'bb|volatility_breakout'],
+    'breakdown': ['price_breakdown', 'volume', 'trend', 'bb|volatility_breakout'],
     'reclaim': ['price_reclaim', 'volume'],
     'trend_follow_up': ['trend', 'momentum'],
     'trend_follow_down': ['trend', 'momentum'],
@@ -242,7 +242,7 @@ REQUIRED_BY_STATE = {
 
     'sideways': ['sideways'],
     'range': ['sideways'],
-    'compression_ready': ['sideways'],  # wait for break
+    'compression_ready': ['compression_ready'],  # wait for break
     'volatility_breakout': ['volatility_breakout', 'bb'],
     'throwback_long': ['throwback'],
     'throwback_short': ['throwback'],
@@ -537,7 +537,14 @@ def decide(symbol: str,
         elif direction == 'short':
             req_keys = ['price_breakdown', 'volume', 'trend']
     # Chỉ giữ các key thực sự tồn tại trong EvidenceIn hiện tại
-    req_keys = [k for k in req_keys if getattr(eb.evidence, k, None) is not None]
+    # Hỗ trợ OR group dạng 'a|b' (nếu một trong các key con tồn tại thì giữ)
+    req_keys = [
+        k for k in req_keys
+        if (
+            ('|' in k and any(getattr(eb.evidence, ak.strip(), None) is not None for ak in k.split('|')))
+            or (getattr(eb.evidence, k, None) is not None)
+        )
+    ]
 
     # Special-case: for 'reclaim' (SIẾT LẠI): price_reclaim AND volume; momentum tùy theo 4H alignment
     if state == 'reclaim':
@@ -554,19 +561,36 @@ def decide(symbol: str,
         hour_utc = datetime.utcnow().hour
         if (11 <= hour_utc <= 13) or (hour_utc >= 23 or hour_utc <= 1):
             confidence *= 0.7
-            log.info(f"[{symbol}] Reclaim in low-confidence session (UTC hour={hour_utc}), confidence={confidence:.2f}")
+            print(f"[{symbol}] Reclaim in low-confidence session (UTC hour={hour_utc}), confidence={confidence:.2f}")
             # Nếu confidence giảm dưới ngưỡng 0.6, bỏ qua tín hiệu
             if confidence < 0.6:
                 decision = "WAIT"
                 return decision, None, None
-    else:
-        for k in req_keys:
-            ev = _ev(k)
-            if ev is None:
-                miss_reasons.append(k)
-                continue
-            if not getattr(ev, 'ok', False):
-                miss_reasons.append(k)
+    for k in req_keys:
+            # Support OR groups encoded as 'a|b' (any one OK)
+            if '|' in k:
+                alts = [ak.strip() for ak in k.split('|') if ak.strip()]
+                alt_found = False
+                alt_ok = False
+                for ak in alts:
+                    ev = _ev(ak)
+                    if ev is not None:
+                        alt_found = True
+                        if getattr(ev, 'ok', False):
+                            alt_ok = True
+                req_ok.append(alt_ok if alt_found else False)
+                if not alt_ok:
+                    miss_reasons.append('(' + ' OR '.join(alts) + ')')
+            else:
+                ev = _ev(k)
+                if ev is None:
+                    miss_reasons.append(k)
+                    req_ok.append(False)
+                    continue
+                ok = getattr(ev, 'ok', False)
+                if not ok:
+                    miss_reasons.append(k)
+                req_ok.append(ok)
 
     # Optional/guards (không phải required)
     vol_ok = bool(getattr(eb.evidence.volume, 'ok', False))
