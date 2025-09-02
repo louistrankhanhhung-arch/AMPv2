@@ -456,6 +456,15 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     # Price action base (1H)
     ev_pb = ev_price_breakout(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
     ev_pdn = ev_price_breakdown(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
+    ev_fk_up = ev_false_breakout(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H'])
+    ev_fk_dn = ev_false_breakdown(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H'])
+    ev_tf_up = ev_trend_follow_ready(df1, f1.get('momentum', {}), f1.get('trend', {}), side='long')
+    ev_tf_dn = ev_trend_follow_ready(df1, f1.get('momentum', {}), f1.get('trend', {}), side='short')
+    ev_mr  = ev_mean_reversion(df1)
+    ev_div = ev_divergence_updown(f1.get('momentum', {}))
+    ev_rjt = ev_rejection(df1, f1.get('swings', {}), atr1)
+    ev_cmp  = ev_compression_ready(bbw1, bbw1_med, atr1)
+    ev_volb = ev_volatility_breakout(f1.get('volume', {}), bbw1, bbw1_med, atr1)
 
     # Reclaim ref (nearest band TP or last swing)
     level_for_reclaim = None
@@ -508,6 +517,15 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
         'volume_explosive': ev_exp,
         'throwback': ev_tb,
         'pullback': ev_pbk,
+        'false_breakout': ev_fk_up,
+        'false_breakdown': ev_fk_dn,
+        'trend_follow_up': ev_tf_up,
+        'trend_follow_down': ev_tf_dn,
+        'mean_reversion': ev_mr,
+        'divergence': ev_div,
+        'rejection': ev_rjt,
+        'compression_ready': ev_cmp,
+        'volatility_breakout': ev_volb,
     }
 
     state, confidence, why = infer_state(evidences)
