@@ -30,7 +30,7 @@ class TFThresholds:
 @dataclass
 class Config:
     per_tf: Dict[str, TFThresholds] = field(default_factory=lambda: {
-        "1H": TFThresholds(break_buffer_atr=0.25, vol_ratio_thr=1.3, vol_z_thr=0.7, rsi_long=55, rsi_short=45, bbw_lookback=50, zigzag_pct=2.0, ema_spread_small_atr=0.35, hvn_guard_atr=0.7),
+        "1H": TFThresholds(break_buffer_atr=0.35, vol_ratio_thr=1.3, vol_z_thr=0.7, rsi_long=55, rsi_short=45, bbw_lookback=50, zigzag_pct=2.0, ema_spread_small_atr=0.35, hvn_guard_atr=0.7),
         "4H": TFThresholds(break_buffer_atr=0.20, vol_ratio_thr=1.25, vol_z_thr=0.6, rsi_long=55, rsi_short=45, bbw_lookback=50, zigzag_pct=2.0, ema_spread_small_atr=0.3,  hvn_guard_atr=0.8),
         "1D": TFThresholds(break_buffer_atr=0.15, vol_ratio_thr=1.2, vol_z_thr=0.5, rsi_long=55, rsi_short=45, bbw_lookback=50, zigzag_pct=2.0, ema_spread_small_atr=0.25, hvn_guard_atr=1.0),
     })
