@@ -31,7 +31,7 @@ def render_teaser(plan: Dict[str, Any]) -> str:
     state = plan.get("STATE", "")
     strategy = " • ".join([n for n in plan.get("notes", [])[:1]])  # one-liner
     return (
-        f"<b>{sym} | {direction}</b>\n"
+        f"🧭 <b>{sym} | {direction}</b>\n"
         f"<b>Entry:</b> —    <b>SL:</b> —\n"
         f"<b>TP:</b> — • — • —\n"
         f"<b>Chiến lược:</b> {strategy or state}"
@@ -47,7 +47,7 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
     rr_txt = f"{rr:.2f}" if isinstance(rr, (int,float)) else "-"
     hint = f" — <b>Size:</b> {risk:.1f}x" if isinstance(risk, (int,float)) else ""
     lines = [
-        f"<b>{sym} | {direction}</b>",
+        f"🧭 <b>{sym} | {direction}</b>",
         "",  # dòng trống sau tiêu đề
         
         f"<b>Entry:</b> {entry}",
@@ -59,6 +59,7 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
         f"<b>TP3:</b> {tp3}",
         "",  # dòng trống sau block TP
         
+        f"<b>Chiến lược:</b> {strategy or state}"
         f"<b>R:R:</b> {rr_txt}{hint}",
     ]
 
