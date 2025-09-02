@@ -244,7 +244,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     perf.set_hit(t["sid"], "TP1", (t.get("r_ladder",{}) or {}).get("tp1") or 0.0)
                     hits["TP1"] = int(__import__("time").time())
                     t["status"] = "TP1"
-                    note = "TP1 hit — Nâng SL lên Entry để bảo toàn lợi nhuận."
+                    note = "🎯 TP1 hit — Nâng SL lên Entry để bảo toàn lợi nhuận."
                     extra = {"margin_pct": margin_pct(float(t["tp1"]))}
                     if tn2:
                         if msg_id:
@@ -257,7 +257,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     perf.set_hit(t["sid"], "TP2", (t.get("r_ladder",{}) or {}).get("tp2") or 0.0)
                     hits["TP2"] = int(__import__("time").time())
                     t["status"] = "TP2"
-                    note = "TP2 hit — Nâng SL lên Entry để bảo toàn lợi nhuận."
+                    note = "🎯 TP2 hit — Nâng SL lên Entry để bảo toàn lợi nhuận."
                     extra = {"margin_pct": margin_pct(float(t["tp2"]))}
                     if tn2:
                         if msg_id:
@@ -269,7 +269,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 if t.get("status") in ("OPEN","TP1","TP2") and t.get("tp3") and crossed(side, price_now, t["tp3"]):
                     perf.close(t["sid"], "TP3")
                     t["status"] = "TP3"
-                    note = "TP3 hit — Đóng lệnh."
+                    note = "🎯 TP3 hit — Đóng lệnh."
                     extra = {"margin_pct": margin_pct(float(t["tp3"]))}
                     if tn2:
                         if msg_id:
@@ -293,7 +293,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                             hit_price = float(t.get("tp1") or entry)
                         perf.close(t["sid"], "ENTRY")
                         t["status"] = "CLOSE"
-                        note = f"Đóng lệnh — Giá quay về Entry sau khi đã đạt {highest}."
+                        note = f"📌 Đóng lệnh — Giá quay về Entry sau khi đã đạt {highest}."
                         extra = {"margin_pct": margin_pct(hit_price)}
                         if tn2:
                             if msg_id:
@@ -310,7 +310,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 ):
                     perf.close(t["sid"], "SL")
                     t["status"] = "SL"
-                    note = "SL hit — Đóng lệnh."
+                    note = "⚠️ SL hit — Đóng lệnh."
                     extra = {"margin_pct": margin_pct(float(slv))}
                     if tn2:
                         if msg_id:
