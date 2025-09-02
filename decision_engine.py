@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -176,7 +177,7 @@ class DecisionRules:
     tp_ladder_n: int = 3           # số bậc TP
     # SL pads by setup type (A/B testable)
     sl_pad_breakout_atr: float = 0.5
-    sl_pad_reclaim_atr: float = 0.8
+    sl_pad_reclaim_atr: float = 1.2
     sl_pad_trend_follow_atr: float = 0.6
     sl_pad_mean_reversion_atr: float = 1.2
     # --- NEW: multi-TF confluence gates ---
@@ -539,6 +540,16 @@ def decide(symbol: str,
         req_ok = [pr_ok, vol_ok_tmp]  # AND
         if not pr_ok: miss_reasons.append('price_reclaim')
         if not vol_ok_tmp: miss_reasons.append('volume')
+        # --- Siết reclaim theo giờ UTC (11-13 và 23-01) ---
+        from datetime import datetime
+        hour_utc = datetime.utcnow().hour
+        if (11 <= hour_utc <= 13) or (hour_utc >= 23 or hour_utc <= 1):
+            confidence *= 0.7
+            log.info(f"[{symbol}] Reclaim in low-confidence session (UTC hour={hour_utc}), confidence={confidence:.2f}")
+            # Nếu confidence giảm dưới ngưỡng 0.6, bỏ qua tín hiệu
+            if confidence < 0.6:
+                decision = "WAIT"
+                return decision, None, None
     else:
         for k in req_keys:
             ev = _ev(k)
