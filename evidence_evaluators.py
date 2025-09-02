@@ -425,8 +425,19 @@ def _load_state_priors() -> Dict[str, float]:
     return pri
 
 def _ok(evs: Dict, key: str) -> bool:
-    ev = evs.get(key)
-    return bool(getattr(ev, "ok", False)) if ev is not None else False
+     ev = evs.get(key)
+     if ev is None:
+         return False
+     # dict: ưu tiên đọc 'ok', fallback 'primary.ok' (dạng momentum/volume)
+     if isinstance(ev, dict):
+         if 'ok' in ev:
+             return bool(ev.get('ok', False))
+         prim = ev.get('primary')
+         if isinstance(prim, dict):
+             return bool(prim.get('ok', False))
+         return bool(getattr(prim, 'ok', False)) if prim is not None else False
+     # object (Pydantic/namespace)
+     return bool(getattr(ev, 'ok', False))
 
 def _boost_score_for(state: str, evs: Dict) -> float:
     """
