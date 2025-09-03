@@ -112,6 +112,54 @@ def ev_price_reclaim(df: pd.DataFrame, level: float, atr: float, cfg: TFThreshol
     score = (0.7 if core else 0.0) + (0.3 if hold else 0.0)
     return {"ok": bool(core), "score": round(score,3), "why": ",".join([w for w in ["core" if core else "", "hold" if hold else ""] if w]), "missing": ([] if core else ["reclaim"]), "ref": {"level": level, "buffer": buf, "side": side}}
 
+def ev_price_reclaim_best(
+    df: pd.DataFrame,
+    *,
+    level: float,
+    side_hint: Optional[str] = None,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Evaluate reclaim for BOTH sides (long & short) and pick the less-biased best candidate.
+    Selection order:
+      1) If only one side ok -> pick it
+      2) If both ok -> pick higher score
+      3) If none ok -> use side_hint (from breakout/breakdown), else price vs level, else higher score
+    """
+    pr_long = ev_price_reclaim(df, level=level, side="long", **kwargs)
+    pr_short = ev_price_reclaim(df, level=level, side="short", **kwargs)
+
+    def _score(ev):
+        try:
+            return float(ev.get("score", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
+    long_ok, short_ok = bool(pr_long.get("ok")), bool(pr_short.get("ok"))
+    if long_ok and not short_ok:
+        return pr_long
+    if short_ok and not long_ok:
+        return pr_short
+    if long_ok and short_ok:
+        return pr_long if _score(pr_long) >= _score(pr_short) else pr_short
+
++    # both False
++    if side_hint in ("long", "short"):
++        picked = pr_long if side_hint == "long" else pr_short
++        picked = {**picked, "why": (picked.get("why", "") + f"; fallback_side_hint={side_hint}").strip("; ")}
++        picked.setdefault("ref", {})["side"] = side_hint
++        return picked
++
++    # final heuristic: price vs level
++    try:
++        last_close = float(df["close"].iloc[-1])
++        side = "long" if last_close >= float(level) else "short"
++        picked = pr_long if side == "long" else pr_short
++        picked = {**picked, "why": (picked.get("why", "") + f"; fallback_price_vs_level={side}").strip("; ")}
++        picked.setdefault("ref", {})["side"] = side
++        return picked
++    except Exception:
++        return pr_long if _score(pr_long) >= _score(pr_short) else pr_short
 
 def ev_sideways(df: pd.DataFrame, bbw_last: float, bbw_med: float, atr: float, cfg: TFThresholds) -> Dict[str, Any]:
     ema_spread = _ema_spread_atr(df)
@@ -600,7 +648,16 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
             level_for_reclaim = min(bands, key=lambda b: abs(float(b['tp']) - px)).get('tp')
     except Exception:
         pass
-    ev_prc = ev_price_reclaim(df1, float(level_for_reclaim) if level_for_reclaim is not None else float('nan'), atr1, cfg.per_tf['1H'], side='long' if ev_pb.get('ok') else 'short') if df1 is not None else {"ok": False}
+    # Evaluate reclaim on both sides to avoid biasing to short when no breakout
+    side_hint = "long" if ev_pb.get("ok") else ("short" if ev_pdn.get("ok") else None)
+    ev_prc = ev_price_reclaim_best(
+        df1h,
+        level=sr_level,
+        side_hint=side_hint,
+        atr_mult=cfg.reclaim.atr_mult,
+        min_confluence=cfg.reclaim.min_confluence,
+        proximity_atr=cfg.reclaim.proximity_atr,
+    )
 
     # Sideways
     ev_sdw = ev_sideways(df1, bbw1, bbw1_med, atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
