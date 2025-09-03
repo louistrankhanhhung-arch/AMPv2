@@ -913,15 +913,33 @@ def decide(symbol: str,
     rsi_extreme = (rsi_now >= rules.rsi_overbought) or (rsi_now <= rules.rsi_oversold)
     div_against = (direction == 'long' and div == 'bearish') or (direction == 'short' and div == 'bullish')
     vol_blowoff = (vz >= rules.vol_z_hot)
-    rr_bad = (rr is not None and rr < rules.rr_avoid)
-    liq_heavy_close = (not liq_ok) and (getattr(eb.evidence.liquidity, 'why', '') or '').startswith('heavy_zone')
+    # robust: đọc cờ gần HVN theo evidence
+    liq_heavy_close = (not liq_ok) and bool(getattr(eb.evidence.liquidity, 'near_heavy_zone', False))
+
+    # AVOID theo ngữ cảnh setup & hướng
+    trendish_states = {'breakout','breakdown','trend_follow_up','trend_follow_down',
+                       'volatility_breakout','throwback_long','throwback_short','reclaim'}
+    is_trendish = (state in trendish_states)
+    try:
+        ret_last = float(df1['close'].iloc[-1] - df1['close'].iloc[-2])
+    except Exception:
+        ret_last = 0.0
+    blowoff_up = vol_blowoff and (ret_last > 0)
+    blowoff_down = vol_blowoff and (ret_last < 0)
+    # chỉ AVOID blowoff khi nó "cùng chiều kèo" (đu sóng) và chỉ với setup bám trend
+    vol_blowoff_avoid = (is_trendish and ((direction == 'long' and blowoff_up) or
+                                          (direction == 'short' and blowoff_down)))
+    # RSI cực trị: AVOID khi là kèo bám trend; với kèo đảo chiều thì không
+    rsi_extreme_avoid = (is_trendish and rsi_extreme)
 
     avoid_reasons = []
-    if rsi_extreme: avoid_reasons.append('rsi_extreme')
-    if div_against: avoid_reasons.append('rsi_divergence_against')
-    if vol_blowoff: avoid_reasons.append('volume_blowoff')
-    if rr_bad: avoid_reasons.append('rr_bad')
+    if rsi_extreme_avoid: avoid_reasons.append('rsi_extreme')
+    if vol_blowoff_avoid: avoid_reasons.append('volume_blowoff')
     if liq_heavy_close: avoid_reasons.append('heavy_liquidity_ahead')
+    # Divergence ngược chiều: giảm confluence thay vì AVOID cứng
+    if div_against:
+        confluence_score = max(0.0, confluence_score - 0.15)
+        miss_reasons.append('divergence_against')
 
     # 8) Quyết định ENTER/WAIT/AVOID (thêm gate confluence + liquidity_ok)
     decision = 'WAIT'
