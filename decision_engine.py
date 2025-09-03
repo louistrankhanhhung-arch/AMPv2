@@ -180,13 +180,13 @@ class DecisionRules:
     # --- New: entry setup tuning ---
     retest_pad_atr: float = 0.05      # small pad above/below level for retest entry
     retest_zone_atr: float = 0.50     # acceptable distance from price to retest entry to consider ENTER (sửa 0.15 -> 0.3)
-    retest_zone_atr_reclaim: float = 0.50  
+    retest_zone_atr_reclaim: float = 0.60  
     trend_break_buf_atr: float = 0.10 # trend-follow Entry1 uses break of nearest swing with this buffer (sửa 0.2 -> 0.1)
     sl_min_atr: float = 0.5       # SL tối thiểu = 0.5*ATR
     tp_ladder_n: int = 3           # số bậc TP
     # SL pads by setup type (A/B testable)
     sl_pad_breakout_atr: float = 0.5
-    sl_pad_reclaim_atr: float = 1.2
+    sl_pad_reclaim_atr: float = 1.0
     sl_pad_trend_follow_atr: float = 0.6
     sl_pad_mean_reversion_atr: float = 1.2
     # --- NEW: multi-TF confluence gates ---
@@ -447,6 +447,37 @@ def _tp_ladder_confluence(levels1h: Dict[str, Any], levels4h: Optional[Dict[str,
     kept = _filter_forward_tps_by_4h(tps, side, levels4h, atr)
     return kept if kept else tps
 
+def _tp_ladder_rr(levels1h: Dict[str, Any],
+                  levels4h: Optional[Dict[str, Any]],
+                  entry: float, sl: float, side: str, atr: float,
+                  rr_targets: Tuple[float, float, float] = (1.2, 2.0, 3.0),
+                  snap_tol_atr: float = 0.2) -> List[float]:
+    """Build TP ladder from RR targets, then snap to bands within ±snap_tol_atr*ATR, and filter by 4H bands."""
+    try:
+        if not (np.isfinite(entry) and np.isfinite(sl) and atr > 0):
+            return _tp_ladder_confluence(levels1h, levels4h, entry, side, atr, 3)
+        risk = (entry - sl) if side == 'long' else (sl - entry)
+        if risk <= 0:
+            return _tp_ladder_confluence(levels1h, levels4h, entry, side, atr, 3)
+        # RR targets → raw
+        raw = [entry + rr*risk if side=='long' else entry - rr*risk for rr in rr_targets]
+        # snap vào band 1H
+        tol = snap_tol_atr * max(atr, 1e-9)
+        bands = levels1h.get('bands_up' if side=='long' else 'bands_down') or []
+        snapped = []
+        for t in raw:
+            cands = [float(b['tp']) for b in bands
+                     if np.isfinite(b.get('tp', np.nan))
+                     and ((side=='long' and b['tp']>entry) or (side=='short' and b['tp']<entry))
+                     and abs(float(b['tp'])-t) <= tol]
+            snapped.append(min(cands, key=lambda x: abs(x-t)) if cands else float(t))
+        # lọc theo 4H + đảm bảo đơn điệu
+        snapped = _filter_forward_tps_by_4h(snapped, side, levels4h, atr)
+        return sorted(set(snapped), reverse=(side=='short'))[:3]
+    except Exception:
+        return _tp_ladder_confluence(levels1h, levels4h, entry, side, atr, 3)
+
+
 # =====================================================
 # 4) Core decision
 # =====================================================
@@ -586,7 +617,8 @@ def decide(symbol: str,
     # Optional/guards (không phải required)
     vol_ok = bool(getattr(eb.evidence.volume, 'ok', False))
     tr_ok = bool(getattr(eb.evidence.trend, 'ok', False))
-    mom_ok = bool(getattr(getattr(eb.evidence, 'momentum', None), 'primary', None).ok) if getattr(eb.evidence, 'momentum', None) else False
+    mom_bundle = getattr(eb.evidence, 'momentum', None)
+    mom_ok = bool(mom_bundle and getattr(mom_bundle, 'primary', None) and getattr(mom_bundle.primary, 'ok', False))
     cdl_ok = bool(getattr(eb.evidence.candles, 'ok', False))
     liq_ok = bool(getattr(eb.evidence.liquidity, 'ok', False))
 
@@ -812,20 +844,14 @@ def decide(symbol: str,
     if direction and entry is not None and sl is not None and atr > 0:
         sl = _ensure_sl_gap(entry, sl, atr, side=direction, rules=rules)
 
-    # 2) Layered TP: dùng 1H nhưng lọc theo band 4H (nếu có). Pivot = ENTRY (không dùng price_now)
+    # 2) Layered TP: RR-first then snap to bands (1H filtered by 4H). Pivot = ENTRY
     tp1 = tp2 = tp3 = None
-    if direction in ('long','short') and atr > 0 and entry is not None:
-        piv = float(entry)
-        tps = _tp_ladder_confluence(levels, levels4h, piv, direction, atr, rules.tp_ladder_n)
-        if tps:
-            if len(tps) >= 1: tp1 = float(tps[0])
-            if len(tps) >= 2: tp2 = float(tps[1])
-            if len(tps) >= 3: tp3 = float(tps[2])
-        # legacy tp ưu tiên TP2, fallback TP1 rồi TP3
-        if tp is None:
-            if tp2 is not None: tp = float(tp2)
-            elif tp1 is not None: tp = float(tp1)
-            elif tp3 is not None: tp = float(tp3)
+    if direction in ('long','short') and atr > 0 and entry is not None and sl is not None:
+        tps = _tp_ladder_rr(levels, levels4h, float(entry), float(sl), direction, atr)
+        tp1 = float(tps[0]) if len(tps)>0 else None
+        tp2 = float(tps[1]) if len(tps)>1 else None
+        tp3 = float(tps[2]) if len(tps)>2 else None
+        if tp is None: tp = tp2 or tp1 or tp3
 
     # 3) RR & proximity cho entry chính
     rr = None
@@ -845,6 +871,16 @@ def decide(symbol: str,
 
         prox_thr = (rules.retest_zone_atr_reclaim if state == 'reclaim' else rules.retest_zone_atr)
         proximity_ok = (abs(price_now - e1f) <= prox_thr * atr)
+
+   # Soft-gate: nếu RR1 quá thấp thì bỏ TP1 và backfill bằng RR cao hơn
+    rr1_soft_min = max(1.0, rules.rr_min * 0.8)
+    if rr1 is not None and rr1 < rr1_soft_min:
+        kept = [tp for tp in [tp2, tp3] if tp is not None]
+        extra = _tp_ladder_rr(levels, levels4h, float(entry), float(sl), direction, atr, rr_targets=(4.0,))
+        if extra: kept.append(float(extra[0]))
+        kept = sorted(set(kept), reverse=(direction=='short'))[:3]
+        tp1, tp2, tp3 = (kept + [None, None, None])[:3]
+
 
     # 4) trend-follow secondary entry (EMA20/BB mid) nếu có
     rr_entry2 = None
@@ -983,7 +1019,6 @@ def decide(symbol: str,
         telegram_signal=None,
         headline=None,
     )
-    return out.model_dump()
 
     # Telegram signal when ENTER (include both entries if applicable)
     telegram_signal = None
