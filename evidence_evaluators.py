@@ -651,7 +651,7 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     # Evaluate reclaim on both sides to avoid biasing to short when no breakout
     side_hint = "long" if ev_pb.get("ok") else ("short" if ev_pdn.get("ok") else None)
     ev_prc = ev_price_reclaim_best(
-        df1h,
+        df1,
         level=sr_level,
         side_hint=side_hint,
         atr_mult=cfg.reclaim.atr_mult,
