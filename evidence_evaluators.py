@@ -112,50 +112,97 @@ def ev_price_reclaim(df: pd.DataFrame, level: float, atr: float, cfg: TFThreshol
     score = (0.7 if core else 0.0) + (0.3 if hold else 0.0)
     return {"ok": bool(core), "score": round(score,3), "why": ",".join([w for w in ["core" if core else "", "hold" if hold else ""] if w]), "missing": ([] if core else ["reclaim"]), "ref": {"level": level, "buffer": buf, "side": side}}
 
-def ev_price_reclaim_best(
-    df: pd.DataFrame,
-    *,
-    level: float,
-    side_hint: Optional[str] = None,
-    **kwargs
-) -> Dict[str, Any]:
+# --- SR unification helpers ---
+#
+def pick_ref_level(levels, price, soft_levels=None):
     """
-    Evaluate reclaim for BOTH sides (long & short) and pick the less-biased best candidate.
-    Selection order:
-      1) If only one side ok -> pick it
-      2) If both ok -> pick higher score
-      3) If none ok -> use side_hint (from breakout/breakdown), else price vs level, else higher score
+    Chọn mốc SR thống nhất (ref_level):
+      1) tp của bands_up/down gần giá nhất
+      2) fallback: sr_up/sr_down gần giá nhất
+      3) fallback mềm: soft_up/soft_down['level'] gần giá nhất
     """
-    pr_long = ev_price_reclaim(df, level=level, side="long", **kwargs)
-    pr_short = ev_price_reclaim(df, level=level, side="short", **kwargs)
+    import math
+    if levels is None:
+        levels = {}
+    if soft_levels is None:
+        soft_levels = {}
 
-    def _score(ev):
+    bands_up = levels.get("bands_up", []) or []
+    bands_dn = levels.get("bands_down", []) or []
+    bands = bands_up + bands_dn
+
+    def _tp(b):
         try:
-            return float(ev.get("score", 0.0) or 0.0)
+            return float(b.get("tp"))
+        except Exception:
+            return math.nan
+
+    cand_bands = [b for b in bands if math.isfinite(_tp(b))]
+    if cand_bands:
+        tp = min(cand_bands, key=lambda b: abs(_tp(b) - price)).get("tp")
+        try:
+            return float(tp)
+        except Exception:
+            pass
+
+    sr_up = levels.get("sr_up", []) or []
+    sr_dn = levels.get("sr_down", []) or []
+    sr = []
+    for x in (sr_up + sr_dn):
+        try:
+            v = float(x)
+            if np.isfinite(v):
+                sr.append(v)
+        except Exception:
+            pass
+    if sr:
+        return min(sr, key=lambda v: abs(v - price))
+
+    soft_up = (soft_levels or {}).get("soft_up", []) or []
+    soft_dn = (soft_levels or {}).get("soft_down", []) or []
+    soft_all = []
+    for o in (soft_up + soft_dn):
+        try:
+            v = float(o.get("level"))
+            if np.isfinite(v):
+                soft_all.append(v)
+        except Exception:
+            pass
+    if soft_all:
+        return min(soft_all, key=lambda v: abs(v - price))
+
+    return None
+
+# Đánh giá reclaim cho cả 2 phía, chọn tốt nhất (tránh bias short khi không breakout)
+def ev_price_reclaim_best(df, *, level, atr, cfg, side_hint=None):
+    pr_long = ev_price_reclaim(df, level, atr, cfg, side='long')
+    pr_short = ev_price_reclaim(df, level, atr, cfg, side='short')
+
+    def _score(x):
+        try:
+            return float(x.get("score", 0.0) or 0.0)
         except Exception:
             return 0.0
 
-    long_ok, short_ok = bool(pr_long.get("ok")), bool(pr_short.get("ok"))
-    if long_ok and not short_ok:
+    l_ok, s_ok = bool(pr_long.get("ok")), bool(pr_short.get("ok"))
+    if l_ok and not s_ok:
         return pr_long
-    if short_ok and not long_ok:
+    if s_ok and not l_ok:
         return pr_short
-    if long_ok and short_ok:
+    if l_ok and s_ok:
         return pr_long if _score(pr_long) >= _score(pr_short) else pr_short
 
-    # both False
+    # Cả hai False -> dùng hint, rồi đến price-vs-level, cuối cùng chọn score cao hơn
     if side_hint in ("long", "short"):
         picked = pr_long if side_hint == "long" else pr_short
-        picked = {**picked, "why": (picked.get("why", "") + f"; fallback_side_hint={side_hint}").strip("; ")}
+        picked = {**picked, "why": (picked.get("why","") + f"; fallback_side_hint={side_hint}").strip("; ")}
         picked.setdefault("ref", {})["side"] = side_hint
         return picked
-
-    # final heuristic: price vs level
     try:
         last_close = float(df["close"].iloc[-1])
         side = "long" if last_close >= float(level) else "short"
         picked = pr_long if side == "long" else pr_short
-        picked = {**picked, "why": (picked.get("why", "") + f"; fallback_price_vs_level={side}").strip("; ")}
+        picked = {**picked, "why": (picked.get("why","") + f"; fallback_price_vs_level={side}").strip("; ")}
         picked.setdefault("ref", {})["side"] = side
         return picked
     except Exception:
@@ -639,26 +686,29 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     ev_div = ev_divergence_updown(f1.get('momentum', {}))
     ev_rjt = ev_rejection(df1, f1.get('swings', {}), atr1)
     
-    # Reclaim ref (nearest band TP or last swing)
-    level_for_reclaim = None
-    try:
-        bands = (f1.get('levels', {}) or {}).get('bands_up', []) + (f1.get('levels', {}) or {}).get('bands_down', [])
-        px = float(df1['close'].iloc[-1]) if df1 is not None else None
-        if px is not None and bands:
-            level_for_reclaim = min(bands, key=lambda b: abs(float(b['tp']) - px)).get('tp')
-    except Exception:
-        pass
-    # Evaluate reclaim on both sides to avoid biasing to short when no breakout
-    side_hint = "long" if ev_pb.get("ok") else ("short" if ev_pdn.get("ok") else None)
-    ev_prc = ev_price_reclaim_best(
-        df1,
-        level=sr_level,
-        side_hint=side_hint,
-        atr_mult=cfg.reclaim.atr_mult,
-        min_confluence=cfg.reclaim.min_confluence,
-        proximity_atr=cfg.reclaim.proximity_atr,
-    )
+    # --- SR reference (ref_level) thống nhất cho reclaim ---
+    f1h = features_by_tf.get('1H', {}) or {}
+    levels1h = f1h.get('levels', {}) or {}
+    soft1h = f1h.get('soft_levels', {}) or {}
+    if df1h is not None and len(df1h):
+        _px1h = float(df1h['close'].iloc[-1])
+    else:
+        _px1h = float('nan')
+    ref_level = pick_ref_level(levels1h, _px1h, soft_levels=soft1h) if np.isfinite(_px1h) else None
+    if ref_level is None and np.isfinite(_px1h):
+        ref_level = _px1h  # chốt fallback để evaluator vẫn chạy
 
+    # hint hướng từ breakout/breakdown (nếu có)
+    side_hint = 'long' if ev_pb.get('ok') else ('short' if ev_pdn.get('ok') else None)
+
+    # Reclaim (bias-free): evaluate cả 2 phía & chọn tốt nhất
+    ev_prc = ev_price_reclaim_best(
+        df=df1h,
+        level=float(ref_level) if ref_level is not None else float('nan'),
+        atr=atr1h,
+        cfg=cfg.per_tf['1H'],
+        side_hint=side_hint,
+    ) if df1h is not None else {"ok": False}
     # Sideways
     ev_sdw = ev_sideways(df1, bbw1, bbw1_med, atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
 
