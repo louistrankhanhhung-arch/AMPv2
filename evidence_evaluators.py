@@ -143,23 +143,23 @@ def ev_price_reclaim_best(
     if long_ok and short_ok:
         return pr_long if _score(pr_long) >= _score(pr_short) else pr_short
 
-+    # both False
-+    if side_hint in ("long", "short"):
-+        picked = pr_long if side_hint == "long" else pr_short
-+        picked = {**picked, "why": (picked.get("why", "") + f"; fallback_side_hint={side_hint}").strip("; ")}
-+        picked.setdefault("ref", {})["side"] = side_hint
-+        return picked
-+
-+    # final heuristic: price vs level
-+    try:
-+        last_close = float(df["close"].iloc[-1])
-+        side = "long" if last_close >= float(level) else "short"
-+        picked = pr_long if side == "long" else pr_short
-+        picked = {**picked, "why": (picked.get("why", "") + f"; fallback_price_vs_level={side}").strip("; ")}
-+        picked.setdefault("ref", {})["side"] = side
-+        return picked
-+    except Exception:
-+        return pr_long if _score(pr_long) >= _score(pr_short) else pr_short
+    # both False
+    if side_hint in ("long", "short"):
+        picked = pr_long if side_hint == "long" else pr_short
+        picked = {**picked, "why": (picked.get("why", "") + f"; fallback_side_hint={side_hint}").strip("; ")}
+        picked.setdefault("ref", {})["side"] = side_hint
+        return picked
+
+    # final heuristic: price vs level
+    try:
+        last_close = float(df["close"].iloc[-1])
+        side = "long" if last_close >= float(level) else "short"
+        picked = pr_long if side == "long" else pr_short
+        picked = {**picked, "why": (picked.get("why", "") + f"; fallback_price_vs_level={side}").strip("; ")}
+        picked.setdefault("ref", {})["side"] = side
+        return picked
+    except Exception:
+        return pr_long if _score(pr_long) >= _score(pr_short) else pr_short
 
 def ev_sideways(df: pd.DataFrame, bbw_last: float, bbw_med: float, atr: float, cfg: TFThresholds) -> Dict[str, Any]:
     ema_spread = _ema_spread_atr(df)
