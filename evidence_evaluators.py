@@ -678,8 +678,8 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     # Price action base (1H)
     ev_pb = ev_price_breakout(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
     ev_pdn = ev_price_breakdown(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
-    ev_fk_up = ev_false_breakout(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H'])
-    ev_fk_dn = ev_false_breakdown(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H'])
+    ev_fk_up = ev_false_breakout(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
+    ev_fk_dn = ev_false_breakdown(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
     ev_tf_up = ev_trend_follow_ready(df1, f1.get('momentum', {}), f1.get('trend', {}), side='long')
     ev_tf_dn = ev_trend_follow_ready(df1, f1.get('momentum', {}), f1.get('trend', {}), side='short')
     ev_mr  = ev_mean_reversion(df1)
@@ -690,8 +690,8 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     f1h = features_by_tf.get('1H', {}) or {}
     levels1h = f1h.get('levels', {}) or {}
     soft1h = f1h.get('soft_levels', {}) or {}
-    if df1h is not None and len(df1h):
-        _px1h = float(df1h['close'].iloc[-1])
+    if df1 is not None and len(df1):
+        _px1h = float(df1['close'].iloc[-1])
     else:
         _px1h = float('nan')
     ref_level = pick_ref_level(levels1h, _px1h, soft_levels=soft1h) if np.isfinite(_px1h) else None
@@ -703,12 +703,12 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
 
     # Reclaim (bias-free): evaluate cả 2 phía & chọn tốt nhất
     ev_prc = ev_price_reclaim_best(
-        df=df1h,
+        df=df1,
         level=float(ref_level) if ref_level is not None else float('nan'),
-        atr=atr1h,
+        atr=atr1,
         cfg=cfg.per_tf['1H'],
         side_hint=side_hint,
-    ) if df1h is not None else {"ok": False}
+    ) if df1 is not None else {"ok": False}
     # Sideways
     ev_sdw = ev_sideways(df1, bbw1, bbw1_med, atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
 
