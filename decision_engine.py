@@ -253,8 +253,8 @@ REQUIRED_BY_STATE = {
 REQUIRED_BY_GROUP = {
     # TREND_BREAK: cần phá HH/LL + volume (hoặc BB bung/volatility breakout)
     'TREND_BREAK': ['price_breakout|price_breakdown', 'volume|bb|volatility_breakout'],
-    # TREND_RETEST: cần tín hiệu hồi về vùng chuẩn + trend cùng hướng
-    'TREND_RETEST': ['pullback|throwback', 'trend'],
+    # TREND_RETEST: cần tín hiệu hồi về vùng chuẩn + trend cùng hướng + RSI/momentum đúng phía (RSI<50 cho short, >50 cho long) hoặc nến xác nhận
+    'TREND_RETEST': ['pullback|throwback', 'trend', 'momentum|candles']
     # REVERSAL: đảo chiều cần pattern mean-rev hoặc rejection
     'REVERSAL': ['rejection|mean_reversion'],
     # RANGE: sideway
