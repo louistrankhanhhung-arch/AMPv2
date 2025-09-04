@@ -375,12 +375,20 @@ def _last_hh_ll_from_swings(swings: Dict[str, Any]) -> Tuple[Optional[float], Op
 def ev_throwback_ready(df: pd.DataFrame, swings: Dict[str, Any], atr: float, side: Optional[str], pad_range: Tuple[float,float]=(0.02,0.10)) -> Dict[str, Any]:
     if atr <= 0 or side not in ('long','short'):
         return {"ok": False, "why": "side_or_atr_invalid"}
+    # Adapt pad range by ATR regime (override only when default is used)
+    try:
+        reg = _atr_regime(df).get("regime", "normal")
+    except Exception:
+        reg = "normal"
+    base_pad = pad_range
+    if pad_range == (0.02, 0.10) or pad_range is None:
+        base_pad = (0.02, 0.10) if reg in ("low", "normal") else (0.03, 0.12)
     hh, ll = _last_hh_ll_from_swings(swings)
     if side == 'long' and hh is not None:
-        lo = float(hh + pad_range[0]*atr); hi = float(hh + pad_range[1]*atr)
+        lo = float(hh + base_pad[0]*atr); hi = float(hh + base_pad[1]*atr)
         return {"ok": True, "why": "throwback_zone_ready", "ref": hh, "zone": [lo, hi]}
     if side == 'short' and ll is not None:
-        lo = float(ll - pad_range[1]*atr); hi = float(ll - pad_range[0]*atr)
+        lo = float(ll - base_pad[1]*atr); hi = float(ll - base_pad[0]*atr)
         return {"ok": True, "why": "throwback_zone_ready", "ref": ll, "zone": [lo, hi]}
     return {"ok": False, "why": "no_ref_level"}
 
@@ -390,6 +398,17 @@ def ev_pullback_valid(df: pd.DataFrame, swings: Dict[str, Any], atr: float, mom:
         return {"ok": False, "why": "side_or_atr_invalid"}
     hh, ll = _last_hh_ll_from_swings(swings)
     rsi = float(mom.get('rsi', 50.0))
+    # Adapt retracement window & zone width by ATR regime
+    try:
+        reg = _atr_regime(df).get("regime", "normal")
+    except Exception:
+        reg = "normal"
+    if reg == "low":
+        retr_lo, retr_hi, zone_k = 0.236, 0.382, 0.05
+    elif reg == "high":
+        retr_lo, retr_hi, zone_k = 0.382, 0.618, 0.06
+    else:
+        retr_lo, retr_hi, zone_k = 0.382, 0.50, 0.05
     try:
         v5 = float(df['volume'].tail(5).mean()); v10 = float(df['volume'].tail(10).mean());
         vs20 = float(df['vol_sma20'].iloc[-1]) if 'vol_sma20' in df.columns else v10
@@ -403,23 +422,23 @@ def ev_pullback_valid(df: pd.DataFrame, swings: Dict[str, Any], atr: float, mom:
         rng = max(1e-9, hh - ll)
         current = float(df['close'].iloc[-1])
         retr = float((hh - current) / rng)
-        ok = (0.382 <= retr <= 0.5) and (rsi > 50) and contracting and (bull or True)
+        ok = (retr_lo <= retr <= retr_hi) and (rsi > 50) and contracting and (bull or True)
         ema20 = float(df['ema20'].iloc[-1]) if 'ema20' in df.columns else float('nan')
         bb_mid = float(df['bb_mid'].iloc[-1]) if 'bb_mid' in df.columns else float('nan')
         center = ema20 if np.isfinite(ema20) else bb_mid
-        zone = [float(center - 0.05*atr), float(center + 0.05*atr)] if np.isfinite(center) else None
-        fzone = [float(bb_mid - 0.05*atr), float(bb_mid + 0.05*atr)] if np.isfinite(bb_mid) else None
+        zone = [float(center - zone_k*atr), float(center + zone_k*atr)] if np.isfinite(center) else None
+        fzone = [float(bb_mid - zone_k*atr), float(bb_mid + zone_k*atr)] if np.isfinite(bb_mid) else None
         return {"ok": bool(ok), "why": "pullback_ok" if ok else "pullback_not_ok", "retrace_pct": round(retr,3), "rsi_ok": bool(rsi>50), "vol_contracting": bool(contracting), "confirm_candle": bool(bull), "zone": zone, "fallback_zone": fzone}
     if side == 'short' and hh is not None and ll is not None and hh > ll:
         rng = max(1e-9, hh - ll)
         current = float(df['close'].iloc[-1])
         retr = float((current - ll) / rng)
-        ok = (0.382 <= retr <= 0.5) and (rsi < 50) and contracting and (bear or True)
+        ok = (retr_lo <= retr <= retr_hi) and (rsi < 50) and contracting and (bear or True)
         ema20 = float(df['ema20'].iloc[-1]) if 'ema20' in df.columns else float('nan')
         bb_mid = float(df['bb_mid'].iloc[-1]) if 'bb_mid' in df.columns else float('nan')
         center = ema20 if np.isfinite(ema20) else bb_mid
-        zone = [float(center - 0.05*atr), float(center + 0.05*atr)] if np.isfinite(center) else None
-        fzone = [float(bb_mid - 0.05*atr), float(bb_mid + 0.05*atr)] if np.isfinite(bb_mid) else None
+        zone = [float(center - zone_k*atr), float(center + zone_k*atr)] if np.isfinite(center) else None
+        fzone = [float(bb_mid - zone_k*atr), float(bb_mid + zone_k*atr)] if np.isfinite(bb_mid) else None
         return {"ok": bool(ok), "why": "pullback_ok" if ok else "pullback_not_ok", "retrace_pct": round(retr,3), "rsi_ok": bool(rsi<50), "vol_contracting": bool(contracting), "confirm_candle": bool(bear), "zone": zone, "fallback_zone": fzone}
     return {"ok": False, "why": "insufficient_swings"}
 
@@ -545,10 +564,11 @@ def ev_compression_ready(bbw_last: float, bbw_med: float, atr_last: float) -> Di
     return {"ok": ok, "score": 0.6 if ok else 0.0, "why": "squeeze" if ok else "no_squeeze"}
 
 
-def ev_volatility_breakout(vol: Dict[str, Any], bbw_last: float, bbw_med: float, atr_last: float) -> Dict[str, Any]:
+def ev_volatility_breakout(vol: Dict[str, Any], bbw_last: float, bbw_med: float, atr_last: float,
+                           atr_series: Optional[pd.Series] = None) -> Dict[str, Any]:
     """
-    Fix 'ATR rising' to a real slope check: EMA3 > EMA8 on ATR series (if provided).
-    Falls back to atr_last>0 only when no series is available.
+    ATR-rising check uses EMA3 > EMA8 on ATR series if provided,
+    otherwise falls back to atr_last > 0 (non-zero volatility).
     """
     atr_rising = False
     if isinstance(atr_series, pd.Series) and len(atr_series) >= 10:
