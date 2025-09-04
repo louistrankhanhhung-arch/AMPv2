@@ -704,11 +704,20 @@ def decide(symbol: str,
         except Exception:
             return None
 
-    # Lấy danh sách required theo state
-    req_keys = REQUIRED_BY_STATE.get(state, [])
-    # Nếu state chưa có map (trường hợp state lạ), fallback theo direction
+    # Lấy danh sách required theo state (ưu tiên nhóm coarse 4-state)
+    if state in REQUIRED_BY_GROUP:
+        req_keys = REQUIRED_BY_GROUP[state]
+    else:
+        req_keys = REQUIRED_BY_STATE.get(state, [])
+    # Nếu vẫn rỗng, fallback an toàn theo nhóm hoặc theo direction
     if not req_keys:
-        if direction == 'long':
+        if state == 'TREND_RETEST':
+            req_keys = REQUIRED_BY_GROUP['TREND_RETEST']
+        elif state == 'TREND_BREAK':
+            req_keys = REQUIRED_BY_GROUP['TREND_BREAK']
+        elif state == 'RANGE':
+            req_keys = REQUIRED_BY_GROUP['RANGE']
+        elif direction == 'long':
             req_keys = ['price_breakout', 'volume', 'trend']
         elif direction == 'short':
             req_keys = ['price_breakdown', 'volume', 'trend']
@@ -1130,7 +1139,11 @@ def decide(symbol: str,
             bb_ok = bool(getattr(eb.evidence, 'bb', None) and getattr(eb.evidence.bb, 'ok', False))
             if bb_ok:
                 micro_wait = True
-    
+        elif state == 'RANGE':
+            # Range mode: không vào lệnh. Chỉ giao dịch khi có REVERSAL hoặc TREND_BREAK xuất hiện.
+            micro_wait = True
+            if 'range_mode' not in miss_reasons:
+                miss_reasons.append('range_mode')
         gates_ok = all(req_ok) and any_prox and rr_ok_any and (not liq_guard_fail) and (not micro_wait)
         decision = 'ENTER' if gates_ok else 'WAIT'
     
