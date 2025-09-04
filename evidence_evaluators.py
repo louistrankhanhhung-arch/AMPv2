@@ -392,6 +392,31 @@ def ev_throwback_ready(df: pd.DataFrame, swings: Dict[str, Any], atr: float, sid
         return {"ok": True, "why": "throwback_zone_ready", "ref": ll, "zone": [lo, hi]}
     return {"ok": False, "why": "no_ref_level"}
 
+def ev_throwback_valid(df, swings, atr, side, candles=None, lookback=3):
+    base = ev_throwback_ready(df, swings, atr, side)
+    if not base.get('ok'):
+        return {"ok": False, "why": "throwback_zone_unavailable"}
+    lo, hi = base.get('zone', [None, None])
+    if lo is None or hi is None:
+        return {"ok": False, "why": "throwback_zone_invalid"}
+
+    # chạm vùng trong N nến gần nhất
+    closes = df['close'].values[-max(lookback, 1):]
+    touched = any((lo <= float(c) <= hi) for c in closes)
+
+    # nến xác nhận theo hướng
+    cc = ev_candles(candles or {}, side)
+    confirm = bool(cc.get('ok', False))
+
+    ok = bool(touched and confirm)
+    return {
+        "ok": ok,
+        "why": "throwback_valid" if ok else "throwback_not_ok",
+        "ref": base.get('ref'),
+        "zone": base.get('zone'),
+        "confirm_candle": confirm
+    }
+
 
 def ev_pullback_valid(df: pd.DataFrame, swings: Dict[str, Any], atr: float, mom: Dict[str, Any], vol: Dict[str, Any], candles: Dict[str, Any], side: Optional[str]) -> Dict[str, Any]:
     if atr <= 0 or side not in ('long','short'):
@@ -828,7 +853,7 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
 
     # New evidences
     ev_bb = ev_bb_expanding(bbw1, bbw1_med)
-    ev_tb = ev_throwback_ready(df1, f1.get('swings', {}), atr1, side_hint) if df1 is not None else {"ok": False}
+    ev_tb = ev_throwback_valid(df1, f1.get('swings', {}), atr1, side_hint, f1.get('candles', {})) if df1 is not None else {"ok": False}
     ev_pbk = (ev_pullback_valid(
         df1,
         f1.get('swings', {}) or {},
