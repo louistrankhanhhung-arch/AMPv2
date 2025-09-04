@@ -249,6 +249,174 @@ REQUIRED_BY_STATE = {
     'throwback_short': ['throwback'],
 }
 
+# --- Coarse state mapping (rút gọn 4 nhóm) ---
+REQUIRED_BY_GROUP = {
+    # TREND_BREAK: cần phá HH/LL + volume (hoặc BB bung/volatility breakout)
+    'TREND_BREAK': ['price_breakout|price_breakdown', 'volume|bb|volatility_breakout'],
+    # TREND_RETEST: cần tín hiệu hồi về vùng chuẩn + trend cùng hướng
+    'TREND_RETEST': ['pullback|throwback|price_reclaim', 'trend'],
+    # REVERSAL: đảo chiều cần pattern mean-rev hoặc rejection
+    'REVERSAL': ['rejection|mean_reversion'],
+    # RANGE: sideway
+    'RANGE': ['sideways'],
+}
+
+def classify_state_coarse(eb: EvidenceBundleIn) -> Tuple[str, List[str]]:
+    """Gom state thành 4 nhóm và trả thêm tags (không ảnh hưởng gating cứng).
+    Ưu tiên theo sức mạnh: TREND_BREAK > TREND_RETEST > REVERSAL > RANGE.
+    """
+    e = eb.evidence
+    tags: List[str] = []
+    try:
+        if getattr(e, 'bb', None) and getattr(e.bb, 'ok', False):
+            tags.append('bb_expanding')
+    except Exception:
+        pass
+    try:
+        if getattr(e, 'volatility_breakout', None) and getattr(e.volatility_breakout, 'ok', False):
+            tags.append('volatility_breakout')
+    except Exception:
+        pass
+    try:
+        if getattr(e, 'false_breakout', None) and getattr(e.false_breakout, 'ok', False):
+            tags.append('false_breakout')
+        if getattr(e, 'false_breakdown', None) and getattr(e.false_breakdown, 'ok', False):
+            tags.append('false_breakdown')
+    except Exception:
+        pass
+    try:
+        if getattr(e, 'trend', None) and getattr(e.trend, 'ok', False):
+            # keep as tag only
+            pass
+    except Exception:
+        pass
+    try:
+        if getattr(e, 'divergence', None) and getattr(e.divergence, 'ok', False):
+            tags.append('divergence')
+    except Exception:
+        pass
+
+    # Decide coarse group
+    if getattr(e, 'price_breakout', None) and getattr(e.price_breakout, 'ok', False):
+        return 'TREND_BREAK', tags
+    if getattr(e, 'price_breakdown', None) and getattr(e.price_breakdown, 'ok', False):
+        return 'TREND_BREAK', tags
+
+    if (getattr(e, 'pullback', None) and getattr(e.pullback, 'ok', False)) or \
+       (getattr(e, 'throwback', None) and getattr(e.throwback, 'ok', False)) or \
+       (getattr(e, 'price_reclaim', None) and getattr(e.price_reclaim, 'ok', False)):
+        return 'TREND_RETEST', tags
+
+    if (getattr(e, 'rejection', None) and getattr(e.rejection, 'ok', False)) or \
+       (getattr(e, 'mean_reversion', None) and getattr(e.mean_reversion, 'ok', False)):
+        return 'REVERSAL', tags
+
+    if getattr(e, 'sideways', None) and getattr(e.sideways, 'ok', False):
+        return 'RANGE', tags
+
+    # fallback by original state name
+    st = (eb.state or '').lower()
+    if st in ('breakout','breakdown'): return 'TREND_BREAK', tags
+    if st in ('reclaim','trend_follow_up','trend_follow_down','trend_follow_pullback','throwback_long','throwback_short'):
+        if st.startswith('trend_follow'): tags.append(st)
+        return 'TREND_RETEST', tags
+    if st in ('mean_reversion','rejection','false_breakout','false_breakdown','divergence_up','divergence_down'):
+        if st.startswith('false_'): tags.append(st)
+        return 'REVERSAL', tags
+    if st in ('sideways','range','compression_ready'): return 'RANGE', tags
+    return 'RANGE', tags
+
+
+def infer_side_vote(features_by_tf: Dict[str, Dict[str, Any]], eb: EvidenceBundleIn) -> Tuple[Optional[str], float, Dict[str, float]]:
+    """Chọn side bằng cơ chế vote có trọng số. Trả (side, vote_sum, breakdown).
+    side: 'long' / 'short' / None (khi mơ hồ).
+    """
+    e = eb.evidence
+    f1 = features_by_tf.get('1H', {}) or {}
+    f4 = features_by_tf.get('4H', {}) or {}
+    fD = features_by_tf.get('1D', {}) or {}
+
+    votes = 0.0
+    brk = {}
+
+    # (A) Bằng chứng trực tiếp
+    if getattr(e, 'price_breakout', None) and getattr(e.price_breakout, 'ok', False):
+        votes += 3.0; brk['price_breakout'] = +3.0
+    if getattr(e, 'price_breakdown', None) and getattr(e.price_breakdown, 'ok', False):
+        votes -= 3.0; brk['price_breakdown'] = -3.0
+    # reclaim side
+    try:
+        ref_side = (getattr(e.price_reclaim, 'ref', None) or {}).get('side')
+        if ref_side == 'long': votes += 2.0; brk['reclaim'] = +2.0
+        elif ref_side == 'short': votes -= 2.0; brk['reclaim'] = -2.0
+    except Exception:
+        pass
+    # pullback/throwback + trend alignment
+    try:
+        tr1 = (f1.get('trend', {}) or {}).get('state')
+        tr4 = (f4.get('trend', {}) or {}).get('state')
+        if ((getattr(e, 'pullback', None) and getattr(e.pullback, 'ok', False)) or \
+            (getattr(e, 'throwback', None) and getattr(e.throwback, 'ok', False))):
+            if tr1 == tr4 == 'up': votes += 2.0; brk['pbk/thb_trend'] = +2.0
+            if tr1 == tr4 == 'down': votes -= 2.0; brk['pbk/thb_trend'] = -2.0
+    except Exception:
+        pass
+
+    # (B) Đồng pha đa khung
+    try:
+        if tr1 == tr4 == 'up': votes += 2.0; brk['align_1H4H'] = +2.0
+        elif tr1 == tr4 == 'down': votes -= 2.0; brk['align_1H4H'] = -2.0
+    except Exception:
+        pass
+    try:
+        trD = (fD.get('trend', {}) or {}).get('state')
+        if trD == 'up': votes += 1.0; brk['ctx_1D'] = +1.0
+        elif trD == 'down': votes -= 1.0; brk['ctx_1D'] = -1.0
+    except Exception:
+        pass
+
+    # (C) Bộ điều kiện phụ
+    try:
+        rsi = float((f1.get('momentum', {}) or {}).get('rsi', 50.0))
+        if rsi >= 55.0: votes += 1.0; brk['rsi_bias'] = +1.0
+        elif rsi <= 45.0: votes -= 1.0; brk['rsi_bias'] = -1.0
+    except Exception:
+        pass
+    try:
+        # volume as booster theo hướng break nếu có
+        vol_ok = bool(getattr(e, 'volume', None) and getattr(e.volume, 'ok', False))
+        if vol_ok and 'price_breakout' in brk and brk['price_breakout'] > 0:
+            votes += 1.0; brk['vol_boost'] = +1.0
+        if vol_ok and 'price_breakdown' in brk and brk['price_breakdown'] < 0:
+            votes -= 1.0; brk['vol_boost'] = -1.0
+    except Exception:
+        pass
+    try:
+        div = (f1.get('momentum', {}) or {}).get('divergence', 'none')
+        if div == 'bearish' and votes > 0: votes -= 1.0; brk['divergence_against'] = -1.0
+        if div == 'bullish' and votes < 0: votes += 1.0; brk['divergence_against'] = +1.0
+    except Exception:
+        pass
+
+    # (D) Slow-market guards
+    try:
+        adaptive = getattr(e, 'adaptive', None) or {}
+        is_slow = bool(adaptive.get('is_slow', False))
+        liq_floor = bool(adaptive.get('liquidity_floor', False))
+        if is_slow:
+            votes *= 0.8; brk['slow_market_damp'] = -0.2*abs(votes)
+        if liq_floor:
+            # phạt nhẹ tín hiệu theo-trend (dựa trên dấu hiện tại)
+            if votes > 0: votes -= 1.0; brk['liquidity_floor_pen'] = -1.0
+            elif votes < 0: votes += 1.0; brk['liquidity_floor_pen'] = +1.0
+    except Exception:
+        pass
+
+    side = 'long' if votes >= 3.0 else ('short' if votes <= -3.0 else None)
+    return side, float(votes), brk
+
+
+
 # =====================================================
 # 3) Helpers
 # =====================================================
@@ -505,50 +673,25 @@ def decide(symbol: str,
     levels4h = f4.get('levels', {}) or {}
     fD = features_by_tf.get('1D', {}) or {}
     # Determine side by state
-    state = eb.state
+    orig_state = eb.state
     confidence = float(eb.confidence)
-    direction: Optional[str] = None
-    if state == 'reclaim':
-        side_ref = (eb.evidence.price_reclaim.ref or {}).get('side')
-        direction = side_ref if side_ref in ('long','short') else None
-    elif state == 'mean_reversion':
-        side_ref = (eb.evidence.__dict__.get('mean_reversion') or {}).get('side') if hasattr(eb.evidence, '__dict__') else None
-        direction = side_ref if side_ref in ('long','short') else None
-    elif state == 'rejection':
-        side_ref = (eb.evidence.__dict__.get('rejection') or {}).get('side') if hasattr(eb.evidence, '__dict__') else None
-        direction = side_ref if side_ref in ('long','short') else None
-    elif state == 'false_breakout':
-        direction = 'short'
-    elif state == 'false_breakdown':
-        direction = 'long'
-    elif state == 'trend_follow_up':
-        direction = 'long'
-    elif state == 'trend_follow_down':
-        direction = 'short'
-    elif state == 'breakout':
-        direction = 'long'
-    elif state == 'breakdown':
-        direction = 'short'
-    elif state == 'volatility_breakout':
-        # infer from price evidences
-        if eb.evidence.price_breakout.ok: direction = 'long'
-        elif eb.evidence.price_breakdown.ok: direction = 'short'
-        else: direction = None
-    elif state == 'divergence_up':
-        direction = 'long'
-    elif state == 'divergence_down':
-        direction = 'short'
-    elif state == 'throwback_long':
-        direction = 'long'
-    elif state == 'throwback_short':
-        direction = 'short'
-    elif state == 'trend_follow_pullback':
-        # derive from momentum bias
-        rsi = float(features_by_tf.get('1H', {}).get('momentum', {}).get('rsi', 50.0))
-        direction = 'long' if rsi >= 50 else 'short'
-
-    
-    # Required confirmations per state
+    coarse_state, coarse_tags = classify_state_coarse(eb)
+    state = coarse_state  # use coarse state for decision
+    direction, vote_sum, vote_breakdown = infer_side_vote(features_by_tf, eb)
+    # If side still None, fallback to reclaim.side or price vs ref level hint
+    if direction is None:
+        try:
+            side_ref = (eb.evidence.price_reclaim.ref or {}).get('side')
+            if side_ref in ('long','short'):
+                direction = side_ref
+        except Exception:
+            pass
+    # Adaptive regime
+    adaptive = getattr(eb.evidence, 'adaptive', None) or {}
+    regime = adaptive.get('regime', 'normal')
+    is_slow = bool(adaptive.get('is_slow', False))
+    liquidity_floor = bool(adaptive.get('liquidity_floor', False))# Required confirmations per state
+             
     # Required confirmations
     req_ok: List[bool] = []
     miss_reasons: List[str] = []
@@ -682,7 +825,7 @@ def decide(symbol: str,
     def _retest_entry(side: str, ref: float, sl_pad_atr: float) -> Tuple[Optional[float], Optional[float], Optional[float], str]:
         if not np.isfinite(ref) or atr <= 0:
             return None, None, None, ""
-        pad = rules.retest_pad_atr * atr
+        pad = retest_pad_local * atr
         if side == 'long':
             e = float(ref + pad)
             s = _protective_sl_confluence(levels, levels4h, ref_level=ref, atr=atr, side='long', pad_atr=sl_pad_atr)
@@ -717,6 +860,9 @@ def decide(symbol: str,
                 return e1, e2
         except Exception:
             return None, None
+
+    # use original granular state for plan building
+    state = orig_state
 
     # Build plan according to state with new setups
     if state == 'throwback_long' and direction == 'long':
@@ -853,6 +999,9 @@ def decide(symbol: str,
         tp3 = float(tps[2]) if len(tps)>2 else None
         if tp is None: tp = tp2 or tp1 or tp3
 
+    # switch back to coarse state for gating & proximity
+    state = coarse_state
+
     # 3) RR & proximity cho entry chính
     rr = None
     rr1 = rr2 = rr3 = None
@@ -869,7 +1018,9 @@ def decide(symbol: str,
         # legacy rr = TP2 ưu tiên, rồi TP1, rồi TP3
         rr = rr2 if rr2 is not None else (rr1 if rr1 is not None else rr3)
 
-        prox_thr = (rules.retest_zone_atr_reclaim if state == 'reclaim' else rules.retest_zone_atr)
+        prox_thr = (rules.retest_zone_atr_reclaim if state == 'TREND_RETEST' else rules.retest_zone_atr)
+        # regime-adaptive proximity
+        prox_thr = (prox_thr * (0.8 if regime=='low' else (1.2 if regime=='high' else 1.0)))
         proximity_ok = (abs(price_now - e1f) <= prox_thr * atr)
 
    # Soft-gate: nếu RR1 quá thấp thì bỏ TP1 và backfill bằng RR cao hơn
@@ -891,7 +1042,7 @@ def decide(symbol: str,
         rr_entry2 = _rr(direction, e2f, sl, float(tp))
         if rr_entry2 is not None and rr_entry2 > rules.rr_max:
             rr_entry2 = float(rules.rr_max)
-        proximity_ok2 = (abs(price_now - e2f) <= rules.proximity_atr * atr)
+        proximity_ok2 = (abs(price_now - e2f) <= (rules.proximity_atr * (0.8 if regime=='low' else (1.2 if regime=='high' else 1.0))) * atr)
 
     # 5) Multi-TF confluence (EMA/RSI/Volume đã tính trước đó)
     #    - align, vol_score, _rsi_gate(direction), trD đã được chuẩn bị ở phần trên
@@ -941,36 +1092,40 @@ def decide(symbol: str,
         confluence_score = max(0.0, confluence_score - 0.15)
         miss_reasons.append('divergence_against')
 
-    # 8) Quyết định ENTER/WAIT/AVOID (thêm gate confluence + liquidity_ok)
+    # 8) Quyết định ENTER/WAIT/AVOID (bỏ confluence gate; dùng micro-gates & adaptive)
     decision = 'WAIT'
+    # regime-adaptive thresholds
+    rr_min_eff = rules.rr_min * (0.87 if regime=='low' else (1.13 if regime=='high' else 1.0))
+    liq_guard_fail = not liq_ok
     if avoid_reasons:
         decision = 'AVOID'
     else:
         any_prox = proximity_ok or proximity_ok2
-        rr_ok_any = (rr is not None and rr >= rules.rr_min) or (rr_entry2 is not None and rr_entry2 >= rules.rr_min)
-        thr = (rules.confluence_enter_thr_reclaim if state == 'reclaim' else rules.confluence_enter_thr)
-        confluence_ok = (confluence_score >= thr)
-        liq_guard_fail = not liq_ok
-
-        gates_ok = all(req_ok) and any_prox and rr_ok_any and confluence_ok and (not liq_guard_fail)
-
-        # riêng RECLAIM: nếu 4H đối hướng bắt buộc momentum.ok
-        if state == 'reclaim' and ((direction == 'long' and tr4 == 'down') or (direction == 'short' and tr4 == 'up')):
-            gates_ok = gates_ok and mom_ok
-
-        if not all(req_ok):
-            pass
-        if not any_prox:
-            miss_reasons.append('price_far_from_entry')
-        if not rr_ok_any:
-            miss_reasons.append('rr_min')
-        if not confluence_ok:
-            miss_reasons.append('confluence_low')
-        if liq_guard_fail:
-            miss_reasons.append('liquidity_guard')
-
+        rr_ok_any = (rr is not None and rr >= rr_min_eff) or (rr_entry2 is not None and rr_entry2 >= rr_min_eff)
+    
+        # Micro-gates per coarse state
+        micro_wait = False
+        if state == 'TREND_BREAK':
+            # in slow/liquidity-floor sessions, yêu cầu vol ok hoăc bb expanding
+            need_boost = is_slow or liquidity_floor
+            have_boost = bool(vol_ok) or bool(getattr(eb.evidence, 'bb', None) and getattr(eb.evidence.bb, 'ok', False))
+            if need_boost and not have_boost:
+                micro_wait = True
+        elif state == 'TREND_RETEST':
+            # cần align 1H~4H cùng hướng để vào
+            tr1 = (f1.get('trend', {}) or {}).get('state')
+            tr4 = (f4.get('trend', {}) or {}).get('state')
+            if not (tr1 == tr4 and tr1 in ('up','down')):
+                micro_wait = True
+        elif state == 'REVERSAL':
+            # tránh khi BB đang bung mạnh
+            bb_ok = bool(getattr(eb.evidence, 'bb', None) and getattr(eb.evidence.bb, 'ok', False))
+            if bb_ok:
+                micro_wait = True
+    
+        gates_ok = all(req_ok) and any_prox and rr_ok_any and (not liq_guard_fail) and (not micro_wait)
         decision = 'ENTER' if gates_ok else 'WAIT'
-
+    
     # 9) Build plan out (giữ style PlanOut/LogsOut cũ, thêm confluence vào note)
     note_str = (note or "")
     note_str += f"|confluence={confluence_score:.2f}"
@@ -996,9 +1151,14 @@ def decide(symbol: str,
             'required_ok': all(req_ok),
             'proximity_ok_primary': proximity_ok,
             'proximity_ok_secondary': proximity_ok2,
-            'rr_ok_primary': (rr is not None and rr >= rules.rr_min),
-            'rr_ok_secondary': (rr_entry2 is not None and rr_entry2 >= rules.rr_min),
+            'rr_ok_primary': (rr is not None and rr >= rr_min_eff),
+            'rr_ok_secondary': (rr_entry2 is not None and rr_entry2 >= rr_min_eff),
             'confluence_score': confluence_score,
+            'state_group': state,
+            'orig_state': orig_state,
+            'tags': coarse_tags,
+            'vote_sum': vote_sum,
+            'vote_breakdown': vote_breakdown,
             'plan': plan.model_dump() if hasattr(plan, 'model_dump') else plan.__dict__,
         },
         WAIT={
@@ -1008,6 +1168,10 @@ def decide(symbol: str,
             'candles_ok': cdl_ok,
             'liquidity_ok': liq_ok,
             'confluence_score': confluence_score,
+            'state_group': state,
+            'orig_state': orig_state,
+            'tags': coarse_tags,
+            'vote_sum': vote_sum,
             'plan_preview': {
                 'direction': plan.direction,
                 'entry': plan.entry, 'sl': plan.sl,
@@ -1089,6 +1253,3 @@ def decide(symbol: str,
     )
 
     return out.model_dump() if hasattr(out, 'model_dump') else out.__dict__
-
-
-
