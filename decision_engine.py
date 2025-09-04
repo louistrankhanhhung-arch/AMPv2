@@ -691,6 +691,7 @@ def decide(symbol: str,
     regime = adaptive.get('regime', 'normal')
     is_slow = bool(adaptive.get('is_slow', False))
     liquidity_floor = bool(adaptive.get('liquidity_floor', False))# Required confirmations per state
+    retest_pad_local = getattr(rules, "retest_pad_atr", 0.05) * (1.4 if regime == "high" else 1.0)
              
     # Required confirmations
     req_ok: List[bool] = []
