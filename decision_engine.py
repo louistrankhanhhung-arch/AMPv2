@@ -337,7 +337,9 @@ def infer_side_vote(features_by_tf: Dict[str, Dict[str, Any]], eb: EvidenceBundl
     fD = features_by_tf.get('1D', {}) or {}
 
     votes = 0.0
-    brk = {}
+    brk: Dict[str, float] = {}
+    # Dùng coarse state để chọn ngưỡng động
+    coarse_state, _tags = classify_state_coarse(eb)
 
     # (A) Bằng chứng trực tiếp
     if getattr(e, 'price_breakout', None) and getattr(e.price_breakout, 'ok', False):
@@ -366,6 +368,15 @@ def infer_side_vote(features_by_tf: Dict[str, Dict[str, Any]], eb: EvidenceBundl
     try:
         if tr1 == tr4 == 'up': votes += 2.0; brk['align_1H4H'] = +2.0
         elif tr1 == tr4 == 'down': votes -= 2.0; brk['align_1H4H'] = -2.0
+    except Exception:
+        pass
+    # (B0) Phiếu nhẹ theo trend nếu đồng pha nhưng thiếu tín hiệu mạnh
+    try:
+        if tr1 in ('up','down') and tr4 in ('up','down'):
+            if tr1 == tr4 == 'up':
+                votes += 0.5; brk['trend_bias'] = brk.get('trend_bias', 0.0) + 0.5
+            elif tr1 == tr4 == 'down':
+                votes -= 0.5; brk['trend_bias'] = brk.get('trend_bias', 0.0) - 0.5
     except Exception:
         pass
     try:
@@ -412,7 +423,17 @@ def infer_side_vote(features_by_tf: Dict[str, Dict[str, Any]], eb: EvidenceBundl
     except Exception:
         pass
 
-    side = 'long' if votes >= 3.0 else ('short' if votes <= -3.0 else None)
+    # (Z) Ngưỡng động theo nhóm trạng thái & regime
+    base_thr = 2.5 if coarse_state == 'TREND_BREAK' else (2.0 if coarse_state == 'TREND_RETEST' else 2.2)
+    try:
+        adaptive = getattr(eb.evidence, 'adaptive', None) or {}
+        is_slow = bool(adaptive.get('is_slow', False))
+        liq_floor = bool(adaptive.get('liquidity_floor', False))
+    except Exception:
+        is_slow = False; liq_floor = False
+    thr = base_thr + (0.3 if is_slow else 0.0) + (0.2 if liq_floor else 0.0)
+    brk['_threshold'] = float(thr)
+    side = 'long' if votes >= thr else ('short' if votes <= -thr else None)
     return side, float(votes), brk
 
 
