@@ -1038,8 +1038,6 @@ def decide(symbol: str,
         headline=None,
     )
 
-        return out.model_dump()
-
     # Telegram signal when ENTER (include both entries if applicable)
     telegram_signal = None
     if decision == 'ENTER' and direction and plan.sl is not None and (plan.entry is not None or plan.entry2 is not None):
