@@ -809,7 +809,15 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     # New evidences
     ev_bb = ev_bb_expanding(bbw1, bbw1_med)
     ev_tb = ev_throwback_ready(df1, f1.get('swings', {}), atr1, side_hint) if df1 is not None else {"ok": False}
-    ev_pbk = ev_pullback_valid(df1, f1.get('swings', {}), atr1, f1.get('candles', {}), side_hint) if df1 is not None else {"ok": False}
+    ev_pbk = (ev_pullback_valid(
+        df1,
+        f1.get('swings', {}) or {},
+        atr1,
+        f1.get('momentum', {}) or {},
+        (cfg_1h if 'cfg_1h' in locals() and cfg_1h is not None else cfg.per_tf['1H']),
+        f1.get('candles', {}) or {},
+        side_hint
+    ) if df1 is not None else {"ok": False})
  
     # Slow-market guards (Volatility-of-Vol & Liquidity floor)
     vol_now = float(f1.get('volume', {}).get('now', 0.0) or f1.get('volume', {}).get('v', 0.0) or 0.0)
