@@ -678,14 +678,7 @@ def decide(symbol: str,
     coarse_state, coarse_tags = classify_state_coarse(eb)
     state = coarse_state  # use coarse state for decision
     direction, vote_sum, vote_breakdown = infer_side_vote(features_by_tf, eb)
-    # If side still None, fallback to reclaim.side or price vs ref level hint
-    if direction is None:
-        try:
-            side_ref = (eb.evidence.price_reclaim.ref or {}).get('side')
-            if side_ref in ('long','short'):
-                direction = side_ref
-        except Exception:
-            pass
+    
     # Adaptive regime
     adaptive = getattr(eb.evidence, 'adaptive', None) or {}
     regime = adaptive.get('regime', 'normal')
@@ -704,6 +697,9 @@ def decide(symbol: str,
         except Exception:
             return None
 
+    if direction is None and 'direction_undecided' not in miss_reasons:
+        miss_reasons.append('direction_undecided')
+             
     # Lấy danh sách required theo state (ưu tiên nhóm coarse 4-state)
     if state in REQUIRED_BY_GROUP:
         req_keys = REQUIRED_BY_GROUP[state]
