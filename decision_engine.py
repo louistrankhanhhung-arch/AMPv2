@@ -826,6 +826,13 @@ def decide(symbol: str,
         if not np.isfinite(ref) or atr <= 0:
             return None, None, None, ""
         pad = retest_pad_local * atr
+        # Adaptive retest pad: dùng retest_pad_local nếu có (được set bởi lớp adaptive),
+        # nếu không thì fallback về rules.retest_pad_atr để giữ hành vi cũ.
+        try:
+            pad_k = retest_pad_local  # có thể được định nghĩa ở scope ngoài (adaptive layer)
+        except NameError:
+            pad_k = getattr(rules, "retest_pad_atr", 0.05)
+        pad = float(pad_k) * float(atr)
         if side == 'long':
             e = float(ref + pad)
             s = _protective_sl_confluence(levels, levels4h, ref_level=ref, atr=atr, side='long', pad_atr=sl_pad_atr)
