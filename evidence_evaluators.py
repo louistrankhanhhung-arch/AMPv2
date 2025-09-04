@@ -47,8 +47,83 @@ CONTEXT_TF = "1D"
 def _get_last_closed_bar(df: pd.DataFrame) -> pd.Series:
     if len(df) >= 2:
         return df.iloc[-2]
-    return df.iloc[-1]
+    return df.iloc[-1] if len(df) else pd.Series(dtype=float)
+ 
+# --------------------------
+# ATR-adaptive helpers
+# --------------------------
+ 
+def _atr_regime(df: pd.DataFrame, lookback: int = 180) -> Dict[str, Any]:
+    """
+    Determine low/normal/high volatility regime using NATR percentiles.
+    Returns: {'regime': str, 'natr': float, 'p33': float, 'p67': float}
+    """
+    out = {"regime": "normal", "natr": np.nan, "p33": np.nan, "p67": np.nan}
+    if df is None or not len(df) or 'atr14' not in df or 'close' not in df:
+        return out
+    n = min(lookback, len(df))
+    sub = df.iloc[-n:]
+    natr = sub['atr14'] / sub['close'].replace(0, np.nan)
+    p33 = np.nanpercentile(natr, 33)
+    p67 = np.nanpercentile(natr, 67)
+    now = float(natr.iloc[-1])
+    reg = "normal"
+    if now <= p33:
+        reg = "low"
+    elif now >= p67:
+        reg = "high"
+    return {"regime": reg, "natr": now, "p33": float(p33), "p67": float(p67)}
 
+def _clone(obj):
+    # light clone for dataclass-like configs
+    return type(obj)(**{k: getattr(obj, k) for k in obj.__annotations__.keys()})
+
+def _adapt_cfg(cfg_tf: TFThresholds, regime: str) -> TFThresholds:
+    """
+    Scale key thresholds per regime. We keep 'normal' ~1.0×, soften at 'low',
+    and harden at 'high' to reduce whipsaw.
+    """
+    c = _clone(cfg_tf)
+    if regime == "low":
+        c.break_buffer_atr *= 0.85
+        c.hvn_guard_atr     *= 0.90
+        c.ema_spread_small_atr *= 1.10
+        c.rsi_long = float(c.rsi_long) - 2.0
+        c.rsi_short = float(c.rsi_short) + 2.0
+        c.vol_ratio_thr = float(c.vol_ratio_thr) - 0.10
+        c.vol_z_thr     = float(c.vol_z_thr)     - 0.10
+    elif regime == "high":
+        c.break_buffer_atr *= 1.25
+        c.hvn_guard_atr     *= 1.20
+        c.ema_spread_small_atr *= 0.90
+        c.rsi_long = float(c.rsi_long) + 2.0
+        c.rsi_short = float(c.rsi_short) - 2.0
+        c.vol_ratio_thr = float(c.vol_ratio_thr) + 0.20
+        c.vol_z_thr     = float(c.vol_z_thr)     + 0.20
+    # normal: keep as is
+    return c
+
+def _slow_market_guards(bbw_now: float, bbw_med: float,
+                        vol_now: float, vol_med: float,
+                        regime: str) -> Dict[str, Any]:
+    """
+    Two lightweight guards for 'slow/illiquid' sessions.
+      - vol_of_vol: bbw_now / bbw_med
+      - liq_ratio : vol_now / vol_med
+    """
+    bbw_med = float(bbw_med or 0.0)
+    vol_med = float(vol_med or 0.0)
+    vov = (float(bbw_now) / bbw_med) if bbw_med > 0 else np.nan
+    liq = (float(vol_now) / vol_med) if vol_med > 0 else np.nan
+    is_slow = (regime == "low") and (vov < 0.8 if np.isfinite(vov) else False)
+    liq_floor = (liq < 0.7) if np.isfinite(liq) else False
+    return {
+        "regime": regime,
+        "vol_of_vol": float(vov) if np.isfinite(vov) else None,
+        "liquidity_ratio": float(liq) if np.isfinite(liq) else None,
+        "is_slow": bool(is_slow),
+        "liquidity_floor": bool(liq_floor),
+    }
 
 def _last_swing(swings: Dict[str, Any], kind: str) -> Optional[float]:
     if not swings or 'swings' not in swings:
@@ -471,11 +546,20 @@ def ev_compression_ready(bbw_last: float, bbw_med: float, atr_last: float) -> Di
 
 
 def ev_volatility_breakout(vol: Dict[str, Any], bbw_last: float, bbw_med: float, atr_last: float) -> Dict[str, Any]:
-    """Volatility breakout: BB expanding + volume explosive + ATR rising."""
+    """
+    Fix 'ATR rising' to a real slope check: EMA3 > EMA8 on ATR series (if provided).
+    Falls back to atr_last>0 only when no series is available.
+    """
+    atr_rising = False
+    if isinstance(atr_series, pd.Series) and len(atr_series) >= 10:
+        ema3 = atr_series.ewm(span=3, adjust=False).mean().iloc[-1]
+        ema8 = atr_series.ewm(span=8, adjust=False).mean().iloc[-1]
+        atr_rising = bool(ema3 > ema8)
+    else:
+        atr_rising = (float(atr_last or 0.0) > 0.0)
     vr = float(vol.get('vol_ratio', 1.0)); vz = float(vol.get('vol_z20', 0.0))
     bb_expand = bool(bbw_last > bbw_med)
     explosive = (vr >= 2.0) or (vz >= 2.0)
-    atr_rising = bool(atr_last > 0.0)
     ok = bb_expand and explosive and atr_rising
     score = 1.0 if ok and ((vr >= 3.0) or (vz >= 3.0)) else (0.8 if ok else 0.0)
     why = []
@@ -671,17 +755,17 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     # ⬇️ Lấy BBW trước để dùng cho các evaluator bên dưới
     bbw1 = f1.get('volatility', {}).get('bbw_last', 0.0)
     bbw1_med = f1.get('volatility', {}).get('bbw_med', 0.0)
-    # ⬇️ Tính các evaluator cần BBW NGAY sau khi có bbw1/bbw1_med
-    ev_cmp  = ev_compression_ready(bbw1, bbw1_med, atr1)
-    ev_volb = ev_volatility_breakout(f1.get('volume', {}), bbw1, bbw1_med, atr1)
+
+    # === ATR Regime & adaptive thresholds ===
+    regime_info = _atr_regime(df1 if df1 is not None else pd.DataFrame())
+    reg = regime_info.get("regime", "normal")
+    cfg_1h = _adapt_cfg(cfg.per_tf['1H'], reg) if '1H' in cfg.per_tf else None
+    cfg_4h = _adapt_cfg(cfg.per_tf['4H'], reg) if '4H' in cfg.per_tf else None
+    cfg_1d = _adapt_cfg(cfg.per_tf['1D'], reg) if '1D' in cfg.per_tf else None
 
     # Price action base (1H)
-    ev_pb = ev_price_breakout(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
-    ev_pdn = ev_price_breakdown(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
-    ev_fk_up = ev_false_breakout(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
-    ev_fk_dn = ev_false_breakdown(df1, f1.get('swings', {}), atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
-    ev_tf_up = ev_trend_follow_ready(df1, f1.get('momentum', {}), f1.get('trend', {}), side='long')
-    ev_tf_dn = ev_trend_follow_ready(df1, f1.get('momentum', {}), f1.get('trend', {}), side='short')
+    ev_pb = ev_price_breakout(df1, f1.get('swings', {}), atr1, cfg_1h) if df1 is not None else {"ok": False}
+    ev_pdn = ev_price_breakdown(df1, f1.get('swings', {}), atr1, cfg_1h) if df1 is not None else {"ok": False}
     ev_mr  = ev_mean_reversion(df1)
     ev_div = ev_divergence_updown(f1.get('momentum', {}))
     ev_rjt = ev_rejection(df1, f1.get('swings', {}), atr1)
@@ -702,23 +786,17 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     side_hint = 'long' if ev_pb.get('ok') else ('short' if ev_pdn.get('ok') else None)
 
     # Reclaim (bias-free): evaluate cả 2 phía & chọn tốt nhất
-    ev_prc = ev_price_reclaim_best(
-        df=df1,
-        level=float(ref_level) if ref_level is not None else float('nan'),
-        atr=atr1,
-        cfg=cfg.per_tf['1H'],
-        side_hint=side_hint,
-    ) if df1 is not None else {"ok": False}
+    ev_prc = ev_price_reclaim(df1, ref_level, atr1, cfg_1h) if df1 is not None else {"ok": False}
     # Sideways
-    ev_sdw = ev_sideways(df1, bbw1, bbw1_med, atr1, cfg.per_tf['1H']) if df1 is not None else {"ok": False}
+    ev_sdw = ev_sideways(df1, bbw1, bbw1_med, atr1, cfg_1h) if df1 is not None else {"ok": False}
 
     # Volume & Momentum
-    ev_vol_1h = ev_volume(f1.get('volume', {}), cfg.per_tf['1H'])
-    ev_vol_4h = ev_volume(f4.get('volume', {}), cfg.per_tf['4H']) if f4 else {"ok": False}
+    ev_vol_1h = ev_volume(f1.get('volume', {}), cfg_1h)
+    ev_vol_4h = ev_volume(f4.get('volume', {}), cfg_4h) if f4 else {"ok": False}
     vol_ok = ev_vol_1h['ok'] or ev_vol_4h.get('ok', False)
 
     side_hint = 'long' if ev_pb.get('ok') else ('short' if ev_pdn.get('ok') else None)
-    ev_mom_1h = ev_momentum(f1.get('momentum', {}), cfg.per_tf['1H'], side=side_hint or 'long')
+    ev_mom_1h = ev_momentum(f1.get('momentum', {}), cfg_1h, side=side_hint or 'long')
     ev_tr = ev_trend_alignment(f1.get('trend', {}), f4.get('trend', {}) if f4 else None)
 
     # Candles & Liquidity
@@ -726,13 +804,21 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     price_now = float(df1['close'].iloc[-1]) if df1 is not None else float('nan')
     vp = f4.get('vp_zones', []) if f4 else []
     if not vp and fD: vp = fD.get('vp_zones', [])
-    ev_liq_ = ev_liquidity(price_now, atr4 or atr1, vp, cfg.per_tf['4H'], side=side_hint)
+    ev_liq_ = ev_liquidity(price_now, atr4 or atr1, vp, cfg_4h or cfg.per_tf['4H'], side=side_hint)
 
     # New evidences
     ev_bb = ev_bb_expanding(bbw1, bbw1_med)
-    ev_exp = ev_volume_explosive(f1.get('volume', {}))
     ev_tb = ev_throwback_ready(df1, f1.get('swings', {}), atr1, side_hint) if df1 is not None else {"ok": False}
-    ev_pbk = ev_pullback_valid(df1, f1.get('swings', {}), atr1, f1.get('momentum', {}), f1.get('volume', {}), f1.get('candles', {}), side_hint) if df1 is not None else {"ok": False}
+    ev_pbk = ev_pullback_valid(df1, f1.get('swings', {}), atr1, f1.get('candles', {}), side_hint) if df1 is not None else {"ok": False}
+ 
+    # Slow-market guards (Volatility-of-Vol & Liquidity floor)
+    vol_now = float(f1.get('volume', {}).get('now', 0.0) or f1.get('volume', {}).get('v', 0.0) or 0.0)
+    vol_med = float(f1.get('volume', {}).get('median', 0.0) or 0.0)
+    adaptive_meta = _slow_market_guards(bbw1, bbw1_med, vol_now, vol_med, reg)
+ 
+    # Optional: volatility breakout with proper ATR slope (pass series if available)
+    atr_series = df1['atr14'] if (df1 is not None and 'atr14' in df1) else None
+    ev_volb = ev_volatility_breakout(f1.get('volume', {}), bbw1, bbw1_med, atr1, atr_series=atr_series)
 
     evidences = {
         'price_breakout': ev_pb,
@@ -745,18 +831,13 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
         'candles': ev_cdl,
         'liquidity': ev_liq_,
         'bb': ev_bb,
-        'volume_explosive': ev_exp,
         'throwback': ev_tb,
         'pullback': ev_pbk,
-        'false_breakout': ev_fk_up,
-        'false_breakdown': ev_fk_dn,
-        'trend_follow_up': ev_tf_up,
-        'trend_follow_down': ev_tf_dn,
         'mean_reversion': ev_mr,
         'divergence': ev_div,
         'rejection': ev_rjt,
-        'compression_ready': ev_cmp,
         'volatility_breakout': ev_volb,
+        'adaptive': adaptive_meta,  # regime + slow-market guards (meta, not scored)
     }
 
     state, confidence, why = infer_state(evidences)
@@ -794,7 +875,6 @@ TF_GUIDANCE: Dict[str, Dict[str, List[str]]] = {
     'candles':         {'required': ['1H'], 'optional': ['4H']},
     'liquidity':       {'required': ['4H'], 'optional': ['1D']},
     'bb_expanding':    {'required': ['1H'], 'optional': []},
-    'volume_explosive':{'required': ['1H'], 'optional': ['4H']},
     'throwback':       {'required': ['1H'], 'optional': ['4H']},
     'pullback':        {'required': ['1H'], 'optional': ['4H']},
 }
