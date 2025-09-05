@@ -38,6 +38,51 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     rr3 = _rr(dec.setup.entry, dec.setup.sl, tp3, dec.side)
 
     plan = {
+    # ---------- price formatting helpers ----------
+    def _infer_dp(symbol: str, price: Optional[float], features_by_tf: Dict[str, Any], evidence_bundle: Dict[str, Any]) -> int:
+        """
+        Ưu tiên:
+        1) meta.price_dp / meta.tick_size -> dp
+        2) Heuristic theo giá (crypto)
+        3) VN stock (không có '/') -> 0 lẻ
+        """
+        # 1) từ features/meta nếu có
+        try:
+            meta = (features_by_tf or {}).get("1H", {}).get("meta", {}) or {}
+            dp = meta.get("price_dp")
+            if isinstance(dp, int) and 0 <= dp <= 8:
+                return dp
+            tick = meta.get("tick_size") or evidence_bundle.get("meta", {}).get("tick_size")
+            if tick:
+                s = f"{tick}"
+                if "." in s:
+                    return min(8, max(0, len(s.split(".")[1].rstrip("0"))))
+                # tick là số nguyên -> 0 lẻ
+                return 0
+        except Exception:
+            pass
+        # 2) Heuristic theo giá (crypto)
+        if "/" in symbol:
+            p = float(price or evidence_bundle.get("last_price") or 0.0)
+            if p >= 1000: return 1
+            if p >= 100:  return 2
+            if p >= 1:    return 3
+            if p >= 0.1:  return 4
+            if p >= 0.01: return 5
+            return 6
+        # 3) VN stock (mã không có '/'): 0 lẻ (VND)
+        return 0
+
+    def _fmt(x: Optional[float], dp: int) -> Optional[str]:
+        if x is None:
+            return None
+        try:
+            return f"{float(x):.{dp}f}"
+        except Exception:
+            return f"{x}"
+    # ---------- end helpers ----------
+
+    plan = {
         "direction": dec.side.upper() if dec.side else None,
         "entry": dec.setup.entry,
         "entry2": None,               # kept for compatibility; tiny core emits single entry
@@ -51,7 +96,60 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         "rr3": rr3,
     }
 
-     # NOTE: keep both "missing" (legacy) and "reasons" for compatibility with main.py logging
+    # ---- logging with exchange-like decimals ----
+    dp = _infer_dp(symbol, dec.setup.entry, features_by_tf, evidence_bundle)
+    f_entry = _fmt(dec.setup.entry, dp)
+    f_sl    = _fmt(dec.setup.sl, dp)
+    f_tp1   = _fmt(tp1, dp) if tp1 is not None else None
+    f_tp2   = _fmt(tp2, dp) if tp2 is not None else None
+    f_tp3   = _fmt(tp3, dp) if tp3 is not None else None
+
+    # legacy logs list (append a single concise line)
+    logs = []
+    logs.append(
+        " ".join(
+            [
+                f"[{symbol}]",
+                f"DECISION={decision}",
+                f"| STATE={state or '-'}",
+                f"| DIR={plan['direction'] or '-'}",
+                f"| entry={f_entry}",
+                f"sl={f_sl}",
+                f"TP1={f_tp1}" if f_tp1 is not None else "TP1=None",
+                f"TP2={f_tp2}" if f_tp2 is not None else "TP2=None",
+                f"TP3={f_tp3}" if f_tp3 is not None else "TP3=None",
+                f"RR1={f'{rr1:.1f}' if rr1 is not None else 'None'}",
+                f"RR2={f'{rr2:.1f}' if rr2 is not None else 'None'}",
+                f"RR3={f'{rr3:.1f}' if rr3 is not None else 'None'}",
+            ]
+        )
+    )
+
+    # headline (one-liner)
+    headline = f"[{symbol}] {decision} | {state or '-'} {plan['direction'] or '-'} | E={f_entry} SL={f_sl} TP={f_tp1}"
+
+    # Telegram signal (nếu ENTER): format theo dp
+    telegram_signal = None
+    if decision == "ENTER" and plan["direction"] and dec.setup.sl is not None and (dec.setup.entry is not None or tp1 is not None):
+        strategy = (state or "").replace("_", " ").title()
+        entry_lines = []
+        if dec.setup.entry is not None:
+            entry_lines.append(f"Entry: {f_entry}")
+        if f_tp1 is not None:
+            entry_lines.append(f"TP1: {f_tp1}")
+        if f_tp2 is not None:
+            entry_lines.append(f"TP2: {f_tp2}")
+        if f_tp3 is not None:
+            entry_lines.append(f"TP3: {f_tp3}")
+        telegram_signal = "\n".join(
+            [
+                f"#{symbol.replace('/', '')} {plan['direction']}",
+                f"State: {state or '-'} | Strategy: {strategy}",
+                *entry_lines,
+                f"SL: {f_sl}",
+                f"RR1: {rr1:.1f}" if rr1 is not None else "",
+            ]
+        ).strip()
     logs = {
         "ENTER": {"state_meta": dec.meta} if dec.decision == "ENTER" else {},
         "WAIT":  (
