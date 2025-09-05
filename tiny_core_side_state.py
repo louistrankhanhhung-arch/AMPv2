@@ -164,8 +164,10 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Any, 
     fb_dn_ok  = _ok("false_breakdown")    # poke dưới LL fail → nghiêng long
     rjt_side  = _side("rejection")        # ev_rejection.side ∈ {'long','short'}
     div_side  = _side("divergence")       # ev_divergence_updown.side
-    tf_long   = bool(_gat(_ev_item := _ev_item("trend_follow_ready"), "long", {}).get("ok", False)) if _ev_item("trend_follow_ready") else False
-    tf_short  = bool(_gat(_ev_item("trend_follow_ready"), "short", {}).get("ok", False)) if _ev_item("trend_follow_ready") else False
+    # guard: tuyệt đối không shadow tên hàm _ev_item
+    _tfr = _ev_item("trend_follow_ready") or {}
+    tf_long  = bool(_gat(_tfr, "long", {}).get("ok", False))
+    tf_short = bool(_gat(_tfr, "short", {}).get("ok", False))
 
     vol_impulse_up = bool(_ok("volume_impulse_up"))
     vol_impulse_down = bool(_ok("volume_impulse_down"))
