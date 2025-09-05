@@ -74,6 +74,14 @@ class SI:  # Side Indicators (pulled from features/evidence)
     meanrev_ok: bool = False
     meanrev_side: Optional[str] = None
 
+    # new: reversal/fake & boosters
+    false_break_long: bool = False   # false_breakdown => long bias
+    false_break_short: bool = False  # false_breakout  => short bias
+    rejection_side: Optional[str] = None  # 'long'/'short'
+    div_side: Optional[str] = None        # 'long'/'short'
+    tf_ready_long: bool = False
+    tf_ready_short: bool = False
+
 
 def _get(path: List[str], d: Dict[str, Any], default=None):
     cur = d
@@ -151,6 +159,14 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Any, 
     meanrev_ok = bool(_ok("mean_reversion"))
     meanrev_side = _side("mean_reversion")
 
+    # ---- new evidences ----
+    fb_out_ok = _ok("false_breakout")     # poke trên HH fail → nghiêng short
+    fb_dn_ok  = _ok("false_breakdown")    # poke dưới LL fail → nghiêng long
+    rjt_side  = _side("rejection")        # ev_rejection.side ∈ {'long','short'}
+    div_side  = _side("divergence")       # ev_divergence_updown.side
+    tf_long   = bool(_gat(_ev_item := _ev_item("trend_follow_ready"), "long", {}).get("ok", False)) if _ev_item("trend_follow_ready") else False
+    tf_short  = bool(_gat(_ev_item("trend_follow_ready"), "short", {}).get("ok", False)) if _ev_item("trend_follow_ready") else False
+
     vol_impulse_up = bool(_ok("volume_impulse_up"))
     vol_impulse_down = bool(_ok("volume_impulse_down"))
 
@@ -195,6 +211,13 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Any, 
 
         meanrev_ok       = meanrev_ok,
         meanrev_side     = meanrev_side,
+
+        false_break_long = bool(fb_dn_ok),
+        false_break_short= bool(fb_out_ok),
+        rejection_side   = rjt_side if rjt_side in ("long","short") else None,
+        div_side         = div_side if div_side in ("long","short") else None,
+        tf_ready_long    = tf_long,
+        tf_ready_short   = tf_short,
     )
     return si
 
@@ -264,7 +287,16 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         # distance beyond level (avoid micro breaks in choppy)
         dist_ok = (dist_atr >= cfg.break_buffer_atr) if cfg.break_buffer_atr > 0 else True
 
-        if vol_ok and dist_ok:
+        # --- new: boosters & blockers ---
+        if si.breakout_side == "long" and si.tf_ready_long:
+            vol_ok = True  # trend-follow booster for breakout long
+        if si.breakout_side == "short" and si.tf_ready_short:
+            vol_ok = True  # booster for breakdown short
+
+        # block if recent false_* chống hướng
+        if (si.breakout_side == "long" and si.false_break_short) or (si.breakout_side == "short" and si.false_break_long):
+            vol_ok = False  # force re-evaluate as retest
+
             if si.breakout_side == "long":
                 return "breakout", "long", meta
             else:
@@ -274,7 +306,7 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
     is_range_like = _range_like(si, cfg)
 
     # If no explicit retest signal, in range we still try classify to support/resistance by location and soft context
-    retest_signal = si.retest_ok or is_range_like or si.meanrev_ok
+    retest_signal = si.retest_ok or is_range_like or si.meanrev_ok or si.false_break_long or si.false_break_short or (si.rejection_side in ("long","short"))
 
     if retest_signal:
         # Soft scoring to decide support(long) vs resistance(short)
@@ -311,6 +343,21 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
             else:
                 short_score += 0.5
 
+        # new: false_* nghiêng mạnh vào retest ngược hướng break
+        if si.false_break_long:
+            long_score += 0.75
+        if si.false_break_short:
+            short_score += 0.75
+
+        # new: rejection & divergence nghiêng nhẹ
+        if si.rejection_side == "long":
+            long_score += 0.5
+        elif si.rejection_side == "short":
+            short_score += 0.5
+        if si.div_side == "long":
+            long_score += 0.25
+        elif si.div_side == "short":
+            short_score += 0.25
         meta.update(dict(long_score=long_score, short_score=short_score))
 
         # Tie & margin policy:
