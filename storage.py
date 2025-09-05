@@ -113,7 +113,7 @@ class SignalPerfDB:
         # TP3 => chốt lời cuối; ENTRY => đóng trung tính (sau khi đã đạt TP1/TP2); còn lại => SL
         if reason == "TP3":
             t["status"] = "TP3"
-        elif reason == "ENTRY":
+        elif reason in ("ENTRY", "REVERSAL"):
             t["status"] = "CLOSE"
         else:
             t["status"] = "SL"
