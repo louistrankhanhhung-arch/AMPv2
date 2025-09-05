@@ -17,7 +17,7 @@ class SideCfg:
 
     # tie handling
     tie_eps: float = 1e-6                 # absolute tie tolerance
-    side_margin: float = 0.2             # require this margin to choose a side
+    side_margin: float = 0.1             # require this margin to choose a side
 
     # volatility/momentum thresholds
     natr_lo: float = 0.015                # low-vol regime (<= 1.5%)
@@ -157,11 +157,24 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Any, 
         price = price,
         atr = atr,
         natr = natr,
-        ema_slope_primary = P.get("ema50_slope") or _get(["trend","ema50_slope"], P, None),
-        ema_slope_confirm = C.get("ema50_slope") or _get(["trend","ema50_slope"], C, None),
+        ema_slope_primary = (
+            P.get("ema50_slope")
+            or _get(["trend","ema50_slope"], P, None)
+            or (1.0 if _get(["trend","state"], P, None) == "up"
+                else (-1.0 if _get(["trend","state"], P, None) == "down" else 0.0))
+        )
+        ema_slope_confirm = (
+            C.get("ema50_slope")
+            or _get(["trend","ema50_slope"], C, None)
+            or (1.0 if _get(["trend","state"], C, None) == "up"
+                else (-1.0 if _get(["trend","state"], C, None) == "down" else 0.0))
+        )
         rsi_primary = P.get("rsi") or _get(["momentum","rsi"], P, None),
         rsi_confirm = C.get("rsi") or _get(["momentum","rsi"], C, None),
-        bbw_primary = P.get("bb_width") or _get(["volatility","bb_width"], P, None),
+        bbw_primary = (
+            P.get("bb_width") or _get(["volatility","bb_width"], P, None)
+            or P.get("bbw_last") or _get(["volatility","bbw_last"], P, None)
+        )
         adx_primary = P.get("adx") or _get(["trend","adx"], P, None),
 
         vol_impulse_up   = vol_impulse_up,
@@ -184,7 +197,9 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Any, 
 
 # ============== State with Side =================
 def _range_like(si: SI, cfg: SideCfg) -> bool:
-    return (si.bbw_primary is not None and si.bbw_primary <= cfg.bbw_squeeze_thr) and (si.adx_primary is not None and si.adx_primary < cfg.adx_trend_thr)
+    bbw_ok = (si.bbw_primary is not None) and (si.bbw_primary <= cfg.bbw_squeeze_thr)
+    adx_ok = (si.adx_primary is None) or (si.adx_primary < cfg.adx_trend_thr)  # allow missing ADX
+    return bbw_ok and adx_ok
 
 def _break_distance_atr(si: SI) -> float:
     if not si.price or not si.atr or not si.last_break_level or si.atr == 0:
