@@ -4,7 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Tuple, List
 import math
+import logging
 
+logger = logging.getLogger("side_state")
 
 # ===============================================
 # Tiny-Core (Side-Aware State)  — dict-safe evidence
@@ -14,7 +16,8 @@ class SideCfg:
     # regime thresholds (you can tune for your market)
     bbw_squeeze_thr: float = 0.06         # range-like when below
     adx_trend_thr: float = 18.0           # range-like when below
-
+    break_buffer_atr: float = 0.20
+    
     # tie handling
     tie_eps: float = 1e-6                 # absolute tie tolerance
     side_margin: float = 0.05             # require this margin to choose a side
@@ -35,6 +38,9 @@ class SideCfg:
     retest_long_threshold: float = 0.6
     retest_short_threshold: float = 0.6
 
+    # TP ladder mặc định cho tính RR
+    rr_targets: Tuple[float, float, float] = (1.2, 2.0, 3.0)
+    
     # timeframes
     tf_primary: str = "1H"
     tf_confirm: str = "4H"
@@ -302,6 +308,20 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
     vdir = _volume_dir(si)
     meta.update(dict(natr=natr, dist_atr=dist_atr, trend=tr, momo=momo, v=vdir))
 
+    # Log pre-checks
+    try:
+        logger.debug(
+            "STATE_PRE natr=%.4f dist_atr=%.2f trend=%s momo=%s vdir=%s "
+            "breakout_ok=%s side=%s retest_ok=%s reclaim=%s/%s bbw=%.4f adx=%s",
+            natr, dist_atr, tr, momo, vdir,
+            si.breakout_ok, si.breakout_side, si.retest_ok,
+            si.reclaim_ok, si.reclaim_side,
+            (si.bbw_primary if si.bbw_primary is not None else float("nan")),
+            (si.adx_primary if si.adx_primary is not None else None),
+        )
+    except Exception:
+        pass
+
     # --- 1) Breakout/breakdown regime-aware ---
     if si.breakout_ok and si.breakout_side in ("long","short"):
         # NATR regime: in high vol, require matching volume impulse to confirm; in low vol, relax
@@ -341,67 +361,112 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         # Soft scoring to decide support(long) vs resistance(short)
         long_score = 0.0
         short_score = 0.0
+        sb: Dict[str, Any] = {}  # score breakdown (ghi log + trả ra meta)
 
         # context signals
-        long_score += 1.0 if tr > 0 else 0.0
-        short_score += 1.0 if tr < 0 else 0.0
+        if tr > 0:
+            long_score += 1.0; sb["trend_long"] = 1.0
+        if tr < 0:
+            short_score += 1.0; sb["trend_short"] = 1.0
 
-        long_score += 0.5 if momo > 0 else 0.0
-        short_score += 0.5 if momo < 0 else 0.0
+        if momo > 0:
+            long_score += 0.5; sb["momo_long"] = 0.5
+        if momo < 0:
+            short_score += 0.5; sb["momo_short"] = 0.5
 
-        long_score += 0.75 if si.reclaim_ok and si.reclaim_side == "long" else 0.0
-        short_score += 0.75 if si.reclaim_ok and si.reclaim_side == "short" else 0.0
+        if si.reclaim_ok and si.reclaim_side == "long":
+            long_score += 0.75; sb["reclaim_long"] = 0.75
+        if si.reclaim_ok and si.reclaim_side == "short":
+            short_score += 0.75; sb["reclaim_short"] = 0.75
 
         # location vs zone
         if si.retest_zone_mid is not None and si.price is not None:
             if si.price <= si.retest_zone_mid:
-                long_score += 0.5  # near support/mean
+                long_score += 0.5; sb["loc_long"] = 0.5  # near support/mean
             if si.price >= si.retest_zone_mid:
-                short_score += 0.5 # near resistance/mean
+                short_score += 0.5; sb["loc_short"] = 0.5 # near resistance/mean
 
         # volume tilt (bonus if aligned)
         if vdir > 0:
-            long_score += 0.25
+            long_score += 0.25; sb["vol_long"] = 0.25
         elif vdir < 0:
-            short_score += 0.25
+            short_score += 0.25; sb["vol_short"] = 0.25
 
         # reverse hint (mean-rev side)
         if si.meanrev_ok and si.meanrev_side in ("long","short"):
             if si.meanrev_side == "long":
-                long_score += 0.5
+                long_score += 0.5; sb["meanrev_long"] = 0.5
             else:
-                short_score += 0.5
+                short_score += 0.5; sb["meanrev_short"] = 0.5
 
         # new: false_* nghiêng mạnh vào retest ngược hướng break
         if si.false_break_long:
-            long_score += 0.75
+            long_score += 0.75; sb["false_break_long"] = 0.75
         if si.false_break_short:
-            short_score += 0.75
+            short_score += 0.75; sb["false_break_short"] = 0.75
 
         # new: rejection & divergence nghiêng nhẹ
         if si.rejection_side == "long":
-            long_score += 0.5
+            long_score += 0.5; sb["rejection_long"] = 0.5
         elif si.rejection_side == "short":
-            short_score += 0.5
+            short_score += 0.5; sb["rejection_short"] = 0.5
         if si.div_side == "long":
-            long_score += 0.25
+            long_score += 0.25; sb["div_long"] = 0.25
         elif si.div_side == "short":
-            short_score += 0.25
-        meta.update(dict(long_score=long_score, short_score=short_score))
+            short_score += 0.25; sb["div_short"] = 0.25
+        meta.update(dict(long_score=long_score, short_score=short_score, score_breakdown=sb))
+
+        # Log scoring breakdown
+        try:
+            logger.info(
+                "STATE_SCORE long=%.2f short=%.2f diff=%.2f | zone_mid=%s price=%s | sb=%s",
+                long_score, short_score, (long_score - short_score),
+                (f"{si.retest_zone_mid:.6f}" if isinstance(si.retest_zone_mid, (int,float)) else None),
+                (f"{si.price:.6f}" if isinstance(si.price, (int,float)) else None),
+                sb
+            )
+        except Exception:
+            pass
 
         # Tie & margin policy:
         # - If both sides close (|diff| <= tie_eps or |diff| < side_margin), return none_state -> WAIT.
         # - Else require the winner to pass its threshold.
         diff = long_score - short_score
         if abs(diff) <= cfg.tie_eps or abs(diff) < cfg.side_margin:
+            try:
+                logger.info(
+                    "STATE_DECISION none_state (tie/margin) | diff=%.3f tie_eps=%.3g side_margin=%.3f thrL=%.2f thrS=%.2f",
+                    diff, cfg.tie_eps, cfg.side_margin, cfg.retest_long_threshold, cfg.retest_short_threshold
+                )
+            except Exception:
+                pass
             return "none_state", None, meta
 
         if diff > 0 and long_score >= cfg.retest_long_threshold:
+            try:
+                logger.info(
+                    "STATE_DECISION retest_support | side=long | long=%.2f short=%.2f diff=%.2f thrL=%.2f",
+                    long_score, short_score, diff, cfg.retest_long_threshold
+                )
+            except Exception:
+                pass
             return "retest_support", "long", meta
+            
         if diff < 0 and short_score >= cfg.retest_short_threshold:
+            try:
+                logger.info(
+                    "STATE_DECISION retest_resistance | side=short | long=%.2f short=%.2f diff=%.2f thrS=%.2f",
+                    long_score, short_score, diff, cfg.retest_short_threshold
+                )
+            except Exception:
+                pass
             return "retest_resistance", "short", meta
 
     # --- 3) None ---
+    try:
+        logger.info("STATE_DECISION none_state (no signal)")
+    except Exception:
+        pass
     return "none_state", None, meta
 
 
@@ -510,8 +575,29 @@ def decide_5_gates(state: str, side: Optional[str], setup: Setup, si: SI, cfg: S
 # ============== Orchestrator =====================
 def run_side_state_core(features_by_tf: Dict[str, Dict[str, Any]], eb: Any, cfg: Optional[SideCfg] = None) -> Decision:
     cfg = cfg or SideCfg()
+    # Log config snapshot (ngắn gọn)
+    try:
+        logger.debug(
+            "CFG side_margin=%.3f tie_eps=%.3g retest_thr=(%.2f,%.2f) rr_min=%.2f max_entry_dist_atr=%.2f rr_targets=%s",
+            cfg.side_margin, cfg.tie_eps, cfg.retest_long_threshold, cfg.retest_short_threshold,
+            cfg.rr_min_enter, cfg.max_entry_dist_atr, getattr(cfg, "rr_targets", None)
+        )
+    except Exception:
+        pass
     si = collect_side_indicators(features_by_tf, eb, cfg)
     state, side, meta = classify_state_with_side(si, cfg)
     setup = build_setup(si, state, side, cfg)
     dec = decide_5_gates(state, side, setup, si, cfg, meta)
+    # Log final decision summary
+    try:
+        logger.info(
+            "DECISION=%s | STATE=%s | DIR=%s | entry=%s sl=%s tp=%s | reasons=%s",
+            dec.decision, dec.state, dec.side,
+            (f"{setup.entry:.6f}" if isinstance(setup.entry, (int,float)) else None),
+            (f"{setup.sl:.6f}" if isinstance(setup.sl, (int,float)) else None),
+            ([round(t, 6) for t in setup.tps] if setup.tps else []),
+            dec.reasons
+        )
+    except Exception:
+        pass
     return dec
