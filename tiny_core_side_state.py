@@ -158,6 +158,192 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
     # --- 3) None ---
     return "none_state", None, meta
 
+def collect_side_indicators(
+    features_by_tf: Dict[str, Dict[str, Any]],
+    eb: Any,
+    cfg: SideCfg,
+) -> Any:
+    """
+    Gom các chỉ báo side-aware từ evidence/features (dict-safe).
+    Trả về một đối tượng có thuộc tính như si.xxx mà classifier kỳ vọng,
+    kèm các flag phụ: sideways, bb_expanding, volatility_breakout, trend_follow_ready,
+    candles, liquidity, adaptive...
+    """
+    # Lấy evidence dict-safe
+    E = eb.get("evidence", eb) if isinstance(eb, dict) else {}
+    if not isinstance(E, dict):
+        E = {}
+
+    def _ev(name):
+        v = E.get(name, {})
+        return v if isinstance(v, dict) else {}
+
+    def _ok(name):
+        return bool(_ev(name).get("ok", False))
+
+    def _side_from(name):
+        s = _ev(name).get("side")
+        return s if s in ("long", "short") else None
+
+    def _num_from(name, key, default=None):
+        try:
+            v = _ev(name).get(key, default)
+            return float(v) if v is not None else default
+        except Exception:
+            return default
+
+    # Giá hiện tại từ features (tf_primary)
+    price = None
+    try:
+        df = (features_by_tf or {}).get(cfg.tf_primary, {}).get("df")
+        if df is not None and len(df) > 0:
+            price = float(df.iloc[-1]["close"])
+    except Exception:
+        price = None
+
+    # natr từ df nếu có, không thì giữ NaN
+    natr = float("nan")
+    try:
+        dfp = (features_by_tf or {}).get(cfg.tf_primary, {}).get("df")
+        if dfp is not None and len(dfp) > 0 and "natr" in dfp.columns:
+            natr = float(dfp.iloc[-1]["natr"])
+    except Exception:
+        pass
+
+    # dist_atr: giữ NaN nếu bạn không tính ở nơi khác
+    dist_atr = float("nan")
+
+    # trend_strength từ trend_alignment.side
+    trend_strength = 0.0
+    ta = _side_from("trend_alignment")
+    if ta == "long":
+        trend_strength = 1.0
+    elif ta == "short":
+        trend_strength = -1.0
+
+    # momentum: dùng hint từ breakout + momentum.primary.ok nếu có
+    side_hint = "long" if _ok("price_breakout") else ("short" if _ok("price_breakdown") else None)
+    mom_ok = bool((_ev("momentum").get("primary") or {}).get("ok", False))
+    momo_strength = 1.0 if (side_hint == "long" and mom_ok) else (
+        -1.0 if (side_hint == "short" and mom_ok) else 0.0
+    )
+
+    # volume tilt: nếu bundle có side cho 'volume' thì dùng, không có thì để 0.0
+    volume_tilt = 0.0
+    vside = _side_from("volume")
+    if vside == "long":
+        volume_tilt = 1.0
+    elif vside == "short":
+        volume_tilt = -1.0
+
+    # breakout/breakdown
+    breakout_ok = bool(_ok("price_breakout") or _ok("price_breakdown"))
+    breakout_side = "long" if _ok("price_breakout") else ("short" if _ok("price_breakdown") else None)
+
+    # pullback/throwback -> retest
+    retest_ok = bool(_ok("pullback") or _ok("throwback"))
+    retest_zone_mid = None
+    for name in ("pullback", "throwback"):
+        mid = _num_from(name, "mid", None)
+        if mid is None:
+            z = _ev(name).get("zone")
+            if isinstance(z, (list, tuple)) and len(z) == 2:
+                try:
+                    mid = (float(z[0]) + float(z[1])) / 2.0
+                except Exception:
+                    mid = None
+        if mid is not None:
+            retest_zone_mid = float(mid)
+            break
+
+    # reclaim
+    rc = _ev("price_reclaim")
+    reclaim_ok = bool(rc.get("ok", False))
+    rside = rc.get("ref", {}).get("side") if isinstance(rc.get("ref"), dict) else rc.get("side")
+    reclaim_side = rside if rside in ("long", "short") else None
+
+    # mean reversion
+    meanrev_ok = _ok("mean_reversion")
+    meanrev_side = _side_from("mean_reversion")
+
+    # false break:
+    # - false_breakout: fail break up -> nghiêng short
+    # - false_breakdown: fail break down -> nghiêng long
+    false_break_short = bool(_ok("false_breakout"))
+    false_break_long = bool(_ok("false_breakdown"))
+
+    # rejection & divergence
+    rejection_side = _side_from("rejection")
+    div_side = _side_from("divergence")
+
+    # ====== CÁC FLAG PHỤ BỔ SUNG ======
+
+    # 1) sideways / bb_expanding / volatility_breakout
+    sideways_ok = _ok("sideways")
+    bb_expand_ok = _ok("bb_expanding")
+    vol_breakout_ok = _ok("volatility_breakout")
+
+    # 2) trend_follow_ready.{long, short}
+    tfr = _ev("trend_follow_ready")
+    trend_follow_ready_long = bool((tfr.get("long") or {}).get("ok", False))
+    trend_follow_ready_short = bool((tfr.get("short") or {}).get("ok", False))
+
+    # 3) candles (hướng nếu có)
+    cdl = _ev("candles")
+    candle_ok = bool(cdl.get("ok", False))
+    candle_side = cdl.get("side") if cdl.get("side") in ("long", "short") else None
+
+    # 4) liquidity meta
+    liq = _ev("liquidity")
+    near_heavy_zone = bool(liq.get("near_heavy_zone", False))
+    heavy_zone_mid = liq.get("nearest_zone_mid")
+    try:
+        heavy_zone_mid = float(heavy_zone_mid) if heavy_zone_mid is not None else None
+    except Exception:
+        heavy_zone_mid = None
+
+    # 5) adaptive meta (regime + slow-market guards)
+    adp = _ev("adaptive")
+    market_regime = adp.get("regime")
+    is_slow = bool(adp.get("is_slow", False))
+    liquidity_floor = bool(adp.get("liquidity_floor", False))
+
+    # Trả đối tượng có thuộc tính như si.xxx; dùng SimpleNamespace để không đổi định nghĩa SI
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        natr=natr,
+        dist_atr=dist_atr,
+        trend_strength=trend_strength,
+        momo_strength=momo_strength,
+        volume_tilt=volume_tilt,
+        price=price,
+        breakout_ok=breakout_ok,
+        breakout_side=breakout_side,
+        retest_ok=retest_ok,
+        retest_zone_mid=retest_zone_mid,
+        reclaim_ok=reclaim_ok,
+        reclaim_side=reclaim_side,
+        meanrev_ok=meanrev_ok,
+        meanrev_side=meanrev_side,
+        false_break_long=false_break_long,
+        false_break_short=false_break_short,
+        rejection_side=rejection_side,
+        div_side=div_side,
+        # Phụ:
+        sideways_ok=sideways_ok,
+        bb_expand_ok=bb_expand_ok,
+        vol_breakout_ok=vol_breakout_ok,
+        trend_follow_ready_long=trend_follow_ready_long,
+        trend_follow_ready_short=trend_follow_ready_short,
+        candle_ok=candle_ok,
+        candle_side=candle_side,
+        near_heavy_zone=near_heavy_zone,
+        heavy_zone_mid=heavy_zone_mid,
+        market_regime=market_regime,
+        is_slow=is_slow,
+        liquidity_floor=liquidity_floor,
+    )
+
 
 # ============== Orchestrator =====================
 def run_side_state_core(
