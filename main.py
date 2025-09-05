@@ -37,6 +37,31 @@ log = logging.getLogger("worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
                     format="%(asctime)s %(levelname)s %(message)s")
 
+# -------- helper: list evidences that are OK ----------
+def _extract_evidence_ok(bundle: dict):
+    """
+    Trả về list evidence đang 'ok' (kèm side nếu có), ví dụ:
+    ['retest:long', 'mean_reversion:long', 'volume_impulse_up']
+    Bundle có dạng {'evidence': {...}} hoặc object tương đương.
+    """
+    try:
+        ev = bundle.get('evidence', {}) if isinstance(bundle, dict) else {}
+    except Exception:
+        ev = {}
+    out = []
+    for name, obj in (ev or {}).items():
+        ok = False
+        side = None
+        if isinstance(obj, dict):
+            ok = bool(obj.get('ok'))
+            side = obj.get('side')
+        else:
+            ok = bool(getattr(obj, 'ok', False))
+            side = getattr(obj, 'side', None)
+        if ok:
+            out.append(f"{name}:{side}" if side in ("long","short") else name)
+    return sorted(out)
+
 # --- Telegram Teaser Notifier (init-once, lazy) ---
 TN = None
 def _get_notifier():
@@ -86,7 +111,7 @@ def _enrich_all(dfs: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
 
 def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     t0 = time.time()
-    log.info(f"[{symbol}] fetching OHLCV…")
+    log.debug(f"[{symbol}] fetching OHLCV…")
     # fetch with partial-bar drop for 1H; realtime for 4H/1D (handled in fetch_batch)
     sleep_between_tf = float(os.getenv("SLEEP_BETWEEN_TF", "0.3"))
     dfs = fetch_batch(
@@ -104,15 +129,15 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     l1 = 0 if df1 is None else len(df1.index)
     l4 = 0 if df4 is None else len(df4.index)
     lD = 0 if dfD is None else len(dfD.index)
-    log.info(f"[{symbol}] fetched: 1H={l1}, 4H={l4}, 1D={lD} in {t_fetch:.2f}s")
+    log.debug(f"[{symbol}] fetched: 1H={l1}, 4H={l4}, 1D={lD} in {t_fetch:.2f}s")
 
     # enrich indicators → features_by_tf
     t1 = time.time()
     dfs = _enrich_all(dfs)
-    log.info(f"[{symbol}] enrich done in {time.time()-t1:.2f}s")
+    log.debug(f"[{symbol}] enrich done in {time.time()-t1:.2f}s")
     t2 = time.time()
     feats_by_tf = compute_features_by_tf(dfs)   # builds trend/momentum/volatility/levels/vp-bands,…
-    log.info(f"[{symbol}] features done in {time.time()-t2:.2f}s")
+    log.debug(f"[{symbol}] features done in {time.time()-t2:.2f}s")
     # attach df to 1H for decision (decision engine expects it)
     if '1H' in feats_by_tf:
         feats_by_tf['1H']['df'] = dfs.get('1H')
@@ -120,7 +145,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     # evidence bundle (STRUCT JSON)
     t3 = time.time()
     bundle = build_evidence_bundle(symbol, feats_by_tf, cfg)
-    log.info(f"[{symbol}] bundle done in {time.time()-t3:.2f}s")
+    log.debug(f"[{symbol}] bundle done in {time.time()-t3:.2f}s")
 
     # decide on 1H as primary TF
     t4 = time.time()
@@ -143,7 +168,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     dec = out.get("decision")
     state = out.get("state")
     plan = out.get("plan") or {}
-    log.info(f"[{symbol}] decide done in {elapsed_dec:.2f}s; total {total_time:.2f}s")
+    log.debug(f"[{symbol}] decide done in {elapsed_dec:.2f}s; total {total_time:.2f}s")
    # Prefer concise headline from decision_engine if available (already includes DIR/TP ladder)
     headline = out.get("headline")
     if headline:
@@ -183,7 +208,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
         miss = wait_log.get("missing")
         if miss is None:
             miss = wait_log.get("reasons")
-        log.info(f"[{symbol}] WAIT missing={miss}")
+        log.info(f"[{symbol}] WAIT missing={miss} have={_extract_evidence_ok(bundle)}")
     if dec == "AVOID":
         reasons = (out.get("logs", {}).get("AVOID", {}).get("reasons"))
         log.info(f"[{symbol}] AVOID reasons={reasons}")
