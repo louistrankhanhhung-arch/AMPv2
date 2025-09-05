@@ -4,11 +4,40 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Tuple, List
 import math
+import os
 
 # ===============================================
 # Tiny-Core (Side-Aware State)  — dict-safe evidence
 # ===============================================
+@dataclass
+class SideCfg:
+    # regime thresholds (you can tune for your market)
+    bbw_squeeze_thr: float = 0.06         # range-like when below
+    adx_trend_thr: float = 18.0           # range-like when below
 
+    # tie handling
+    tie_eps: float = 1e-6                 # absolute tie tolerance
+    side_margin: float = 0.05             # require this margin to choose a side
+    allow_slope_fallback: bool = True  # mặc định KHÔNG fallback, chỉ dùng slope trực tiếp
+    
+    # volatility/momentum thresholds
+    natr_lo: float = 0.015                # low-vol regime (<= 1.5%)
+    natr_hi: float = 0.04                 # high-vol regime (>= 4%)
+    rsi_long_thr: float = 55.0
+    rsi_short_thr: float = 45.0
+
+    # setup/entry rules
+    max_entry_dist_atr: float = 0.6
+    rr_min_enter: float = 1.2
+    sl_min_atr: float = 0.6
+
+    # direction scoring within retest
+    retest_long_threshold: float = 0.6
+    retest_short_threshold: float = 0.6
+
+    # timeframes
+    tf_primary: str = "1H"
+    tf_confirm: str = "4H"
 @staticmethod
 def _get_env_float(name: str, default: float) -> float:
     import os
