@@ -110,17 +110,20 @@ class SignalPerfDB:
         t = data.get(sid, {})
         if not t:
             return {}
-        # TP3 => chốt lời cuối; ENTRY => đóng trung tính (sau khi đã đạt TP1/TP2); còn lại => SL
-        if reason == "TP3":
+        # Map reason → status
+        # TP3 => chốt lời cuối; ENTRY/REVERSAL => đóng trung tính; còn lại => SL
+        r = (reason or "").upper()
+        if r == "TP3":
             t["status"] = "TP3"
-        elif reason in ("ENTRY", "REVERSAL"):
+        elif r in ("ENTRY", "REVERSAL"):
             t["status"] = "CLOSE"
         else:
             t["status"] = "SL"
-        t["close_reason"] = reason
+        t["close_reason"] = r
         data[sid] = t
         self._write(data)
         return t
+
 
     def kpis(self, period: str = "day") -> dict:
         """
