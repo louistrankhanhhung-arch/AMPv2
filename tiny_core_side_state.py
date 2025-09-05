@@ -158,13 +158,13 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Any, 
         atr = atr,
         natr = natr,
         ema_slope_primary = (
-            P.get("ema50_slope"),
+            P.get("ema50_slope")
             or _get(["trend","ema50_slope"], P, None)
             or (1.0 if _get(["trend","state"], P, None) == "up"
                 else (-1.0 if _get(["trend","state"], P, None) == "down" else 0.0))
         )
         ema_slope_confirm = (
-            C.get("ema50_slope"),
+            C.get("ema50_slope")
             or _get(["trend","ema50_slope"], C, None)
             or (1.0 if _get(["trend","state"], C, None) == "up"
                 else (-1.0 if _get(["trend","state"], C, None) == "down" else 0.0))
