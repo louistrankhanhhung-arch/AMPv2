@@ -37,7 +37,6 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     rr2 = _rr(dec.setup.entry, dec.setup.sl, tp2, dec.side)
     rr3 = _rr(dec.setup.entry, dec.setup.sl, tp3, dec.side)
 
-    plan = {
     # ---------- price formatting helpers ----------
     def _infer_dp(symbol: str, price: Optional[float], features_by_tf: Dict[str, Any], evidence_bundle: Dict[str, Any]) -> int:
         """
