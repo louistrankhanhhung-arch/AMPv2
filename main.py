@@ -306,6 +306,40 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                         else:
                             tn2.send_channel(render_update(t, note, extra))
 
+                # --- REVERSAL: state hiện tại đảo chiều so với lệnh đang mở -> ĐÓNG LỆNH trước khi dính SL
+                direction_now = (out.get("plan", {}) or {}).get("direction")
+                direction_now = (direction_now or "").upper()
+                # chỉ hành động khi có direction_now rõ ràng và trái ngược với side hiện tại
+                if t.get("status") in ("OPEN", "TP1", "TP2") and direction_now in ("LONG", "SHORT") and direction_now != side:
+                    # chọn TP cao nhất đã đạt để hiển thị % lợi nhuận (nếu có)
+                    hits = t.get("hits", {}) or {}
+                    highest = None
+                    hit_price = None
+                    if "TP3" in hits and t.get("tp3"):
+                        highest = "TP3"; hit_price = float(t.get("tp3"))
+                    elif "TP2" in hits and t.get("tp2"):
+                        highest = "TP2"; hit_price = float(t.get("tp2"))
+                    elif "TP1" in hits and t.get("tp1"):
+                        highest = "TP1"; hit_price = float(t.get("tp1"))
+                
+                    # Đóng lệnh với lý do REVERSAL (được ghi là CLOSE trong DB)
+                    perf.close(t["sid"], "REVERSAL")
+                    t["status"] = "CLOSE"
+                
+                    # Tạo thông báo Telegram: nếu có TP đã đạt thì kèm % lợi nhuận của mức cao nhất
+                    if highest and hit_price is not None:
+                        note = f"↩️ Đảo chiều sang {direction_now} — Đóng lệnh trước SL (đã đạt {highest})."
+                        extra = {"margin_pct": margin_pct(hit_price)}
+                    else:
+                        note = f"↩️ Đảo chiều sang {direction_now} — Đóng lệnh trước SL."
+                        extra = None
+                
+                    if tn2:
+                        if msg_id:
+                            tn2.send_channel_update(int(msg_id), render_update(t, note, extra))
+                        else:
+                            tn2.send_channel(render_update(t, note, extra))
+
                 # NEW: Nếu đã đạt TP1/TP2 mà giá quay ngược về Entry -> ĐÓNG LỆNH,
                 # và hiển thị lợi nhuận theo TP cao nhất đã đạt.
                 if t.get("status") in ("TP1","TP2") and entry:
