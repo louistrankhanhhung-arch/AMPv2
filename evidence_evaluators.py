@@ -175,113 +175,114 @@ def ev_price_breakdown(df: pd.DataFrame, swings: Dict[str, Any], atr: float, cfg
 
 
 def ev_price_reclaim(df: pd.DataFrame, level: float, atr: float, cfg: TFThresholds, side: str = 'long') -> Dict[str, Any]:
-    last = _get_last_closed_bar(df)
-    close = float(last['close'])
-    buf = cfg.break_buffer_atr * atr
-    if not np.isfinite(level):
-        return {"ok": False, "score": 0.0, "why": "invalid_level", "missing": ["level"], "ref": None}
+    """
+    Reclaim hợp lệ khi:
+      - Có cross rõ ràng so với level ± buffer (dùng close của 2 nến liên tiếp)
+      - Và nến hiện tại "hold" tối thiểu (low/high không đâm lại quá sâu)
+    """
+    if not np.isfinite(level) or df is None or len(df) < 2:
+        return {"ok": False, "score": 0.0, "why": "invalid_input", "missing": ["level" if not np.isfinite(level) else None], "ref": None}
+
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    close = float(last['close']); prev_close = float(prev['close'])
+    low = float(last['low']); high = float(last['high'])
+    atr = float(atr or 0.0)
+    buf = float(cfg.break_buffer_atr) * atr
+
     if side == 'long':
-        core = close > (level + buf); hold = last['low'] > (level + 0.1 * atr)
+        crossed = (prev_close <= level - buf) and (close > level + buf)
+        hold_ok = (low > level - 0.1 * atr)
     else:
-        core = close < (level - buf); hold = last['high'] < (level - 0.1 * atr)
-    score = (0.7 if core else 0.0) + (0.3 if hold else 0.0)
-    return {"ok": bool(core), "score": round(score,3), "why": ",".join([w for w in ["core" if core else "", "hold" if hold else ""] if w]), "missing": ([] if core else ["reclaim"]), "ref": {"level": level, "buffer": buf, "side": side}}
+        crossed = (prev_close >= level + buf) and (close < level - buf)
+        hold_ok = (high < level + 0.1 * atr)
+
+    ok = bool(crossed and hold_ok)
+    score = (0.8 if crossed else 0.0) + (0.2 if hold_ok else 0.0)
+    return {"ok": ok, "score": round(score, 3), "why": f"cross@±{cfg.break_buffer_atr:.2f}ATR|hold={hold_ok}", "ref": {"level": float(level), "buffer": buf, "side": side}}
+
+# --- NEW: reclaim auto, không dùng priors/điểm ---
+def ev_price_reclaim_auto(df, *, level: float, atr: float, cfg) -> dict:
+    """
+    Xác nhận reclaim nếu có cross rõ ràng quanh level ± buffer (ATR),
+    và nến hiện tại 'hold' không thủng lại quá sâu.
+    Trả về side 'long' (cross lên) hoặc 'short' (cross xuống).
+    """
+    import numpy as np
+    if df is None or len(df) < 2 or not np.isfinite(level):
+        return {"ok": False, "why": "invalid_input"}
+
+    last, prev = df.iloc[-1], df.iloc[-2]
+    close, prev_close = float(last["close"]), float(prev["close"])
+    low  = float(last["low"])  if "low"  in last else close
+    high = float(last["high"]) if "high" in last else close
+    atr  = float(atr or 0.0)
+    buf  = float(getattr(cfg, "break_buffer_atr", 0.2)) * atr  # ví dụ 0.2 ATR
+
+    long_cross  = (prev_close <= level - buf) and (close > level + buf)
+    short_cross = (prev_close >= level + buf) and (close < level - buf)
+
+    if long_cross:
+        hold_ok = (low > level - 0.1 * (atr or 0.0))
+        return {"ok": bool(hold_ok), "ref": {"level": float(level), "side": "long"}, "why": f"cross_up|hold={hold_ok}"}
+    if short_cross:
+        hold_ok = (high < level + 0.1 * (atr or 0.0))
+        return {"ok": bool(hold_ok), "ref": {"level": float(level), "side": "short"}, "why": f"cross_down|hold={hold_ok}"}
+
+    return {"ok": False, "why": "no_cross"}
 
 # --- SR unification helpers ---
-#
 def pick_ref_level(levels, price, soft_levels=None):
     """
-    Chọn mốc SR thống nhất (ref_level):
+    Chọn mốc SR thống nhất (ref_level) một cách bảo thủ:
       1) tp của bands_up/down gần giá nhất
-      2) fallback: sr_up/sr_down gần giá nhất
-      3) fallback mềm: soft_up/soft_down['level'] gần giá nhất
+      2) sr_up/sr_down gần giá nhất
+      3) (tuỳ chọn) soft_up/soft_down['level'] gần giá nhất
+      -> KHÔNG fallback về price nếu không có mốc.
     """
-    import math
-    if levels is None:
-        levels = {}
-    if soft_levels is None:
-        soft_levels = {}
+    import numpy as np
+    levels = levels or {}
+    soft_levels = soft_levels or {}
 
-    bands_up = levels.get("bands_up", []) or []
-    bands_dn = levels.get("bands_down", []) or []
-    bands = bands_up + bands_dn
+    cands = []
 
-    def _tp(b):
-        try:
-            return float(b.get("tp"))
-        except Exception:
-            return math.nan
+    # bands_up/down: lấy 'tp' nếu tồn tại
+    for seq in (levels.get("bands_up") or []), (levels.get("bands_down") or []):
+        for o in (seq or []):
+            try:
+                v = float(o.get("tp"))
+                if np.isfinite(v):
+                    cands.append(v)
+            except Exception:
+                pass
 
-    cand_bands = [b for b in bands if math.isfinite(_tp(b))]
-    if cand_bands:
-        tp = min(cand_bands, key=lambda b: abs(_tp(b) - price)).get("tp")
-        try:
-            return float(tp)
-        except Exception:
-            pass
+    # sr_up/down: các giá trị số
+    for key in ("sr_up", "sr_down"):
+        for v in (levels.get(key) or []):
+            try:
+                v = float(v)
+                if np.isfinite(v):
+                    cands.append(v)
+            except Exception:
+                pass
 
-    sr_up = levels.get("sr_up", []) or []
-    sr_dn = levels.get("sr_down", []) or []
-    sr = []
-    for x in (sr_up + sr_dn):
-        try:
-            v = float(x)
-            if np.isfinite(v):
-                sr.append(v)
-        except Exception:
-            pass
-    if sr:
-        return min(sr, key=lambda v: abs(v - price))
+    if cands:
+        return min(cands, key=lambda v: abs(v - float(price))) if np.isfinite(float(price)) else None
 
-    soft_up = (soft_levels or {}).get("soft_up", []) or []
-    soft_dn = (soft_levels or {}).get("soft_down", []) or []
-    soft_all = []
-    for o in (soft_up + soft_dn):
-        try:
-            v = float(o.get("level"))
-            if np.isfinite(v):
-                soft_all.append(v)
-        except Exception:
-            pass
-    if soft_all:
-        return min(soft_all, key=lambda v: abs(v - price))
+    # soft levels (nếu muốn)
+    soft = []
+    for key in ("soft_up", "soft_down"):
+        for o in (soft_levels.get(key) or []):
+            try:
+                v = float(o.get("level"))
+                if np.isfinite(v):
+                    soft.append(v)
+            except Exception:
+                pass
+    if soft:
+        return min(soft, key=lambda v: abs(v - float(price))) if np.isfinite(float(price)) else None
 
-    return None
-
-# Đánh giá reclaim cho cả 2 phía, chọn tốt nhất (tránh bias short khi không breakout)
-def ev_price_reclaim_best(df, *, level, atr, cfg, side_hint=None):
-    pr_long = ev_price_reclaim(df, level, atr, cfg, side='long')
-    pr_short = ev_price_reclaim(df, level, atr, cfg, side='short')
-
-    def _score(x):
-        try:
-            return float(x.get("score", 0.0) or 0.0)
-        except Exception:
-            return 0.0
-
-    l_ok, s_ok = bool(pr_long.get("ok")), bool(pr_short.get("ok"))
-    if l_ok and not s_ok:
-        return pr_long
-    if s_ok and not l_ok:
-        return pr_short
-    if l_ok and s_ok:
-        return pr_long if _score(pr_long) >= _score(pr_short) else pr_short
-
-    # Cả hai False -> dùng hint, rồi đến price-vs-level, cuối cùng chọn score cao hơn
-    if side_hint in ("long", "short"):
-        picked = pr_long if side_hint == "long" else pr_short
-        picked = {**picked, "why": (picked.get("why","") + f"; fallback_side_hint={side_hint}").strip("; ")}
-        picked.setdefault("ref", {})["side"] = side_hint
-        return picked
-    try:
-        last_close = float(df["close"].iloc[-1])
-        side = "long" if last_close >= float(level) else "short"
-        picked = pr_long if side == "long" else pr_short
-        picked = {**picked, "why": (picked.get("why","") + f"; fallback_price_vs_level={side}").strip("; ")}
-        picked.setdefault("ref", {})["side"] = side
-        return picked
-    except Exception:
-        return pr_long if _score(pr_long) >= _score(pr_short) else pr_short
+    return None  # không bịa ref_level
 
 def ev_sideways(df: pd.DataFrame, bbw_last: float, bbw_med: float, atr: float, cfg: TFThresholds) -> Dict[str, Any]:
     ema_spread = _ema_spread_atr(df)
@@ -474,18 +475,33 @@ def ev_pullback_valid(df: pd.DataFrame, swings: Dict[str, Any], atr: float, mom:
 
 def ev_mean_reversion(df: pd.DataFrame) -> Dict[str, Any]:
     """
-    Early mean-reversion: BB% extreme + RSI extreme.
-    Returns side: long if oversold, short if overbought.
-    Expects columns: bb_percent, rsi14, atr14, close.
+    BB% + RSI extremes, nhưng vô hiệu khi trend mạnh:
+      - ADX >= 22 hoặc |EMA50 slope| >= 0.15 * ATR
     """
     try:
         pct_bb = float(df['bb_percent'].iloc[-1])
         rsi = float(df['rsi14'].iloc[-1])
-        atr = float(df['atr14'].iloc[-1]) if 'atr14' in df.columns else 0.0
     except Exception:
         return {"ok": False, "why": "missing_bb_or_rsi"}
+
+    atr = float(df['atr14'].iloc[-1]) if 'atr14' in df.columns else 0.0
+    adx = float(df['adx14'].iloc[-1]) if 'adx14' in df.columns else None
+    slope = None
+    if 'ema50' in df.columns and len(df['ema50']) >= 4:
+        slope = float(df['ema50'].diff().tail(3).mean())
+
     long_ok = (pct_bb <= 5.0) and (rsi <= 25.0)
     short_ok = (pct_bb >= 95.0) and (rsi >= 75.0)
+
+    trend_strong = False
+    if adx is not None:
+        trend_strong |= adx >= 22.0
+    if slope is not None and atr > 0:
+        trend_strong |= abs(slope) >= 0.15 * atr
+
+    if trend_strong:
+        return {"ok": False, "why": f"trend_strong(adx={adx}, slope={slope}, atr={atr})"}
+
     if long_ok:
         return {"ok": True, "score": 0.8, "why": f"bb%={pct_bb:.1f}|rsi={rsi:.1f}", "side": "long", "ref": {"atr": atr}}
     if short_ok:
@@ -613,180 +629,6 @@ def ev_volatility_breakout(vol: Dict[str, Any], bbw_last: float, bbw_med: float,
     if atr_rising: why.append("atr_rising")
     return {"ok": ok, "score": round(score,3), "why": "|".join(why) if why else "weak"}
 
-# --------------------------------------------------------------------------------------
-# 5) State inference (priority) and bundle assembly
-# --------------------------------------------------------------------------------------
-
-
-# === PRIORS: có thể học dần từ KPI 24H (file DATA_DIR/state_priors.json) ===
-STATE_PRIORS_DEFAULT: Dict[str, float] = {
-    # Momentum/Trend-biased
-    "breakout": 0.52, "breakdown": 0.52, "volatility_breakout": 0.51,
-    "trend_follow_up": 0.53, "trend_follow_down": 0.53, "pullback": 0.52,
-    "throwback_long": 0.50, "throwback_short": 0.50,
-    # Mean-rev / patterns
-    "reclaim": 0.51, "rejection": 0.48, "mean_reversion": 0.49,
-    "divergence_up": 0.47, "divergence_down": 0.47,
-    # Ranging regimes
-    "sideways": 0.40, "compression_ready": 0.43,
-    # Fakeouts
-    "false_breakout": 0.46, "false_breakdown": 0.46,
-}
-
-def _load_state_priors() -> Dict[str, float]:
-    data_dir = os.getenv("DATA_DIR", ".")
-    pri_path = os.path.join(data_dir, "state_priors.json")
-    pri = dict(STATE_PRIORS_DEFAULT)
-    try:
-        if os.path.exists(pri_path):
-            with open(pri_path, "r", encoding="utf-8") as f:
-                user_pri = json.load(f)
-                for k, v in user_pri.items():
-                    if isinstance(v, (int, float)):
-                        pri[k] = float(v)
-    except Exception as e:
-        logging.getLogger(__name__).warning(f"Load state_priors.json failed: {e}")
-    return pri
-
-def _ok(evs: Dict, key: str) -> bool:
-     ev = evs.get(key)
-     if ev is None:
-         return False
-     # dict: ưu tiên đọc 'ok', fallback 'primary.ok' (dạng momentum/volume)
-     if isinstance(ev, dict):
-         if 'ok' in ev:
-             return bool(ev.get('ok', False))
-         prim = ev.get('primary')
-         if isinstance(prim, dict):
-             return bool(prim.get('ok', False))
-         return bool(getattr(prim, 'ok', False)) if prim is not None else False
-     # object (Pydantic/namespace)
-     return bool(getattr(ev, 'ok', False))
-
-def _boost_score_for(state: str, evs: Dict) -> float:
-    """
-    Contextual boosts/penalties theo regime:
-    - breakout/breakdown thích BB bung & volume bùng nổ
-    - volatility_breakout thích BB bung + volume explosive
-    - trend_follow/pullback/throwback thích trend/momentum
-    - mean_reversion/divergence thích sideway, ghét BB bung / vol explosive
-    - reclaim linh hoạt trong BB hẹp, cần volume xác nhận
-    """
-    bb = _ok(evs, "bb")
-    vol_exp = _ok(evs, "volume_explosive") or _ok(evs, "volume")  # coarsely treat volume.ok as confirm
-    mom = _ok(evs, "momentum")
-    trd = _ok(evs, "trend")
-    side = _ok(evs, "sideways")
-    cmpy = _ok(evs, "compression_ready")
-    boost = 0.0
-
-    if state in ("breakout", "breakdown"):
-        if bb: boost += 0.04
-        if vol_exp: boost += 0.03
-        if trd: boost += 0.02
-        if mom: boost += 0.02
-    elif state == "volatility_breakout":
-        if bb: boost += 0.05
-        if vol_exp: boost += 0.03
-    elif state in ("trend_follow_up", "trend_follow_down"):
-        if trd: boost += 0.03
-        if mom: boost += 0.02
-        if not vol_exp: boost += 0.01  # trend clean không cần nổ vol
-    elif state == "pullback":
-        if trd: boost += 0.02
-        if mom: boost += 0.01
-        if vol_exp: boost -= 0.01  # pullback đẹp thường vol co
-    elif state in ("throwback_long", "throwback_short"):
-        if trd: boost += 0.02
-    elif state == "reclaim":
-        if vol_exp: boost += 0.02
-        if not bb: boost += 0.01  # reclaim hay xảy ra khi band còn hẹp
-        if mom: boost += 0.01
-    elif state == "mean_reversion":
-        if side: boost += 0.03
-        if bb: boost -= 0.02
-        if vol_exp: boost -= 0.02
-    elif state in ("divergence_up", "divergence_down"):
-        if side: boost += 0.01
-        if mom: boost -= 0.02  # divergence mạnh ít khi đi kèm momentum thuận
-    elif state == "rejection":
-        if vol_exp: boost += 0.01
-    elif state == "compression_ready":
-        if side: boost += 0.02
-        if cmpy: boost += 0.01
-    # sideways, fakeouts: giữ boost mặc định
-
-    # penalty nhẹ nếu hoàn toàn thiếu volume signal
-    if not vol_exp:
-        boost -= 0.01
-    return max(-0.10, min(0.10, boost))  # kẹp an toàn
-
-def _presence_map(evs: Dict) -> List[Tuple[str, float]]:
-    """
-    Xác định danh sách ứng viên (state, base_score_from_prior)
-    Dò theo evidence trực tiếp:
-      - breakout/breakdown → price_breakout/price_breakdown
-      - reclaim → price_reclaim
-      - các state khác → evidence cùng tên
-    """
-    pri = _load_state_priors()
-    candidates: List[Tuple[str, float]] = []
-    def add_if(state: str, evkey: str):
-        if _ok(evs, evkey):
-            candidates.append((state, pri.get(state, 0.50)))
-    # momentum/trend-based
-    add_if("breakout", "price_breakout")
-    add_if("breakdown", "price_breakdown")
-    add_if("volatility_breakout", "volatility_breakout")
-    add_if("trend_follow_up", "trend_follow_up")
-    add_if("trend_follow_down", "trend_follow_down")
-    add_if("pullback", "pullback")
-    add_if("throwback_long", "throwback")   # dir xử lý downstream
-    add_if("throwback_short", "throwback")
-    # mean-rev/patterns
-    add_if("reclaim", "price_reclaim")
-    add_if("rejection", "rejection")
-    add_if("mean_reversion", "mean_reversion")
-    add_if("divergence_up", "divergence")
-    add_if("divergence_down", "divergence")
-    # ranging
-    add_if("sideways", "sideways")
-    add_if("compression_ready", "compression_ready")
-    # fakeouts
-    add_if("false_breakout", "false_breakout")
-    add_if("false_breakdown", "false_breakdown")
-    return candidates
-
-def infer_state(evs):
-    """
-    Trả về bộ 3 (state, confidence, why)
-      - state: tên state tốt nhất (hoặc None nếu không có ứng viên)
-      - confidence: [0..1] = prior + context_boost (đã kẹp)
-      - why: list[str] tóm tắt xếp hạng top (để log/debug)
-    """
-    logger = logging.getLogger(__name__)
-    cands = _presence_map(evs)
-    if not cands:
-        return None, 0.0, ["no_candidate_evidence"]
-
-    ranked: List[Tuple[str, float, float, float]] = []  # (state, prior, final, boost)
-    for st, prior in cands:
-        boost = _boost_score_for(st, evs)
-        final = max(0.0, min(1.0, prior + boost))
-        ranked.append((st, prior, final, boost))
-
-    # Sắp xếp theo final_score giảm dần, tie-break bằng prior
-    ranked.sort(key=lambda x: (x[2], x[1]), reverse=True)
-    best_state, prior, final, boost = ranked[0]
-
-    why = [f"{st}: score={sc:.2f} (prior={pr:.2f}, boost={bs:+.2f})"
-           for (st, pr, sc, bs) in ranked[:5]]
-    try:
-        logger.info("STATE_RANK: " + " | ".join(why))
-    except Exception:
-        pass
-    return best_state, float(final), why
-
 def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]], cfg: Config) -> Dict[str, Any]:
     f1 = features_by_tf.get('1H', {})
     f4 = features_by_tf.get('4H', {})
@@ -824,14 +666,15 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     else:
         _px1h = float('nan')
     ref_level = pick_ref_level(levels1h, _px1h, soft_levels=soft1h) if np.isfinite(_px1h) else None
-    if ref_level is None and np.isfinite(_px1h):
-        ref_level = _px1h  # chốt fallback để evaluator vẫn chạy
 
     # hint hướng từ breakout/breakdown (nếu có)
     side_hint = 'long' if ev_pb.get('ok') else ('short' if ev_pdn.get('ok') else None)
 
-    # Reclaim (bias-free): evaluate cả 2 phía & chọn tốt nhất
-    ev_prc = ev_price_reclaim(df1, ref_level, atr1, cfg_1h) if df1 is not None else {"ok": False}
+    # Reclaim (bias-free): chỉ khi có ref_level rõ ràng
+    ev_prc = {"ok": False, "why": "no_ref_level"}
+    if (df1 is not None) and (ref_level is not None):
+        ev_prc = ev_price_reclaim_auto(df1, level=ref_level, atr=atr1, cfg=cfg_1h)
+
     # Sideways
     ev_sdw = ev_sideways(df1, bbw1, bbw1_med, atr1, cfg_1h) if df1 is not None else {"ok": False}
 
@@ -859,10 +702,10 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
         f1.get('swings', {}) or {},
         atr1,
         f1.get('momentum', {}) or {},
-        (cfg_1h if 'cfg_1h' in locals() and cfg_1h is not None else cfg.per_tf['1H']),
+        f1.get('volume', {}) or {},
         f1.get('candles', {}) or {},
         side_hint
-    ) if df1 is not None else {"ok": False})
+    ) if (df1 is not None and side_hint in ('long','short')) else {"ok": False})
  
     # Slow-market guards (Volatility-of-Vol & Liquidity floor)
     vol_now = float(f1.get('volume', {}).get('now', 0.0) or f1.get('volume', {}).get('v', 0.0) or 0.0)
@@ -880,10 +723,10 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
         'sideways': ev_sdw,
         'volume': {'primary': ev_vol_1h, 'confirm': ev_vol_4h, 'ok': vol_ok},
         'momentum': {'primary': ev_mom_1h},
-        'trend': ev_tr,
+        'trend_alignment': ev_tr,
         'candles': ev_cdl,
         'liquidity': ev_liq_,
-        'bb': ev_bb,
+        'bb_expanding': ev_bb,
         'throwback': ev_tb,
         'pullback': ev_pbk,
         'mean_reversion': ev_mr,
@@ -893,26 +736,11 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
         'adaptive': adaptive_meta,  # regime + slow-market guards (meta, not scored)
     }
 
-    state, confidence, why = infer_state(evidences)
-    # Chuẩn hóa cho Pydantic: state & why phải là string
-    state = state or "undefined"
-    if isinstance(why, (list, tuple)):
-        why = " | ".join(str(x) for x in why if x is not None)
-    elif why is None:
-        why = ""
-    try:
-        confidence = float(confidence or 0.0)
-    except Exception:
-        confidence = 0.0
-
     out = {
         'symbol': symbol,
         'asof': str(df1.index[-1]) if df1 is not None else None,
         'timeframes': ['1H','4H','1D'],
-        'state': state,
-        'confidence': round(float(confidence), 3),
-        'why': why,
-        'evidence': evidences,
+        'evidence': evidences,  # không chấm state/confidence/why ở layer này
     }
     return out
 
