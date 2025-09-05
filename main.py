@@ -180,7 +180,10 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
             f"{(tp_str + ' ' + rr_str).strip()}".strip()
         )
     if dec == "WAIT":
-        miss = (out.get("logs", {}).get("WAIT", {}).get("missing"))
+        wait_log = (out.get("logs", {}).get("WAIT", {}) or {})
+        miss = wait_log.get("missing")
+        if miss is None:
+            miss = wait_log.get("reasons")
         log.info(f"[{symbol}] WAIT missing={miss}")
     if dec == "AVOID":
         reasons = (out.get("logs", {}).get("AVOID", {}).get("reasons"))
