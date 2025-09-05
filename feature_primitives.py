@@ -130,7 +130,12 @@ def compute_trend(df: pd.DataFrame) -> Dict[str, Any]:
         state = "down"
     else:
         state = "side"
-    return {"state": state, "ema20": e20, "ema50": e50, "ema_spread": spread}
+    ema50 = df['ema50'].tail(4)
+    ema50_slope = float(ema50.diff().tail(3).mean())  # slope mượt 3 nến
+    return {
+        "state": state, "ema20": e20, "ema50": e50,
+        "ema_spread": spread, "ema50_slope": ema50_slope
+    }
 
 
 def compute_candles(df: pd.DataFrame) -> Dict[str, bool]:
