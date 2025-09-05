@@ -468,6 +468,17 @@ def ev_pullback_valid(df: pd.DataFrame, swings: Dict[str, Any], atr: float, mom:
         return {"ok": bool(ok), "why": "pullback_ok" if ok else "pullback_not_ok", "retrace_pct": round(retr,3), "rsi_ok": bool(rsi<50), "vol_contracting": bool(contracting), "confirm_candle": bool(bear), "zone": zone, "fallback_zone": fzone}
     return {"ok": False, "why": "insufficient_swings"}
 
+def _ensure_mid(ev):
+    try:
+        z = ev.get('zone')
+        if z and isinstance(z, (list, tuple)) and len(z) == 2:
+            ev['mid'] = float(z[0] + z[1]) / 2.0
+    except Exception:
+        pass
+    return ev
+
+ev_pbk = _ensure_mid(ev_pbk)
+ev_tb  = _ensure_mid(ev_tb)
 
 # --------------------------------------------------------------------------------------
 # 4b) Additional evidences for EARLY recognition
