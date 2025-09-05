@@ -102,38 +102,27 @@ def _ensure_sl_gap(entry: float, sl: float, atr: float, side: str, min_atr: floa
     else:
         return float(entry + min_gap) if (sl - entry) < min_gap else float(sl)
 
-def _tp_ladder(levels: Dict[str, Any], entry: float, side: str, atr: float, n: int = 3) -> List[float]:
+def _tp_by_rr(entry: float, sl: float, side: str, targets: Tuple[float, ...]) -> List[float]:
     """
-    Chọn n TP: ưu tiên band forward gần entry; thiếu thì bù bằng ATR multiples.
-    Lấy ý tưởng từ decision_engine._tp_ladder :contentReference[oaicite:2]{index=2}
+    Tạo TP theo RR tuyệt đối từ cấu hình rr_targets (ví dụ 1.2, 2.0, 3.0).
+    RR = |TP - entry| / |entry - SL|  (tùy theo side).
     """
     try:
-        bands = levels.get('bands_up' if side == 'long' else 'bands_down') or []
+        if side not in ("long", "short"):
+            return []
+        risk = (entry - sl) if side == "long" else (sl - entry)
+        if risk <= 0:
+            return []
+        tps: List[float] = []
+        for r in targets:
+            r = float(r)
+            tp = entry + r * risk if side == "long" else entry - r * risk
+            tps.append(float(tp))
+        # đảm bảo thứ tự hợp lý theo side
+        tps.sort(reverse=(side == "short"))
+        return tps
     except Exception:
-        bands = []
-    fwd: List[float] = []
-    for b in (bands or []):
-        try:
-            tp = float(b.get('tp'))
-            if side == 'long' and tp > entry:
-                fwd.append(tp)
-            if side == 'short' and tp < entry:
-                fwd.append(tp)
-        except Exception:
-            continue
-    fwd = sorted(fwd, key=lambda x: abs(x - entry))
-    tps = fwd[:n]
-    if atr > 0 and len(tps) < n:
-        # fallback ATR multiples
-        mults = [1.0, 1.5, 2.0, 2.5]
-        for m in mults:
-            tp = entry + (m * atr if side == 'long' else -m * atr)
-            if all(abs(tp - x) > 1e-6 for x in tps):
-                tps.append(float(tp))
-            if len(tps) >= n:
-                break
-    tps = sorted(tps, reverse=(side == 'short'))
-    return tps[:n]
+        return []
 
 
 # -------------------------------------------------------
@@ -435,9 +424,8 @@ def build_setup(si: SI, state: str, side: Optional[str], cfg: SideCfg) -> Setup:
     # enforce SL gap theo ATR
     st.sl = _ensure_sl_gap(st.entry, st.sl, atr, side, min_atr=0.6)
 
-    # TP ladder: ưu tiên bands 1H; fallback ATR multiples
-    levels1h = _safe_get(si, "levels1h", {}) or {}
-    st.tps = _tp_ladder(levels1h, st.entry, side, atr, n=3)
+    # TP theo RR targets (ví dụ 1.2, 2.0, 3.0) — yêu cầu của bạn
+    st.tps = _tp_by_rr(st.entry, st.sl, side, cfg.rr_targets)
 
     return st
 
