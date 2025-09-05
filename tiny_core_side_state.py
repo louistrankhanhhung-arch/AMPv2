@@ -17,7 +17,7 @@ class SideCfg:
 
     # tie handling
     tie_eps: float = 1e-6                 # absolute tie tolerance
-    side_margin: float = 0.25             # require this margin to choose a side
+    side_margin: float = 0.2             # require this margin to choose a side
 
     # volatility/momentum thresholds
     natr_lo: float = 0.015                # low-vol regime (<= 1.5%)
@@ -35,8 +35,8 @@ class SideCfg:
     sl_min_atr: float = 0.6
 
     # direction scoring within retest
-    retest_long_threshold: float = 1.0
-    retest_short_threshold: float = 1.0
+    retest_long_threshold: float = 0.75
+    retest_short_threshold: float = 0.75
 
     # timeframes
     tf_primary: str = "1H"
