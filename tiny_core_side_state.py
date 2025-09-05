@@ -6,15 +6,7 @@ from typing import Dict, Any, Optional, Tuple, List
 import math
 
 # ===============================================
-# Tiny-Core (Side-Aware State)
-# Pipeline:
-# indicators -> state_with_side -> setup -> 5 gates decision
-# States (with side embedded):
-#   - breakout        (side=long)
-#   - breakdown       (side=short)
-#   - retest_support  (side=long)   # includes reverse/range long-cases
-#   - retest_resistance (side=short) # includes reverse/range short-cases
-#   - none_state      (side=None)
+# Tiny-Core (Side-Aware State)  — dict-safe evidence
 # ===============================================
 
 @dataclass
@@ -88,6 +80,26 @@ def _get(path: List[str], d: Dict[str, Any], default=None):
         cur = (cur or {}).get(p, {} if p != path[-1] else None)
     return default if cur is None else cur
 
+def _gat(obj, name, default=None):
+    """get attribute or dict key"""
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+def _as_evidence_dict(eb):
+    """Return an object (dict-like or attr) that holds evidence items directly.
+    Accept eb, or {"evidence": {...}}, or pydantic models with attributes.
+    """
+    if eb is None:
+        return {}
+    # unwrap .evidence if present
+    ev = _gat(eb, "evidence", None)
+    if ev is not None:
+        return ev
+    return eb
+
 def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Any, cfg: SideCfg) -> SI:
     P = features_by_tf.get(cfg.tf_primary, {}) or {}
     C = features_by_tf.get(cfg.tf_confirm, {}) or {}
@@ -97,6 +109,49 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Any, 
     natr = None
     if atr and price:
         natr = atr / price
+
+    # Unwrap evidence container
+    EV = _as_evidence_dict(eb)
+
+    # helpers
+    def _ev_item(key):
+        return _gat(EV, key, None)
+
+    def _ok(key):
+        itm = _ev_item(key)
+        return bool(_gat(itm, "ok", False))
+
+    def _level(key):
+        itm = _ev_item(key)
+        return _gat(itm, "level", None)
+
+    def _mid(key):
+        itm = _ev_item(key)
+        return _gat(itm, "mid", None)
+
+    def _side(key):
+        itm = _ev_item(key)
+        return _gat(itm, "side", None)
+
+    def _reclaim_side():
+        itm = _ev_item("price_reclaim")
+        ref = _gat(itm, "ref", None)
+        return _gat(ref, "side", None)
+
+    breakout_ok = bool(_ok("price_breakout") or _ok("price_breakdown"))
+    breakout_side = "long" if _ok("price_breakout") else ("short" if _ok("price_breakdown") else None)
+    last_break_level = _level("price_breakout") or _level("price_breakdown")
+
+    retest_ok = bool(_ok("pullback_throwback") or _ok("pullback"))
+    retest_zone_mid = _mid("pullback_throwback") or _mid("pullback")
+    reclaim_ok = bool(_ok("price_reclaim"))
+    reclaim_side = _reclaim_side()
+
+    meanrev_ok = bool(_ok("mean_reversion"))
+    meanrev_side = _side("mean_reversion")
+
+    vol_impulse_up = bool(_ok("volume_impulse_up"))
+    vol_impulse_down = bool(_ok("volume_impulse_down"))
 
     si = SI(
         price = price,
@@ -108,17 +163,21 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Any, 
         rsi_confirm = C.get("rsi") or _get(["momentum","rsi"], C, None),
         bbw_primary = P.get("bb_width") or _get(["volatility","bb_width"], P, None),
         adx_primary = P.get("adx") or _get(["trend","adx"], P, None),
-        vol_impulse_up   = bool(getattr(getattr(eb.evidence, "volume_impulse_up", None), "ok", False)),
-        vol_impulse_down = bool(getattr(getattr(eb.evidence, "volume_impulse_down", None), "ok", False)),
-        breakout_ok      = bool(getattr(getattr(eb.evidence, "price_breakout", None), "ok", False) or getattr(getattr(eb.evidence, "price_breakdown", None), "ok", False)),
-        breakout_side    = ("long" if getattr(getattr(eb.evidence, "price_breakout", None), "ok", False) else ("short" if getattr(getattr(eb.evidence, "price_breakdown", None), "ok", False) else None)),
-        last_break_level = getattr(getattr(eb.evidence, "price_breakout", None), "level", None) or getattr(getattr(eb.evidence, "price_breakdown", None), "level", None),
-        retest_ok        = bool(getattr(getattr(eb.evidence, "pullback_throwback", None), "ok", False) or getattr(getattr(eb.evidence, "pullback", None), "ok", False)),
-        retest_zone_mid  = getattr(getattr(eb.evidence, "pullback_throwback", None), "mid", None) or getattr(getattr(eb.evidence, "pullback", None), "mid", None),
-        reclaim_ok       = bool(getattr(getattr(eb.evidence, "price_reclaim", None), "ok", False)),
-        reclaim_side     = getattr(getattr(eb.evidence, "price_reclaim", None), "ref", None).side if getattr(getattr(eb.evidence, "price_reclaim", None), "ref", None) else None,
-        meanrev_ok       = bool(getattr(getattr(eb.evidence, "mean_reversion", None), "ok", False)),
-        meanrev_side     = getattr(getattr(eb.evidence, "mean_reversion", None), "side", None),
+
+        vol_impulse_up   = vol_impulse_up,
+        vol_impulse_down = vol_impulse_down,
+
+        breakout_ok      = breakout_ok,
+        breakout_side    = breakout_side,
+        last_break_level = last_break_level,
+
+        retest_ok        = retest_ok,
+        retest_zone_mid  = retest_zone_mid,
+        reclaim_ok       = reclaim_ok,
+        reclaim_side     = reclaim_side,
+
+        meanrev_ok       = meanrev_ok,
+        meanrev_side     = meanrev_side,
     )
     return si
 
