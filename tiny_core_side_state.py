@@ -9,73 +9,38 @@ import math
 # Tiny-Core (Side-Aware State)  — dict-safe evidence
 # ===============================================
 
-@dataclass
-class SideCfg:
-    # regime thresholds (you can tune for your market)
-    bbw_squeeze_thr: float = 0.06         # range-like when below
-    adx_trend_thr: float = 18.0           # range-like when below
-
-    # tie handling
-    tie_eps: float = 1e-6                 # absolute tie tolerance
-    side_margin: float = 0.05             # require this margin to choose a side
-    allow_slope_fallback: bool = True  
-    
-    # volatility/momentum thresholds
-    natr_lo: float = 0.015                # low-vol regime (<= 1.5%)
-    natr_hi: float = 0.04                 # high-vol regime (>= 4%)
-    rsi_long_thr: float = 55.0
-    rsi_short_thr: float = 45.0
-
-    # breakout guard
-    break_buffer_atr: float = 0.2         # distance beyond level (in ATR) to accept break
-
-    # setup & risk
-    rr_targets: tuple = (1.2, 2.0, 3.0)
-    rr_min_enter: float = 1.2
-    max_entry_dist_atr: float = 0.6
-    sl_min_atr: float = 0.6
-
-    # direction scoring within retest
-    retest_long_threshold: float = 0.6
-    retest_short_threshold: float = 0.6
-
-    # timeframes
-    tf_primary: str = "1H"
-    tf_confirm: str = "4H"
-
 @staticmethod
-    def _get_env_float(name: str, default: float) -> float:
-        import os
-        try:
-            v = os.getenv(name)
-            return float(v) if v is not None and v != "" else default
-        except Exception:
-            return default
-
-    @staticmethod
-    def _get_env_bool(name: str, default: bool) -> bool:
-        import os
+def _get_env_float(name: str, default: float) -> float:
+    import os
+    try:
         v = os.getenv(name)
-        if v is None or v == "":
-            return default
-        return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+        return float(v) if v is not None and v != "" else default
+    except Exception:
+        return default
+@staticmethod
+def _get_env_bool(name: str, default: bool) -> bool:
+    import os
+    v = os.getenv(name)
+    if v is None or v == "":
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
 
-    @classmethod
-    def from_env(cls) -> "SideCfg":
-        """
-        Load SideCfg from environment variables (optional overrides).
-        Variables:
-          SIDE_MARGIN, RETEST_LONG_THRESHOLD, RETEST_SHORT_THRESHOLD,
-          MAX_ENTRY_DIST_ATR, RR_MIN_ENTER, ALLOW_SLOPE_FALLBACK
-        """
-        return cls(
-            side_margin=cls._get_env_float("SIDE_MARGIN", cls.side_margin),
-            retest_long_threshold=cls._get_env_float("RETEST_LONG_THRESHOLD", cls.retest_long_threshold),
-            retest_short_threshold=cls._get_env_float("RETEST_SHORT_THRESHOLD", cls.retest_short_threshold),
-            max_entry_dist_atr=cls._get_env_float("MAX_ENTRY_DIST_ATR", cls.max_entry_dist_atr),
-            rr_min_enter=cls._get_env_float("RR_MIN_ENTER", cls.rr_min_enter),
-            allow_slope_fallback=cls._get_env_bool("ALLOW_SLOPE_FALLBACK", cls.allow_slope_fallback),
-        )
+@classmethod
+def from_env(cls) -> "SideCfg":
+    """
+    Load SideCfg from environment variables (optional overrides).
+    Variables:
+      SIDE_MARGIN, RETEST_LONG_THRESHOLD, RETEST_SHORT_THRESHOLD,
+      MAX_ENTRY_DIST_ATR, RR_MIN_ENTER, ALLOW_SLOPE_FALLBACK
+    """
+    return cls(
+        side_margin=cls._get_env_float("SIDE_MARGIN", cls.side_margin),
+        retest_long_threshold=cls._get_env_float("RETEST_LONG_THRESHOLD", cls.retest_long_threshold),
+        retest_short_threshold=cls._get_env_float("RETEST_SHORT_THRESHOLD", cls.retest_short_threshold),
+        max_entry_dist_atr=cls._get_env_float("MAX_ENTRY_DIST_ATR", cls.max_entry_dist_atr),
+        rr_min_enter=cls._get_env_float("RR_MIN_ENTER", cls.rr_min_enter),
+        allow_slope_fallback=cls._get_env_bool("ALLOW_SLOPE_FALLBACK", cls.allow_slope_fallback),
+    )
 
 @dataclass
 class SI:  # Side Indicators (pulled from features/evidence)
