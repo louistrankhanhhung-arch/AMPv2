@@ -12,7 +12,7 @@ Main worker for Crypto Signal (Railway ready)
   5) decide ENTER/WAIT/AVOID; optionally push Telegram
 """
 import os, sys, time, json, logging
-from typing import Dict, List
+from typing import Any, Dict, List, TYPE_CHECKING
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,7 @@ from kucoin_api import fetch_batch, _exchange  # spot-only; 1H drop-partial
 from indicators import enrich_indicators, enrich_more
 from feature_primitives import compute_features_by_tf
 from engine_adapter import decide
+from evidence_evaluators import build_evidence_bundle, Config
 
 
 from notifier_telegram import TelegramNotifier
