@@ -154,20 +154,23 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Any, 
     vol_impulse_up = bool(_ok("volume_impulse_up"))
     vol_impulse_down = bool(_ok("volume_impulse_down"))
 
+    # lấy trực tiếp ema50_slope
+    ema_slope_primary = P.get("ema50_slope") or _get(["trend","ema50_slope"], P, None)
+    ema_slope_confirm = C.get("ema50_slope") or _get(["trend","ema50_slope"], C, None)
+    # optional fallback nếu bật cờ
+    if ema_slope_primary is None and cfg.allow_slope_fallback:
+        st = _get(["trend","state"], P, None)
+        ema_slope_primary = 1.0 if st == "up" else (-1.0 if st == "down" else 0.0)
+    if ema_slope_confirm is None and cfg.allow_slope_fallback:
+        st = _get(["trend","state"], C, None)
+        ema_slope_confirm = 1.0 if st == "up" else (-1.0 if st == "down" else 0.0)   
+        
     si = SI(
         price = price,
         atr = atr,
         natr = natr,
-        # lấy trực tiếp ema50_slope
-        ema_slope_primary = P.get("ema50_slope") or _get(["trend","ema50_slope"], P, None)
-        ema_slope_confirm = C.get("ema50_slope") or _get(["trend","ema50_slope"], C, None)
-        # optional fallback nếu bật cờ
-        if ema_slope_primary is None and cfg.allow_slope_fallback:
-            st = _get(["trend","state"], P, None)
-            ema_slope_primary = 1.0 if st == "up" else (-1.0 if st == "down" else 0.0)
-        if ema_slope_confirm is None and cfg.allow_slope_fallback:
-            st = _get(["trend","state"], C, None)
-            ema_slope_confirm = 1.0 if st == "up" else (-1.0 if st == "down" else 0.0)
+        ema_slope_primary = ema_slope_primary,
+        ema_slope_confirm = ema_slope_confirm,
         rsi_primary = P.get("rsi") or _get(["momentum","rsi"], P, None),
         rsi_confirm = C.get("rsi") or _get(["momentum","rsi"], C, None),
         bbw_primary = (
