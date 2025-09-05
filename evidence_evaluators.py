@@ -656,6 +656,14 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     ev_mr  = ev_mean_reversion(df1)
     ev_div = ev_divergence_updown(f1.get('momentum', {}))
     ev_rjt = ev_rejection(df1, f1.get('swings', {}), atr1)
+    # --- False breakouts/breakdowns (đảo phá ngưỡng) ---
+    ev_fb_out = ev_false_breakout(df1, f1.get('swings', {}), atr1, cfg_1h) if df1 is not None else {"ok": False}
+    ev_fb_dn  = ev_false_breakdown(df1, f1.get('swings', {}), atr1, cfg_1h) if df1 is not None else {"ok": False}
+
+    # --- Trend-follow readiness (hai phía) ---
+    ev_tf_long  = ev_trend_follow_ready(df1, f1.get('momentum', {}), f1.get('trend', {}), side='long')  if df1 is not None else {"ok": False}
+    ev_tf_short = ev_trend_follow_ready(df1, f1.get('momentum', {}), f1.get('trend', {}), side='short') if df1 is not None else {"ok": False}
+
     
     # --- SR reference (ref_level) thống nhất cho reclaim ---
     f1h = features_by_tf.get('1H', {}) or {}
@@ -733,6 +741,9 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
         'divergence': ev_div,
         'rejection': ev_rjt,
         'volatility_breakout': ev_volb,
+        'false_breakout': ev_fb_out,
+        'false_breakdown': ev_fb_dn,
+        'trend_follow_ready': {'long': ev_tf_long, 'short': ev_tf_short},
         'adaptive': adaptive_meta,  # regime + slow-market guards (meta, not scored)
     }
 
