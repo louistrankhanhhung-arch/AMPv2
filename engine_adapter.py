@@ -95,6 +95,8 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         "rr3": rr3,
     }
 
+    # Ensure 'decision' is set before using below
+    decision = dec.decision or "WAIT"
     # ---- logging with exchange-like decimals ----
     dp = _infer_dp(symbol, dec.setup.entry, features_by_tf, evidence_bundle)
     f_entry = _fmt(dec.setup.entry, dp)
