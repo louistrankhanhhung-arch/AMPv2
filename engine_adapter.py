@@ -95,8 +95,16 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         "rr3": rr3,
     }
 
-    # Ensure 'decision' is set before using below
+    # ---- ensure locals before logging ----
     decision = dec.decision or "WAIT"
+    state = dec.state
+    confidence = 0.0
+    try:
+        if isinstance(dec.meta, dict):
+            confidence = float(dec.meta.get("confidence", 0.0) or 0.0)
+    except Exception:
+        confidence = 0.0
+
     # ---- logging with exchange-like decimals ----
     dp = _infer_dp(symbol, dec.setup.entry, features_by_tf, evidence_bundle)
     f_entry = _fmt(dec.setup.entry, dp)
