@@ -134,8 +134,14 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         )
     )
 
-    # headline (one-liner)
-    headline = f"[{symbol}] {decision} | {state or '-'} {plan['direction'] or '-'} | E={f_entry} SL={f_sl} TP={f_tp1}"
+    # headline (one-liner) — show all three TPs
+    _tp_parts_hl = [
+        f"TP1={f_tp1}" if f_tp1 is not None else "TP1=None",
+        f"TP2={f_tp2}" if f_tp2 is not None else "TP2=None",
+        f"TP3={f_tp3}" if f_tp3 is not None else "TP3=None",
+    ]
+    _tp_text_hl = " ".join(_tp_parts_hl)
+    headline = f"[{symbol}] {decision} | {state or '-'} {plan['direction'] or '-'} | E={f_entry} SL={f_sl} {_tp_text_hl}"
 
     # Telegram signal (nếu ENTER): format theo dp
     telegram_signal = None
