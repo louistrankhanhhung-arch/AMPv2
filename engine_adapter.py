@@ -51,10 +51,13 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         "rr3": rr3,
     }
 
-    # Logs / notes (compatible shape)
+     # NOTE: keep both "missing" (legacy) and "reasons" for compatibility with main.py logging
     logs = {
         "ENTER": {"state_meta": dec.meta} if dec.decision == "ENTER" else {},
-        "WAIT":  {"reasons": dec.reasons, "state_meta": dec.meta} if dec.decision != "ENTER" else {},
+        "WAIT":  (
+            {"missing": dec.reasons, "reasons": dec.reasons, "state_meta": dec.meta}
+            if dec.decision != "ENTER" else {}
+        ),
         "AVOID": {},
     }
     notes: List[str] = []
