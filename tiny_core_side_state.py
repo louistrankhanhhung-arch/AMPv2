@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Tuple, List
 import math
-import os
+
 
 # ===============================================
 # Tiny-Core (Side-Aware State)  — dict-safe evidence
