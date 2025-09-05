@@ -174,9 +174,11 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Any, 
         rsi_primary = P.get("rsi") or _get(["momentum","rsi"], P, None),
         rsi_confirm = C.get("rsi") or _get(["momentum","rsi"], C, None),
         bbw_primary = (
-            P.get("bb_width") or _get(["volatility","bb_width"], P, None),
-            or P.get("bbw_last") or _get(["volatility","bbw_last"], P, None)
-        )
+            P.get("bb_width")
+            or _get(["volatility","bb_width"], P, None)
+            or P.get("bbw_last")
+            or _get(["volatility","bbw_last"], P, None)
+        ),
         adx_primary = P.get("adx") or _get(["trend","adx"], P, None),
 
         vol_impulse_up   = vol_impulse_up,
