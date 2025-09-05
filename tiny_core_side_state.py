@@ -18,7 +18,8 @@ class SideCfg:
     # tie handling
     tie_eps: float = 1e-6                 # absolute tie tolerance
     side_margin: float = 0.1             # require this margin to choose a side
-
+    allow_slope_fallback: bool = False  # mặc định KHÔNG fallback, chỉ dùng slope trực tiếp
+    
     # volatility/momentum thresholds
     natr_lo: float = 0.015                # low-vol regime (<= 1.5%)
     natr_hi: float = 0.04                 # high-vol regime (>= 4%)
@@ -157,18 +158,16 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Any, 
         price = price,
         atr = atr,
         natr = natr,
-        ema_slope_primary = (
-            P.get("ema50_slope")
-            or _get(["trend","ema50_slope"], P, None)
-            or (1.0 if _get(["trend","state"], P, None) == "up"
-                else (-1.0 if _get(["trend","state"], P, None) == "down" else 0.0))
-        )
-        ema_slope_confirm = (
-            C.get("ema50_slope")
-            or _get(["trend","ema50_slope"], C, None)
-            or (1.0 if _get(["trend","state"], C, None) == "up"
-                else (-1.0 if _get(["trend","state"], C, None) == "down" else 0.0))
-        )
+        # lấy trực tiếp ema50_slope
+        ema_slope_primary = P.get("ema50_slope") or _get(["trend","ema50_slope"], P, None)
+        ema_slope_confirm = C.get("ema50_slope") or _get(["trend","ema50_slope"], C, None)
+        # optional fallback nếu bật cờ
+        if ema_slope_primary is None and cfg.allow_slope_fallback:
+            st = _get(["trend","state"], P, None)
+            ema_slope_primary = 1.0 if st == "up" else (-1.0 if st == "down" else 0.0)
+        if ema_slope_confirm is None and cfg.allow_slope_fallback:
+            st = _get(["trend","state"], C, None)
+            ema_slope_confirm = 1.0 if st == "up" else (-1.0 if st == "down" else 0.0)
         rsi_primary = P.get("rsi") or _get(["momentum","rsi"], P, None),
         rsi_confirm = C.get("rsi") or _get(["momentum","rsi"], C, None),
         bbw_primary = (
