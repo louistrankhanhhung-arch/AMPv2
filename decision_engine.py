@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
+from tiny_core_side_state import SideCfg, run_side_state_core
 
 import numpy as np
 import pandas as pd
