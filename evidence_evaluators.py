@@ -477,8 +477,28 @@ def _ensure_mid(ev):
         pass
     return ev
 
-ev_pbk = _ensure_mid(ev_pbk)
-ev_tb  = _ensure_mid(ev_tb)
+def _ensure_mid_ev(ev: dict | None) -> dict | None:
+    """
+    If an evidence dict has a 'zone' = [lo, hi] but no 'mid', add mid = (lo+hi)/2.
+    Safe to call with None.
+    """
+    if not ev or not isinstance(ev, dict):
+        return ev
+    try:
+        z = ev.get("zone")
+        if (
+            z
+            and isinstance(z, (list, tuple))
+            and len(z) == 2
+            and isinstance(z[0], (int, float))
+            and isinstance(z[1], (int, float))
+            and "mid" not in ev
+        ):
+            ev["mid"] = float(z[0] + z[1]) / 2.0
+    except Exception:
+        # không làm gián đoạn pipeline nếu zone lỗi
+        pass
+    return ev
 
 # --------------------------------------------------------------------------------------
 # 4b) Additional evidences for EARLY recognition
@@ -757,6 +777,24 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
         'trend_follow_ready': {'long': ev_tf_long, 'short': ev_tf_short},
         'adaptive': adaptive_meta,  # regime + slow-market guards (meta, not scored)
     }
+
+    # --- Normalize zones and add 'mid' for retest-style evidences ---
+    def _normalize_zone_mid(name: str):
+        ev = evidences.get(name)
+        if not isinstance(ev, dict):
+            return
+        # Promote fallback_zone -> zone if zone missing/invalid
+        z = ev.get("zone")
+        fz = ev.get("fallback_zone")
+        if (not z or not isinstance(z, (list, tuple)) or len(z) != 2) and isinstance(fz, (list, tuple)) and len(fz) == 2:
+            try:
+                ev["zone"] = [float(fz[0]), float(fz[1])]
+            except Exception:
+                pass
+        evidences[name] = _ensure_mid_ev(ev)
+
+    _normalize_zone_mid("pullback")
+    _normalize_zone_mid("throwback")
 
     out = {
         'symbol': symbol,
