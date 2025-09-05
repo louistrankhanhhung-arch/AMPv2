@@ -26,7 +26,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
-from tiny_core_side_state import SideCfg, run_side_state_core
 
 import numpy as np
 import pandas as pd
@@ -89,6 +88,8 @@ class EvidenceIn(BaseModel):
     false_breakout: EvidenceItemIn
     false_breakdown: EvidenceItemIn
     trend_follow_up: EvidenceItemIn
+
+from tiny_core_side_state import SideCfg, run_side_state_core
     trend_follow_down: EvidenceItemIn
     mean_reversion: EvidenceItemIn
     divergence: EvidenceItemIn
@@ -170,6 +171,8 @@ class DecisionOut(BaseModel):
 
 @dataclass
 class DecisionRules:
+    # Toggle: use the new side-aware tiny core (state embeds side)
+    use_tiny_side_state: bool = True
     rr_min: float = 1.5
     rr_max: float = 7.0            # chặn RR ảo
     rr_avoid: float = 1.2
@@ -669,7 +672,7 @@ def _tp_ladder_rr(levels1h: Dict[str, Any],
 
 
 # =====================================================
-# 4) Core decision
+# 4) Core decision (legacy disabled if use_tiny_side_state)
 # =====================================================
 
 def decide(symbol: str,
@@ -680,6 +683,60 @@ def decide(symbol: str,
     """Return DecisionOut as dict (validated)."""
     # Validate input evidence (lenient)
     eb = EvidenceBundleIn(**evidence_bundle)
+    # === Tiny side-state core (short-circuit) ===
+    if getattr(rules, 'use_tiny_side_state', False):
+        cfg2 = SideCfg()
+        dec = run_side_state_core(features_by_tf, eb, cfg2)
+
+        # Map to PlanOut & LogsOut
+        plan = PlanOut(
+            direction=dec.side,
+            entry=dec.setup.entry,
+            sl=dec.setup.sl,
+            tp1=(dec.setup.tps[0] if len(dec.setup.tps) > 0 else None),
+            tp2=(dec.setup.tps[1] if len(dec.setup.tps) > 1 else None),
+            tp3=(dec.setup.tps[2] if len(dec.setup.tps) > 2 else None),
+        )
+        logs = LogsOut()
+        if dec.decision == 'ENTER':
+            logs.ENTER = {'state_meta': dec.meta}
+        else:
+            logs.WAIT = {'reasons': dec.reasons, 'state_meta': dec.meta}
+
+        # Minimal telegram text compatible with your format
+        strategy = dec.state.replace('_', ' ').title()
+        entry_lines = []
+        if plan.entry is not None:
+            entry_lines.append(f"Entry: {plan.entry}")
+        tp_lines = []
+        if plan.tp1 is not None: tp_lines.append(f"TP1: {plan.tp1}")
+        if plan.tp2 is not None: tp_lines.append(f"TP2: {plan.tp2}")
+        if plan.tp3 is not None: tp_lines.append(f"TP3: {plan.tp3}")
+        entries_text = "\\n".join(entry_lines) if entry_lines else ""
+        tps_text = "\\n".join(tp_lines) if tp_lines else ""
+        telegram_signal = (
+            f\"\"\"{symbol} | {dec.side.upper() if dec.side else 'WAIT'} 
+state: {dec.state}
+{entries_text}
+{tps_text}
+SL: {plan.sl if plan.sl is not None else '—'}
+Decision: {dec.decision}
+\"\"\"\".strip()
+        )
+
+        out = DecisionOut(
+            symbol=symbol,
+            timeframe=timeframe,
+            asof=evidence_bundle.get('asof'),
+            state=dec.state,
+            confidence=(0.60 if dec.decision=='ENTER' else 0.50),
+            decision=dec.decision,
+            plan=plan,
+            logs=logs,
+            telegram_signal=telegram_signal,
+        )
+        return out.model_dump() if hasattr(out, 'model_dump') else out.__dict__
+
 
     f1 = features_by_tf.get('1H', {})
     df1: pd.DataFrame = f1.get('df')  # Orchestrator should attach df
