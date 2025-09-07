@@ -670,12 +670,14 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
 
     atr1 = float(f1.get('volatility', {}).get('atr', 0.0) or 0.0)
     atr4 = float(f4.get('volatility', {}).get('atr', 0.0) or 0.0) if f4 else 0.0
-    # ⬇️ Lấy BBW trước để dùng cho các evaluator bên dưới
+    # BBW cho 1H (trigger) và 4H (execution)
     bbw1 = f1.get('volatility', {}).get('bbw_last', 0.0)
     bbw1_med = f1.get('volatility', {}).get('bbw_med', 0.0)
+    bbw4 = f4.get('volatility', {}).get('bbw_last', 0.0) if f4 else 0.0
+    bbw4_med = f4.get('volatility', {}).get('bbw_med', 0.0) if f4 else 0.0
 
-    # === ATR Regime & adaptive thresholds ===
-    regime_info = _atr_regime(df1 if df1 is not None else pd.DataFrame())
+    # === ATR Regime & adaptive thresholds (theo 4H execution) ===
+    regime_info = _atr_regime(df4 if df4 is not None else pd.DataFrame())
     reg = regime_info.get("regime", "normal")
     cfg_1h = _adapt_cfg(cfg.per_tf['1H'], reg) if '1H' in cfg.per_tf else None
     cfg_4h = _adapt_cfg(cfg.per_tf['4H'], reg) if '4H' in cfg.per_tf else None
@@ -709,13 +711,13 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     # hint hướng từ breakout/breakdown (nếu có)
     side_hint = 'long' if ev_pb.get('ok') else ('short' if ev_pdn.get('ok') else None)
 
-    # Reclaim (bias-free): chỉ khi có ref_level rõ ràng
+    # Reclaim (bias-free): chỉ khi có ref_level rõ ràng — buffer dùng ATR 4H
     ev_prc = {"ok": False, "why": "no_ref_level"}
     if (df1 is not None) and (ref_level is not None):
-        ev_prc = ev_price_reclaim_auto(df1, level=ref_level, atr=atr1, cfg=cfg_1h)
+        ev_prc = ev_price_reclaim_auto(df1, level=ref_level, atr=atr4 or atr1, cfg=cfg_4h or cfg_1h)
 
-    # Sideways
-    ev_sdw = ev_sideways(df1, bbw1, bbw1_med, atr1, cfg_1h) if df1 is not None else {"ok": False}
+    # Sideways (đánh giá theo 4H execution)
+    ev_sdw = ev_sideways(df4 if df4 is not None else df1, bbw4 or bbw1, bbw4_med or bbw1_med, atr4 or atr1, cfg_4h or cfg_1h) if (df4 is not None or df1 is not None) else {"ok": False}
 
     # Volume & Momentum
     ev_vol_1h = ev_volume(f1.get('volume', {}), cfg_1h)
@@ -735,11 +737,12 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
 
     # New evidences
     ev_bb = ev_bb_expanding(bbw1, bbw1_med)
-    ev_tb = ev_throwback_valid(df1, f1.get('swings', {}), atr1, side_hint, f1.get('candles', {})) if df1 is not None else {"ok": False}
+    # Retest zones sized theo ATR 4H để tránh quá chặt
+    ev_tb = ev_throwback_valid(df1, f1.get('swings', {}), atr4 or atr1, side_hint, f1.get('candles', {})) if df1 is not None else {"ok": False}
     ev_pbk = (ev_pullback_valid(
         df1,
         f1.get('swings', {}) or {},
-        atr1,
+        atr4 or atr1,
         f1.get('momentum', {}) or {},
         f1.get('volume', {}) or {},
         f1.get('candles', {}) or {},
@@ -751,7 +754,7 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     vol_med = float(f1.get('volume', {}).get('median', 0.0) or 0.0)
     adaptive_meta = _slow_market_guards(bbw1, bbw1_med, vol_now, vol_med, reg)
  
-    # Optional: volatility breakout with proper ATR slope (pass series if available)
+    # Optional: volatility breakout with proper ATR slope (series vẫn theo 1H trigger)
     atr_series = df1['atr14'] if (df1 is not None and 'atr14' in df1) else None
     ev_volb = ev_volatility_breakout(f1.get('volume', {}), bbw1, bbw1_med, atr1, atr_series=atr_series)
 
