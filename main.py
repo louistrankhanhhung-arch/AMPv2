@@ -77,26 +77,6 @@ def _get_notifier():
     return TN
 # --- end telegram notifier helper ---
 
-def _get_logs_section(out: dict, section: str) -> dict:
-    """
-    Trích phần logs theo section ('WAIT' | 'AVOID' | ...) an toàn cho cả 2 dạng:
-    - dict: {"WAIT": {...}, "AVOID": {...}}
-    - list: [{"WAIT": {...}}, "reason1", ...]
-    """
-    logs = out.get("logs")
-    if isinstance(logs, dict):
-        sec = logs.get(section)
-        return sec if isinstance(sec, dict) else {}
-    if isinstance(logs, list):
-        for item in logs:
-            if isinstance(item, dict) and section in item and isinstance(item[section], dict):
-                return item[section]
-    return {}
-
-def _fallback_reasons(out: dict) -> list | None:
-    logs = out.get("logs")
-    return [x for x in logs if isinstance(x, str)] or None if isinstance(logs, list) else None
-
 def split_into_4_blocks(symbols: List[str]) -> List[List[str]]:
     """Stable split: [s[0], s[4], ...], [s[1], s[5], ...], ..."""
     return [symbols[i::4] for i in range(4)]
@@ -225,16 +205,13 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
             f"{(tp_str + ' ' + rr_str).strip()}".strip()
         )
     if dec == "WAIT":
-        wait_log = _get_logs_section(out, "WAIT")
-        miss = wait_log.get("missing") or wait_log.get("reasons")
+        wait_log = (out.get("logs", {}).get("WAIT", {}) or {})
+        miss = wait_log.get("missing")
         if miss is None:
-            miss = _fallback_reasons(out)
+            miss = wait_log.get("reasons")
         log.info(f"[{symbol}] WAIT missing={miss} have={_extract_evidence_ok(bundle)}")
     if dec == "AVOID":
-        avoid_log = _get_logs_section(out, "AVOID")
-        reasons = avoid_log.get("reasons")
-        if reasons is None:
-            reasons = _fallback_reasons(out)
+        reasons = (out.get("logs", {}).get("AVOID", {}).get("reasons"))
         log.info(f"[{symbol}] AVOID reasons={reasons}")
 
     # log JSON line
@@ -323,40 +300,6 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     t["status"] = "TP3"
                     note = "🎯 TP3 hit — Đóng lệnh."
                     extra = {"margin_pct": margin_pct(float(t["tp3"]))}
-                    if tn2:
-                        if msg_id:
-                            tn2.send_channel_update(int(msg_id), render_update(t, note, extra))
-                        else:
-                            tn2.send_channel(render_update(t, note, extra))
-
-                # --- REVERSAL: state hiện tại đảo chiều so với lệnh đang mở -> ĐÓNG LỆNH trước khi dính SL
-                direction_now = (out.get("plan", {}) or {}).get("direction")
-                direction_now = (direction_now or "").upper()
-                # chỉ hành động khi có direction_now rõ ràng và trái ngược với side hiện tại
-                if t.get("status") in ("OPEN", "TP1", "TP2") and direction_now in ("LONG", "SHORT") and direction_now != side:
-                    # chọn TP cao nhất đã đạt để hiển thị % lợi nhuận (nếu có)
-                    hits = t.get("hits", {}) or {}
-                    highest = None
-                    hit_price = None
-                    if "TP3" in hits and t.get("tp3"):
-                        highest = "TP3"; hit_price = float(t.get("tp3"))
-                    elif "TP2" in hits and t.get("tp2"):
-                        highest = "TP2"; hit_price = float(t.get("tp2"))
-                    elif "TP1" in hits and t.get("tp1"):
-                        highest = "TP1"; hit_price = float(t.get("tp1"))
-                
-                    # Đóng lệnh với lý do REVERSAL (được ghi là CLOSE trong DB)
-                    perf.close(t["sid"], "REVERSAL")
-                    t["status"] = "CLOSE"
-                
-                    # Tạo thông báo Telegram: nếu có TP đã đạt thì kèm % lợi nhuận của mức cao nhất
-                    if highest and hit_price is not None:
-                        note = f"↩️ Đảo chiều sang {direction_now} — Đóng lệnh trước SL (đã đạt {highest})."
-                        extra = {"margin_pct": margin_pct(hit_price)}
-                    else:
-                        note = f"↩️ Đảo chiều sang {direction_now} — Đóng lệnh trước SL."
-                        extra = None
-                
                     if tn2:
                         if msg_id:
                             tn2.send_channel_update(int(msg_id), render_update(t, note, extra))
