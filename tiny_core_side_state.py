@@ -173,8 +173,8 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     ev_mr  = _get_ev(eb, 'mean_reversion')
     ev_div = _get_ev(eb, 'divergence')
     ev_rjt = _get_ev(eb, 'rejection')
-    ev_tb  = _get_ev(eb, 'throwback')
-    ev_pbk = _get_ev(eb, 'pullback')
+    ev_tb  = _get_ev(eb, 'throwback')  # evidence throwback_valid {..., "ok": bool, "zone": [lo, hi], "mid": ...}
+    ev_pbk = _get_ev(eb, 'pullback')   # evidence pullback_valid  {..., "ok": bool, "zone": [lo, hi], "mid": ...}
     ev_fb_out = _get_ev(eb, 'false_breakout')
     ev_fb_dn  = _get_ev(eb, 'false_breakdown')
     ev_adapt  = _get_ev(eb, 'adaptive')  # meta: is_slow, liquidity_floor, regime ...
@@ -250,7 +250,10 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.reclaim_ok = reclaim_ok
     si.reclaim_side = reclaim_side
 
-    si.retest_ok = bool(ev_pullback_ok or ev_throwback_ok)
+    # retest hợp lệ khi pullback/throwback có tín hiệu
+    pbk_ok = bool(ev_pbk.get('ok')) if isinstance(ev_pbk, dict) else False
+    tb_ok  = bool(ev_tb.get('ok'))  if isinstance(ev_tb,  dict) else False
+    si.retest_ok = bool(pbk_ok or tb_ok)
     si.retest_zone_lo = retest_zone_lo
     si.retest_zone_hi = retest_zone_hi
     si.retest_zone_mid = retest_zone_mid
