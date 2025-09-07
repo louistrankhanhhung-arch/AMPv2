@@ -148,10 +148,10 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     bundle = build_evidence_bundle(symbol, feats_by_tf, cfg)
     log.debug(f"[{symbol}] bundle done in {time.time()-t3:.2f}s")
 
-    # decide on 1H as primary TF
+    # decide on 4H as execution TF (1H trigger, 4H execution, 1D context)
     t4 = time.time()
     try:
-        out = decide(symbol, "1H", feats_by_tf, bundle)
+        out = decide(symbol, "4H", feats_by_tf, bundle)
     except Exception as e:
         log.exception(f"[{symbol}] decide failed: {e}")
         # Fallback để tiếp tục vòng lặp, không làm gãy block
@@ -205,14 +205,14 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
             f"{(tp_str + ' ' + rr_str).strip()}".strip()
         )
     if dec == "WAIT":
-        wait_log = (out.get("logs", {}).get("WAIT", {}) or {})
-        miss = wait_log.get("missing")
-        if miss is None:
-            miss = wait_log.get("reasons")
+        logs = out.get("logs", {})
+        wait_log = {}
+        if isinstance(logs, dict):
+            wait_log = logs.get("WAIT", {}) or {}
+        miss = None
+        if isinstance(wait_log, dict):
+            miss = wait_log.get("missing") or wait_log.get("reasons")
         log.info(f"[{symbol}] WAIT missing={miss} have={_extract_evidence_ok(bundle)}")
-    if dec == "AVOID":
-        reasons = (out.get("logs", {}).get("AVOID", {}).get("reasons"))
-        log.info(f"[{symbol}] AVOID reasons={reasons}")
 
     # log JSON line
     # --- post teaser to Telegram Channel when ENTER ---
