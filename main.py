@@ -228,9 +228,9 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     "notes": out.get("notes", []),
                 })
                 perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
-                # 8h cooldown
-                if perf.cooldown_active(symbol, seconds=8*3600):
-                    log.info(f"[{symbol}] skip ENTER due to cooldown (8h)")
+                # 12h cooldown
+                if perf.cooldown_active(symbol, seconds=12*3600):
+                    log.info(f"[{symbol}] skip ENTER due to cooldown (12h)")
                 else:
                     sid, msg_id = tn.post_teaser(plan_for_teaser)
                     perf.open(sid, plan_for_teaser, message_id=msg_id)
