@@ -250,7 +250,7 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.reclaim_ok = reclaim_ok
     si.reclaim_side = reclaim_side
 
-    si.retest_ok = True
+    si.retest_ok = bool(ev_pullback_ok or ev_throwback_ok)
     si.retest_zone_lo = retest_zone_lo
     si.retest_zone_hi = retest_zone_hi
     si.retest_zone_mid = retest_zone_mid
