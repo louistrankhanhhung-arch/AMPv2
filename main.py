@@ -77,6 +77,26 @@ def _get_notifier():
     return TN
 # --- end telegram notifier helper ---
 
+def _get_logs_section(out: dict, section: str) -> dict:
+    """
+    Trích phần logs theo section ('WAIT' | 'AVOID' | ...) an toàn cho cả 2 dạng:
+    - dict: {"WAIT": {...}, "AVOID": {...}}
+    - list: [{"WAIT": {...}}, "reason1", ...]
+    """
+    logs = out.get("logs")
+    if isinstance(logs, dict):
+        sec = logs.get(section)
+        return sec if isinstance(sec, dict) else {}
+    if isinstance(logs, list):
+        for item in logs:
+            if isinstance(item, dict) and section in item and isinstance(item[section], dict):
+                return item[section]
+    return {}
+
+def _fallback_reasons(out: dict) -> list | None:
+    logs = out.get("logs")
+    return [x for x in logs if isinstance(x, str)] or None if isinstance(logs, list) else None
+
 def split_into_4_blocks(symbols: List[str]) -> List[List[str]]:
     """Stable split: [s[0], s[4], ...], [s[1], s[5], ...], ..."""
     return [symbols[i::4] for i in range(4)]
@@ -205,13 +225,16 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
             f"{(tp_str + ' ' + rr_str).strip()}".strip()
         )
     if dec == "WAIT":
-        wait_log = (out.get("logs", {}).get("WAIT", {}) or {})
-        miss = wait_log.get("missing")
+        wait_log = _get_logs_section(out, "WAIT")
+        miss = wait_log.get("missing") or wait_log.get("reasons")
         if miss is None:
-            miss = wait_log.get("reasons")
+            miss = _fallback_reasons(out)
         log.info(f"[{symbol}] WAIT missing={miss} have={_extract_evidence_ok(bundle)}")
     if dec == "AVOID":
-        reasons = (out.get("logs", {}).get("AVOID", {}).get("reasons"))
+        avoid_log = _get_logs_section(out, "AVOID")
+        reasons = avoid_log.get("reasons")
+        if reasons is None:
+            reasons = _fallback_reasons(out)
         log.info(f"[{symbol}] AVOID reasons={reasons}")
 
     # log JSON line
