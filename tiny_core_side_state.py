@@ -19,7 +19,7 @@ class SideCfg:
 
     # Tie handling
     tie_eps: float = 1e-6               # sai số tuyệt đối để coi như hoà
-    side_margin: float = 0.25          # yêu cầu chênh tối thiểu để chọn side
+    side_margin: float = 0.3          # yêu cầu chênh tối thiểu để chọn side
 
     # Retest score gates
     retest_long_threshold: float = 1.0
@@ -250,10 +250,7 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.reclaim_ok = reclaim_ok
     si.reclaim_side = reclaim_side
 
-    # retest hợp lệ khi pullback/throwback có tín hiệu
-    pbk_ok = bool(ev_pbk.get('ok')) if isinstance(ev_pbk, dict) else False
-    tb_ok  = bool(ev_tb.get('ok'))  if isinstance(ev_tb,  dict) else False
-    si.retest_ok = bool(pbk_ok or tb_ok)
+    si.retest_ok = bool(ev_pullback_ok or ev_throwback_ok)
     si.retest_zone_lo = retest_zone_lo
     si.retest_zone_hi = retest_zone_hi
     si.retest_zone_mid = retest_zone_mid
