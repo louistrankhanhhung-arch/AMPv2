@@ -129,13 +129,17 @@ def _tp_by_rr(entry: float, sl: float, side: str, targets: Tuple[float, ...]) ->
 # Collect side indicators từ features + evidence bundle
 # -------------------------------------------------------
 def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[str, Any], cfg: SideCfg) -> Any:
-    f1 = features_by_tf.get('1H', {}) or {}
-    f4 = features_by_tf.get('4H', {}) or {}
+    # Respect SideCfg timeframes: 1H trigger, 4H execution
+    tf_primary = getattr(cfg, "tf_primary", "1H")
+    tf_confirm = getattr(cfg, "tf_confirm", "4H")   # dùng như execution
+    f1 = features_by_tf.get(tf_primary, {}) or {}
+    f4 = features_by_tf.get(tf_confirm, {}) or {}
 
-    df1 = f1.get('df')
-    price = _price(df1)
-    atr = float(f1.get('volatility', {}).get('atr', 0.0) or 0.0)
-    natr = float(f1.get('volatility', {}).get('natr', 0.0) or 0.0)
+    # Price theo trigger; ATR/NATR theo execution để dựng SL/TP
+    df_trigger = f1.get('df')
+    price = _price(df_trigger)
+    atr  = float((f4.get('volatility', {}) or {}).get('atr', 0.0) or 0.0)
+    natr = float((f4.get('volatility', {}) or {}).get('natr', 0.0) or 0.0)
 
     # trend/momentum/volume phía 1H (đưa về sign)
     def _trend_dir_from_features(ff) -> int:
