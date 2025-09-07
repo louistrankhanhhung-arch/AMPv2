@@ -19,7 +19,7 @@ class SideCfg:
 
     # Tie handling
     tie_eps: float = 1e-6               # sai số tuyệt đối để coi như hoà
-    side_margin: float = 0.3          # yêu cầu chênh tối thiểu để chọn side
+    side_margin: float = 0.25          # yêu cầu chênh tối thiểu để chọn side
 
     # Retest score gates
     retest_long_threshold: float = 1.0
