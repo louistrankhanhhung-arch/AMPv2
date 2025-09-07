@@ -14,12 +14,12 @@ class SideCfg:
 
     # Regime thresholds (tinh chỉnh theo thị trường bạn chạy)
     bbw_squeeze_thr: float = 0.06       # range-like khi BBW dưới ngưỡng
-    adx_trend_thr: float = 18.0         # range-like khi ADX dưới ngưỡng
-    break_buffer_atr: float = 0.20      # buffer tính theo ATR quanh mốc break
+    adx_trend_thr: float = 20.0         # range-like khi ADX dưới ngưỡng
+    break_buffer_atr: float = 0.25      # buffer tính theo ATR quanh mốc break
 
     # Tie handling
     tie_eps: float = 1e-6               # sai số tuyệt đối để coi như hoà
-    side_margin: float = 0.25          # yêu cầu chênh tối thiểu để chọn side
+    side_margin: float = 0.3          # yêu cầu chênh tối thiểu để chọn side
 
     # Retest score gates
     retest_long_threshold: float = 1.0
