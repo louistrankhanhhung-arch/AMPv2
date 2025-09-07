@@ -28,6 +28,9 @@ class SideCfg:
     # TP ladder mặc định cho tính RR (fallback khi thiếu band)
     rr_targets: Tuple[float, float, float] = (1.2, 2.0, 3.0)
 
+    # Fallback proximity threshold for retest vs mid
+    retest_near_mid_atr: float = 1.2
+
     # Timeframes
     tf_primary: str = "1H"
     tf_confirm: str = "4H"
@@ -250,7 +253,26 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.reclaim_ok = reclaim_ok
     si.reclaim_side = reclaim_side
 
-    si.retest_ok = bool(ev_pullback_ok or ev_throwback_ok)
+    # Define PB/TB ok flags
+    ev_pullback_ok  = bool(ev_pbk.get('ok')) if isinstance(ev_pbk, dict) else False
+    ev_throwback_ok = bool(ev_tb.get('ok'))  if isinstance(ev_tb, dict) else False
+
+    # Near-mid check: require price close to zone mid within cfg.retest_near_mid_atr ATR
+    near_mid_ok = (retest_zone_mid is not None and atr == atr and abs(price - float(retest_zone_mid)) / max(atr, 1e-9) <= float(getattr(cfg, 'retest_near_mid_atr', 1.2)))
+
+    # Trend dir from features
+    tr = _trend_dir_from_features(f1)
+
+    # Reclaim side check
+    def _reclaim_side_ok(side: str) -> bool:
+        return bool(reclaim_ok and reclaim_side == side)
+
+    fallback_long_ok  = bool(near_mid_ok and (tr > 0 or _reclaim_side_ok('long')))
+    fallback_short_ok = bool(near_mid_ok and (tr < 0 or _reclaim_side_ok('short')))
+
+    # Final gate: PB/TB preferred; else allow fallback when conditions met
+    si.retest_ok = bool(ev_pullback_ok or ev_throwback_ok or fallback_long_ok or fallback_short_ok)
+    si.meta_gate = 'pb_tb' if (ev_pullback_ok or ev_throwback_ok) else ('fallback' if (fallback_long_ok or fallback_short_ok) else 'none')
     si.retest_zone_lo = retest_zone_lo
     si.retest_zone_hi = retest_zone_hi
     si.retest_zone_mid = retest_zone_mid
@@ -382,9 +404,11 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
             return "none_state", None, meta
 
         if diff > 0 and long_score >= cfg.retest_long_threshold:
+            meta['state_detail'] = 'retest_support'
             return "retest_support", "long", meta
 
         if diff < 0 and short_score >= cfg.retest_short_threshold:
+            meta['state_detail'] = 'retest_resistance'
             return "retest_resistance", "short", meta
 
     # --- 3) None ---
