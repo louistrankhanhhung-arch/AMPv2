@@ -99,6 +99,49 @@ def _extract_evidence_ok_detailed(bundle: dict):
             out.append(_fmt_ev_details(name, obj))
     return sorted(out)
 
+def _no_side_reason(meta, bundle):
+    """
+    Giải thích vì sao 'no_side':
+    - need_alignment_2of3: chưa đủ 2/3 phiếu cùng phía (trend/momentum/volume)
+    - need_tf_ready: thiếu điều kiện trend-follow sẵn sàng (tf_long/tf_short)
+    - need_state_gate(breakout|retest): chưa có cổng state (breakout|retest)
+    """
+    votes = meta.get("side_votes") or {}
+    def _sgn(x):
+        try:
+            x = float(x)
+        except Exception:
+            return 0
+        return 1 if x > 0 else (-1 if x < 0 else 0)
+    v = [_sgn(votes.get("trend", 0.0)),
+         _sgn(votes.get("momentum", 0.0)),
+         _sgn(votes.get("volume", 0.0))]
+    pos, neg = v.count(1), v.count(-1)
+    two_of_three = (pos >= 2 or neg >= 2)
+
+    tf_long  = bool(meta.get("tf_long"))
+    tf_short = bool(meta.get("tf_short"))
+
+    # check state gates from evidence bundle
+    ev = bundle.get("evidence", {}) if isinstance(bundle, dict) else {}
+    def _ok(name):
+        obj = ev.get(name) or {}
+        if isinstance(obj, dict):
+            return bool(obj.get("ok"))
+        return bool(getattr(obj, "ok", False))
+    has_brk = _ok("price_breakout") or _ok("price_breakdown")
+    has_rt  = _ok("pullback") or _ok("throwback")
+
+    if not two_of_three:
+        reason = "need_alignment_2of3"
+    elif not (tf_long or tf_short):
+        reason = "need_tf_ready"
+    elif not (has_brk or has_rt):
+        reason = "need_state_gate(breakout|retest)"
+    else:
+        reason = "unspecified"
+    return reason, has_brk, has_rt
+
 def _describe_missing_tags(missing, bundle: dict, wait_meta: dict | None = None):
     """Return list of missing tags with details if available."""
     if not isinstance(missing, (list, tuple)):
@@ -305,10 +348,6 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
             f"{(tp_str + ' ' + rr_str).strip()}".strip()
         )
     if dec == "WAIT":
-        logs = out.get("logs", {})
-        wait_log = {}
-        if isinstance(logs, dict):
-            wait_log = logs.get("WAIT", {}) or {}
         # --- WAIT branch logging (detail) ---
         miss = None
         wait_meta = {}
@@ -327,6 +366,15 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
         # In chi tiết missing/have
         miss_detail = _describe_missing_tags(miss, bundle, wait_meta)
         have_detail = _extract_evidence_ok_detailed(bundle)
+        # --- Giải thích 'no_side' nếu có ---
+        _has_no_side = False
+        if isinstance(miss_detail, list):
+            _has_no_side = any(str(x).startswith("no_side") or str(x) == "direction_undecided" for x in miss_detail)
+        elif isinstance(miss_detail, str):
+            _has_no_side = miss_detail.startswith("no_side") or miss_detail == "direction_undecided"
+        if _has_no_side:
+            _reason, _has_brk, _has_rt = _no_side_reason(wait_meta, bundle)
+            log.info(f"[{symbol}] WHY no_side: {_reason} votes={wait_meta.get('side_votes')} tf_long={wait_meta.get('tf_long')} tf_short={wait_meta.get('tf_short')} gates={{breakout:{_has_brk}, retest:{_has_rt}}}")
         log.info(f"[{symbol}] WAIT missing={miss_detail} have={have_detail}")
 
 
@@ -370,12 +418,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 side = (t.get("dir") or "").upper()
                 msg_id = t.get("message_id")
                 entry = float(t.get("entry") or 0.0)
-                def margin_pct(hit_price: float) -> float:
-                    if not entry: return 0.0
-                    if side == "LONG":
-                        return (hit_price - entry) / entry * 100.0
-                    else:
-                        return (entry - hit_price) / entry * 100.0
+                
                 # Đã hit rồi thì bỏ qua (idempotent)
                 hits = t.get("hits", {})
                 msg_id = t.get("message_id")
