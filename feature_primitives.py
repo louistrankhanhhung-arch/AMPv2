@@ -219,6 +219,7 @@ def compute_momentum(df: pd.DataFrame) -> Dict[str, Any]:
 def compute_volatility(df: pd.DataFrame, bbw_lookback: int = 50) -> Dict[str, Any]:
     atr = float(df['atr14'].iloc[-1]) if 'atr14' in df.columns else 0.0
     close_last = float(df['close'].iloc[-1]) if 'close' in df.columns and len(df) else float('nan')
+    close_last = float(df['close'].iloc[-1]) if 'close' in df.columns and len(df) else float('nan')
     natr = (atr / close_last) if (close_last and close_last != 0) else float('nan')
 
     if 'bb_width_pct' in df.columns and pd.notna(df['bb_width_pct'].iloc[-1]):
@@ -233,6 +234,7 @@ def compute_volatility(df: pd.DataFrame, bbw_lookback: int = 50) -> Dict[str, An
     bbw_last = float(bbw_series.iloc[-1]) if len(bbw_series) else 0.0
     squeeze = bool(bbw_last < bbw_med) if bbw_med > 0 else False
 
+    natr = (atr / close_last) if (isinstance(close_last, (int,float)) and close_last) else float('nan')
     return {"atr": atr, "natr": natr, "bbw_last": bbw_last, "bbw_med": bbw_med, "squeeze": squeeze}
 
 
