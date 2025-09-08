@@ -533,6 +533,24 @@ def build_setup(si: SI, state: str, side: Optional[str], cfg: SideCfg) -> Setup:
 # ---------------------------------------
 def decide_5_gates(state: str, side: Optional[str], setup: Setup, si: SI, cfg: SideCfg, meta: Dict[str, Any]) -> Decision:
     dec = Decision(state=state, side=side, setup=setup, meta=dict(meta))
+    # ---- enrich meta for detailed logging & guards ----
+    try:
+        regime = (_safe_get(si, "regime") or "normal")
+    except Exception:
+        regime = "normal"
+    liq_thr_map = {"low": 0.8, "normal": 0.6, "high": 0.5}
+    dec.meta["regime"] = regime
+    dec.meta["liq_thr"] = liq_thr_map.get(regime, 0.6)
+    # Side votes (numeric strengths; may be -1..+1 or scaled)
+    try:
+        dec.meta["side_votes"] = {
+            "trend":   float(_safe_get(si, "trend_strength", 0.0) or 0.0),
+            "momentum":float(_safe_get(si, "momo_strength", 0.0) or 0.0),
+            "volume":  float(_safe_get(si, "volume_tilt", 0.0) or 0.0),
+        }
+    except Exception:
+        dec.meta["side_votes"] = {}
+        
     reasons: List[str] = []
 
     # Guards theo adaptive
