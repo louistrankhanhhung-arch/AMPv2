@@ -569,6 +569,61 @@ def decide_5_gates(state: str, side: Optional[str], setup: Setup, si: SI, cfg: S
     if rr1 < 1.0:
         reasons.append("rr_too_low")
 
+    # ---------- Build rich 'missing_tags' for logging ----------
+    def _sgn(x: float) -> int:
+        if x > 0: return 1
+        if x < 0: return -1
+        return 0
+
+    missing_tags: List[str] = []
+    # 1) Direction diagnostics
+    t_strength = float(_safe_get(si, "trend_strength", 0.0) or 0.0)
+    m_strength = float(_safe_get(si, "momo_strength", 0.0) or 0.0)
+    v_tilt     = float(_safe_get(si, "volume_tilt", 0.0) or 0.0)
+    t_s, m_s, v_s = _sgn(t_strength), _sgn(m_strength), _sgn(v_tilt)
+    votes_sum = t_s + m_s + v_s
+    votes = {"trend": t_strength, "momentum": m_strength, "volume": v_tilt}
+    signs = {"trend": t_s, "momentum": m_s, "volume": v_s, "sum": votes_sum}
+    dec.meta["side_votes"] = votes
+    dec.meta["side_vote_signs"] = signs
+
+    if side is None:
+        # Không đủ đồng thuận về hướng
+        missing_tags.append("direction_undecided")
+        # Thiếu/điểm yếu từng thành phần
+        if t_s == 0: missing_tags.append("trend")
+        if m_s == 0: missing_tags.append("momentum")
+        if v_s == 0: missing_tags.append("volume")
+        # Mâu thuẫn (không >= 2/3 cùng phía)
+        nonzero = [s for s in (t_s, m_s, v_s) if s != 0]
+        if not (len(nonzero) >= 2 and (nonzero.count(1) >= 2 or nonzero.count(-1) >= 2)):
+            missing_tags.append("alignment_2of3")
+
+    # 2) State-gate style requirements (generic, an toàn)
+    if not bool(_safe_get(si, "retest_ok", False)):
+        missing_tags.append("(pullback OR throwback)")
+    if (not bool(_safe_get(si, "breakout_ok", False))) and (not bool(_safe_get(si, "reclaim_ok", False))):
+        missing_tags.append("(breakout OR reclaim)")
+    if (not bool(_safe_get(si, "bb_expanding_ok", False))) and (not bool(_safe_get(si, "volatility_breakout_ok", False))):
+        missing_tags.append("(bb_expanding OR vol_impulse)")
+
+    # 3) Guards/filters hữu ích để nhìn thấy ngay trên log
+    if bool(_safe_get(si, "is_slow", False)):
+        missing_tags.append("slow_market")
+    if bool(_safe_get(si, "near_heavy_zone", False)) or (not bool(_safe_get(si, "hvn_ok", True))):
+        missing_tags.append("near_heavy_zone")
+    if setup.entry is None or setup.sl is None:
+        missing_tags.append("incomplete_setup")
+    if _safe_get(si, "price") is None:
+        missing_tags.append("no_price")
+    if float(_safe_get(si, "atr", 0.0) or 0.0) <= 0:
+        missing_tags.append("no_atr")
+
+    # Gộp một số 'reasons' quan trọng vào missing để hiển thị (tránh trùng)
+    for r in ("far_from_entry", "rr_too_low"):
+        if r in reasons and r not in missing_tags:
+            missing_tags.append(r)
+    dec.meta["missing_tags"] = sorted(set(missing_tags))
     # Tổng hợp quyết định
     if not reasons:
         dec.decision = "ENTER"
