@@ -264,6 +264,9 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
 
     si.div_side = div_side
     si.rejection_side = rejection_side
+    # adaptive guards from evidence
+    si.is_slow = bool(ev_adapt.get('is_slow')) if isinstance(ev_adapt, dict) else False
+    si.liquidity_floor = float(ev_adapt.get('liquidity_floor', 0.0)) if isinstance(ev_adapt, dict) else 0.0
 
     si.false_break_long = false_break_long
     si.false_break_short = false_break_short
