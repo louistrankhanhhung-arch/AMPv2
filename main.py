@@ -212,6 +212,8 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
         miss = None
         if isinstance(wait_log, dict):
             miss = wait_log.get("missing") or wait_log.get("reasons")
+        if miss is None:
+            miss = out.get("reasons")
         log.info(f"[{symbol}] WAIT missing={miss} have={_extract_evidence_ok(bundle)}")
 
     # log JSON line
