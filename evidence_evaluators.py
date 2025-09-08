@@ -326,7 +326,7 @@ def ev_candles(candles: Dict[str, Any], side: Optional[str] = None) -> Dict[str,
     elif side == 'short':
         ok = bool(candles.get('bearish_engulf') or candles.get('bearish_pin'))
         if candles.get('bearish_engulf'): why.append('bearish_engulf')
-        if candles.get('bearish_pin'): why.append('bearish_pin')
+        if candles.get('bearish_pin'):    why.append('bearish_pin')
     else:
         ok = any(bool(v) for v in candles.values()); why = [k for k,v in candles.items() if v]
     return {"ok": bool(ok), "score": 0.6 if ok else 0.0, "why": ",".join(why), "missing": [] if ok else ["candle"]}
