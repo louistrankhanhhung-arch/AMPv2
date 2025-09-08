@@ -17,6 +17,10 @@ class SideCfg:
     adx_trend_thr: float = 25.0         # range-like khi ADX dưới ngưỡng
     break_buffer_atr: float = 0.3      # buffer tính theo ATR quanh mốc break
 
+    # Guards cho BREAK theo biến động tương đối (NATR) – 4H/execution
+    natr_break_min: float = 0.004      # ~0.4%
+    natr_break_max: float = 0.060      # ~6% (quá cao -> dễ whipsaw/chasing)
+
     # Tie handling
     tie_eps: float = 1e-6               # sai số tuyệt đối để coi như hoà
     side_margin: float = 0.5         # yêu cầu chênh tối thiểu để chọn side
@@ -187,6 +191,8 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     # Lấy evidences chính
     ev_pb  = _get_ev(eb, 'price_breakout')
     ev_pdn = _get_ev(eb, 'price_breakdown')
+    ev_volb = _get_ev(eb, 'volatility_breakout')
+    ev_bb   = _get_ev(eb, 'bb_expanding')
     ev_prc = _get_ev(eb, 'price_reclaim')
     ev_mr  = _get_ev(eb, 'mean_reversion')
     ev_div = _get_ev(eb, 'divergence')
@@ -200,6 +206,12 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     # breakout flags
     breakout_ok = bool(ev_pb.get('ok') or ev_pdn.get('ok'))
     breakout_side = 'long' if ev_pb.get('ok') else ('short' if ev_pdn.get('ok') else None)
+    # ref levels để set entry/SL cho BREAK
+    break_level = None; break_buffer = None
+    if breakout_side == 'long' and isinstance(ev_pb.get('ref'), dict):
+        break_level = ev_pb['ref'].get('hh'); break_buffer = ev_pb['ref'].get('buffer')
+    if breakout_side == 'short' and isinstance(ev_pdn.get('ref'), dict):
+        break_level = ev_pdn['ref'].get('ll'); break_buffer = ev_pdn['ref'].get('buffer')
 
     # reclaim
     reclaim_ok = bool(ev_prc.get('ok'))
@@ -264,6 +276,14 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
 
     si.breakout_ok = breakout_ok
     si.breakout_side = breakout_side
+    si.break_level = float(break_level) if break_level is not None else None
+    si.break_buffer = float(break_buffer) if break_buffer is not None else None
+    si.bb_expanding_ok = bool(ev_bb.get('ok'))
+    si.volatility_breakout_ok = bool(ev_volb.get('ok'))
+    # Volume regime flags từ 1H features
+    vol1 = (f1.get('volume', {}) or {})
+    si.vol_break_ok = bool(vol1.get('break_vol_ok'))
+    si.vol_break_strong = bool(vol1.get('break_vol_strong'))
 
     si.reclaim_ok = reclaim_ok
     si.reclaim_side = reclaim_side
@@ -330,9 +350,24 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
     vdir = _volume_dir(si)
     meta.update(dict(natr=natr, dist_atr=dist_atr, trend=tr, momo=momo, v=vdir))
 
-    # --- 1) Breakout/breakdown regime-aware ---
+    # --- 1) BREAK regime (trend_break) có guard NATR & volume ---
     if _safe_get_local(si, "breakout_ok", False) and _safe_get_local(si, "breakout_side") in ("long", "short"):
-        pass  # placeholder (điểm phân xử chính ở retest/score)
+        side_b = _safe_get_local(si, "breakout_side")
+        # 4H NATR guard
+        if math.isfinite(natr):
+            if not (cfg.natr_break_min <= natr <= cfg.natr_break_max):
+                return "none_state", None, meta
+        # Volume & expansion guards
+        vol_ok = bool(_safe_get_local(si, "vol_break_ok", False) or _safe_get_local(si, "vol_break_strong", False))
+        exp_ok = bool(_safe_get_local(si, "bb_expanding_ok", False) or _safe_get_local(si, "volatility_breakout_ok", False))
+        if not (vol_ok and exp_ok):
+            return "none_state", None, meta
+        # Trend/momentum alignment với hướng break
+        if side_b == "long" and not (tr > 0 and momo >= 0):
+            return "none_state", None, meta
+        if side_b == "short" and not (tr < 0 and momo <= 0):
+            return "none_state", None, meta
+        return "trend_break", side_b, meta
 
     # --- 2) Retest regime (support vs resistance) với soft scoring ---
     if _safe_get_local(si, "retest_ok", False):
@@ -444,24 +479,38 @@ def build_setup(si: SI, state: str, side: Optional[str], cfg: SideCfg) -> Setup:
     if price is None or atr <= 0 or side not in ("long","short"):
         return st  # thiếu dữ liệu → setup rỗng
 
-    # Entry: ưu tiên mid của retest zone nếu có, else giá hiện tại
-    z_mid = _safe_get(si, "retest_zone_mid")
-    st.entry = float(z_mid if z_mid is not None else price)
+    # Entry:
+    if state == "trend_break":
+        lvl = _safe_get(si, "break_level")
+        buf = float(_safe_get(si, "break_buffer", 0.0) or 0.0)
+        if side == "long":
+            ref = (lvl + (buf or 0.0)) if lvl is not None else price
+            st.entry = float(max(price, ref))
+            st.sl = float((lvl - 0.6 * atr) if lvl is not None else (st.entry - 0.8 * atr))
+        else:
+            ref = (lvl - (buf or 0.0)) if lvl is not None else price
+            st.entry = float(min(price, ref))
+            st.sl = float((lvl + 0.6 * atr) if lvl is not None else (st.entry + 0.8 * atr))
+    else:
+        # RETEST: ưu tiên mid
+        z_mid = _safe_get(si, "retest_zone_mid")
+        st.entry = float(z_mid if z_mid is not None else price)
 
     # SL: nếu có zone_lo/hi dùng làm mốc, có pad nhỏ; else dùng ATR
-    z_lo = _safe_get(si, "retest_zone_lo")
-    z_hi = _safe_get(si, "retest_zone_hi")
-    pad = 0.1 * atr
-    if side == "long":
-        if z_lo is not None:
-            st.sl = float(z_lo - pad)
-        else:
-            st.sl = float(st.entry - 0.8 * atr)
-    else:
-        if z_hi is not None:
-            st.sl = float(z_hi + pad)
-        else:
-            st.sl = float(st.entry + 0.8 * atr)
+    if state != "trend_break":
+        z_lo = _safe_get(si, "retest_zone_lo")
+        z_hi = _safe_get(si, "retest_zone_hi")
+        pad = 0.1 * atr
+        if side == "long":
+            if z_lo is not None:
+                st.sl = float(z_lo - pad)
+            else:
+                st.sl = float(st.entry - 0.8 * atr)
+        elif side == "short":
+            if z_hi is not None:
+                st.sl = float(z_hi + pad)
+            else:
+                st.sl = float(st.entry + 0.8 * atr)
 
     # enforce SL gap theo ATR
     st.sl = _ensure_sl_gap(st.entry, st.sl, atr, side, min_atr=0.6)
