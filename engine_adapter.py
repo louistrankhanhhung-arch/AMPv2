@@ -113,9 +113,9 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     f_tp2   = _fmt(tp2, dp) if tp2 is not None else None
     f_tp3   = _fmt(tp3, dp) if tp3 is not None else None
 
-    # legacy logs list (append a single concise line)
-    logs = []
-    logs.append(
+    # legacy log line(s) — keep for backward-compat printing
+    legacy_lines = []
+    legacy_lines.append(
         " ".join(
             [
                 f"[{symbol}]",
@@ -165,12 +165,20 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
                 f"RR1: {rr1:.1f}" if rr1 is not None else "",
             ]
         ).strip()
-    # giữ logs là list; chẩn đoán thêm lưu vào biến riêng (tuỳ dùng)
-    state_log_meta = {
-        "ENTER": {"state_meta": dec.meta} if dec.decision == "ENTER" else {},
-        "WAIT":  (
-            {"missing": dec.reasons, "reasons": dec.reasons, "state_meta": dec.meta}
-            if dec.decision != "ENTER" else {}
+    # Chuẩn hoá logs cho main.py:
+    # - Giữ legacy text trong logs["TEXT"] (list)
+    # - Cung cấp cấu trúc cho WAIT/ENTER để main.py lấy missing/reasons
+    logs: Dict[str, Any] = {
+        "TEXT": legacy_lines,
+        "ENTER": {"state_meta": dec.meta} if decision == "ENTER" else {},
+        "WAIT": (
+            {
+                "missing": list(dec.reasons or []),
+                "reasons": list(dec.reasons or []),
+                "state_meta": dec.meta,
+            }
+            if decision != "ENTER"
+            else {}
         ),
         "AVOID": {},
     }
@@ -191,6 +199,7 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         "decision": decision,
         "plan": plan,
         "logs": logs,
+        "reasons": list(dec.reasons or []),  # tiện lợi, phòng khi caller cần
         "notes": notes,
         "headline": headline,
         "telegram_signal": telegram_signal,
