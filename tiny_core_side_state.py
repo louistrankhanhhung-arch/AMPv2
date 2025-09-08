@@ -159,7 +159,7 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     def _vol_dir_from_features(ff) -> int:
         vol = (ff.get('volume', {}) or {})
         vz = float(vol.get('vol_z20', 0.0) or 0.0)
-        vr = float(vol.get('vol_ratio', 1.0) or 1.0)   # ✅ đúng key
+        vr = float((ff.get('volume', {}) or {}).get('vol_ratio', 1.0) or 1.0)
         contraction = bool(vol.get('contraction', False))
         strong = bool(vol.get('break_vol_strong', False))
         ok = bool(vol.get('break_vol_ok', False))
@@ -202,6 +202,7 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     ev_fb_out = _get_ev(eb, 'false_breakout')
     ev_fb_dn  = _get_ev(eb, 'false_breakdown')
     ev_adapt  = _get_ev(eb, 'adaptive')  # meta: is_slow, liquidity_floor, regime ...
+    ev_liq    = _get_ev(eb, 'liquidity')  # HVN guard (near heavy zone)
 
     # breakout flags
     breakout_ok = bool(ev_pb.get('ok') or ev_pdn.get('ok'))
@@ -311,7 +312,13 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.is_slow = bool(ev_adapt.get('is_slow', False)) if isinstance(ev_adapt, dict) else False
     si.liquidity_floor = bool(ev_adapt.get('liquidity_floor', False)) if isinstance(ev_adapt, dict) else False
     si.regime = (ev_adapt.get('regime') if isinstance(ev_adapt, dict) else None) or 'normal'
-
+    # HVN guard flag from evidence
+    try:
+        si.near_heavy_zone = bool(ev_liq.get('near_heavy_zone', False)) if isinstance(ev_liq, dict) else False
+        si.hvn_ok = bool(ev_liq.get('ok', True)) if isinstance(ev_liq, dict) else True
+    except Exception:
+        si.near_heavy_zone = False
+        si.hvn_ok = True
     return si
 
 
@@ -533,6 +540,10 @@ def decide_5_gates(state: str, side: Optional[str], setup: Setup, si: SI, cfg: S
         reasons.append("liquidity_floor")
     if _safe_get(si, "is_slow", False):
         reasons.append("slow_market")
+
+    # HVN: near heavy volume profile zone blocks entries
+    if _safe_get(si, "near_heavy_zone", False) or (not _safe_get(si, "hvn_ok", True)):
+        reasons.append("near_heavy_zone")
 
     # Thiếu dữ liệu thiết yếu?
     price = _safe_get(si, "price")
