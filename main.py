@@ -38,6 +38,106 @@ log = logging.getLogger("worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
                     format="%(asctime)s %(levelname)s %(message)s")
 
+# -------- helper: evidence detail formatting ----------
+def _fmt_float(x, nd=2):
+    try:
+        xf = float(x)
+        if not (xf == xf):  # NaN
+            return "nan"
+        return f"{xf:.{nd}f}"
+    except Exception:
+        return str(x)
+
+def _fmt_ev_details(name: str, obj: dict) -> str:
+    # Generic pretty-printer for an evidence dict
+    if not isinstance(obj, dict):
+        try:
+            obj = obj.__dict__
+        except Exception:
+            obj = {}
+    parts = []
+    # common numeric fields
+    for k in ("vol_ratio","vol_z20","grade","bbw_last","bbw_med","atr","ema_spread","distance","mid","nearest_zone_mid"):
+        if k in obj and obj.get(k) is not None:
+            v = obj.get(k)
+            parts.append(f"{k}={_fmt_float(v) if isinstance(v,(int,float)) else v}")
+    # side/why if helpful
+    if obj.get("side") in ("long","short"):
+        parts.append(f"side={obj.get('side')}")
+    if obj.get("why"):
+        w = str(obj.get("why"))
+        if len(w) > 60:
+            w = w[:60] + "…"
+        parts.append(f"why={w}")
+    if obj.get("near_heavy_zone") is not None:
+        parts.append(f"near_hvn={bool(obj.get('near_heavy_zone'))}")
+    return f"{name}{{{', '.join(parts)}}}" if parts else name
+
+def _extract_evidence_ok_detailed(bundle: dict):
+    """Return list of 'have' evidences with key metrics for logging."""
+    try:
+        ev = bundle.get('evidence', {}) if isinstance(bundle, dict) else {}
+    except Exception:
+        ev = {}
+    out = []
+    for name, obj in (ev or {}).items():
+        # handle nested dict for 'trend_follow_ready'
+        if name == "trend_follow_ready" and isinstance(obj, dict):
+            for s in ("long","short"):
+                o = obj.get(s) or {}
+                ok = bool(o.get("ok")) if isinstance(o, dict) else bool(getattr(o, "ok", False))
+                if ok:
+                    out.append(_fmt_ev_details(f"{name}:{s}", o if isinstance(o, dict) else o.__dict__))
+            continue
+        ok = False
+        if isinstance(obj, dict):
+            ok = bool(obj.get('ok'))
+        else:
+            ok = bool(getattr(obj, 'ok', False))
+            obj = getattr(obj, '__dict__', {}) or {}
+        if ok:
+            out.append(_fmt_ev_details(name, obj))
+    return sorted(out)
+
+def _describe_missing_tags(missing, bundle: dict, wait_meta: dict | None = None):
+    """Return list of missing tags with details if available."""
+    if not isinstance(missing, (list, tuple)):
+        return missing
+    ev = bundle.get('evidence', {}) if isinstance(bundle, dict) else {}
+    meta = wait_meta or {}
+    out = []
+    def pick(*names):
+        for nm in names:
+            o = ev.get(nm)
+            if isinstance(o, dict):
+                return o
+        return {}
+    for tag in missing:
+        t = str(tag)
+        if t == "liquidity_floor":
+            vol = pick("volume")
+            vr = vol.get("vol_ratio"); vz = vol.get("vol_z20")
+            reg = meta.get("regime") or "normal"
+            thr = meta.get("liq_thr") or (0.6 if reg == "normal" else (0.8 if reg == "low" else 0.5))
+            out.append(f"liquidity_floor{{ratio={_fmt_float(vr)}, z={_fmt_float(vz)}, thr={_fmt_float(thr)}, regime={reg}}}")
+        elif t in ("no_side","direction_undecided"):
+            tf = ev.get("trend_follow_ready") or {}
+            tfl = (tf.get("long") or {}).get("ok")
+            tfs = (tf.get("short") or {}).get("ok")
+            ta = ev.get("trend_alignment") or {}
+            vol = ev.get("volume") or {}
+            votes = meta.get("side_votes") or {}
+            out.append(
+                f"{t}{{tf_long={bool(tfl)}, tf_short={bool(tfs)}, trend_ok={bool(ta.get('ok'))}, vol_grade={(vol.get('grade') or '')}, votes={{{', '.join([f'{k}={_fmt_float(v)}' for k,v in votes.items()])}}}}}"
+            )
+        elif t in ("near_heavy_zone","hvn_guard"):
+            liq = ev.get("liquidity") or {}
+            out.append(_fmt_ev_details("near_heavy_zone", liq))
+        elif t in ("rr_too_low","far_from_entry","incomplete_setup"):
+            out.append(t)
+        else:
+            out.append(t)
+    return out
 # -------- helper: list evidences that are OK ----------
 def _extract_evidence_ok(bundle: dict):
     """
@@ -209,12 +309,26 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
         wait_log = {}
         if isinstance(logs, dict):
             wait_log = logs.get("WAIT", {}) or {}
+        # --- WAIT branch logging (detail) ---
         miss = None
-        if isinstance(wait_log, dict):
-            miss = wait_log.get("missing") or wait_log.get("reasons")
+        wait_meta = {}
+        
+        logs = out.get("logs")
+        if isinstance(logs, dict):
+            wait_log = logs.get("WAIT") or {}
+            if isinstance(wait_log, dict):
+                miss = wait_log.get("missing") or wait_log.get("reasons")
+                wait_meta = wait_log.get("state_meta") or {}
+        
+        # Fallback khi WAIT không có missing/reasons
         if miss is None:
             miss = out.get("reasons")
-        log.info(f"[{symbol}] WAIT missing={miss} have={_extract_evidence_ok(bundle)}")
+        
+        # In chi tiết missing/have
+        miss_detail = _describe_missing_tags(miss, bundle, wait_meta)
+        have_detail = _extract_evidence_ok_detailed(bundle)
+        log.info(f"[{symbol}] WAIT missing={miss_detail} have={have_detail}")
+
 
     # log JSON line
     # --- post teaser to Telegram Channel when ENTER ---
