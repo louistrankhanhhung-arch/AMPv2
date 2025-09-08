@@ -14,7 +14,7 @@ class SideCfg:
 
     # Regime thresholds (tinh chỉnh theo thị trường bạn chạy)
     bbw_squeeze_thr: float = 0.06       # range-like khi BBW dưới ngưỡng
-    adx_trend_thr: float = 20.0         # range-like khi ADX dưới ngưỡng
+    adx_trend_thr: float = 25.0         # range-like khi ADX dưới ngưỡng
     break_buffer_atr: float = 0.25      # buffer tính theo ATR quanh mốc break
 
     # Tie handling
