@@ -117,6 +117,8 @@ def _slow_market_guards(bbw_now: float, bbw_med: float,
     liq = (float(vol_now) / vol_med) if vol_med > 0 else np.nan
     is_slow = (regime == "low") and (vov < 0.8 if np.isfinite(vov) else False)
     liq_floor = (liq < 0.7) if np.isfinite(liq) else False
+    liq_thr = 0.8 if regime == 'low' else (0.5 if regime == 'high' else 0.6)
+    liq_floor = (liq < liq_thr) if np.isfinite(liq) else False
     return {
         "regime": regime,
         "vol_of_vol": float(vov) if np.isfinite(vov) else None,
