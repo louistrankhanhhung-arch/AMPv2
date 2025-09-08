@@ -760,12 +760,29 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     atr_series = df1['atr14'] if (df1 is not None and 'atr14' in df1) else None
     ev_volb = ev_volatility_breakout(f1.get('volume', {}), bbw1, bbw1_med, atr1, atr_series=atr_series)
 
+    # ---- enrich 'volume' to expose numeric fields at top-level for logging ----
+    vol_now_safe = float(vol_now) if np.isfinite(vol_now) else None
+    vol_med_safe = float(vol_med) if np.isfinite(vol_med) else None
+    vol_ratio_1h = float(ev_vol_1h.get('vol_ratio')) if isinstance(ev_vol_1h, dict) and ev_vol_1h.get('vol_ratio') is not None else None
+    vol_z20_1h   = float(ev_vol_1h.get('vol_z20'))   if isinstance(ev_vol_1h, dict) and ev_vol_1h.get('vol_z20')   is not None else None
+    vol_grade_1h = (ev_vol_1h.get('grade') if isinstance(ev_vol_1h, dict) else None) or ""
+
     evidences = {
         'price_breakout': ev_pb,
         'price_breakdown': ev_pdn,
         'price_reclaim': ev_prc,
         'sideways': ev_sdw,
-        'volume': {'primary': ev_vol_1h, 'confirm': ev_vol_4h, 'ok': vol_ok},
+        # expose primary/confirm plus summary fields for main logger
+        'volume': {
+            'primary': ev_vol_1h,
+            'confirm': ev_vol_4h,
+            'ok': bool(vol_ok),
+            'vol_now': vol_now_safe,
+            'vol_med': vol_med_safe,
+            'vol_ratio': vol_ratio_1h,
+            'vol_z20': vol_z20_1h,
+            'grade': vol_grade_1h,
+        },
         'momentum': {'primary': ev_mom_1h},
         'trend_alignment': ev_tr,
         'candles': ev_cdl,
