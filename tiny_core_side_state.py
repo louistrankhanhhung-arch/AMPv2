@@ -19,7 +19,7 @@ class SideCfg:
 
     # Tie handling
     tie_eps: float = 1e-6               # sai số tuyệt đối để coi như hoà
-    side_margin: float = 1.0           # yêu cầu chênh tối thiểu để chọn side
+    side_margin: float = 0.75         # yêu cầu chênh tối thiểu để chọn side
 
     # Retest score gates
     retest_long_threshold: float = 1.25
@@ -254,7 +254,9 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.reclaim_ok = reclaim_ok
     si.reclaim_side = reclaim_side
 
-    si.retest_ok = True
+    # RETEST chỉ bật khi có throwback/pullback hợp lệ
+    si.retest_ok = bool((ev_pbk.get('ok') if isinstance(ev_pbk, dict) else False) or
+                        (ev_tb.get('ok')  if isinstance(ev_tb,  dict) else False))
     si.retest_zone_lo = retest_zone_lo
     si.retest_zone_hi = retest_zone_hi
     si.retest_zone_mid = retest_zone_mid
@@ -319,9 +321,13 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         pass  # placeholder (điểm phân xử chính ở retest/score)
 
     # --- 2) Retest regime (support vs resistance) với soft scoring ---
-    if _safe_get_local(si, "retest_ok", True):
+    if _safe_get_local(si, "retest_ok", False):
         long_score = 0.0
         short_score = 0.0
+        # Proximity gate: chỉ xét RETEST nếu gần mid
+        dist_atr = float(_safe_get_local(si, "dist_atr", float("nan")))
+        if not (math.isfinite(dist_atr) and dist_atr <= 0.75):
+            return "none_state", None, meta
 
         # Context signals
         if tr > 0:
@@ -343,10 +349,12 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         # Vị trí so với zone
         zone_mid = _safe_get_local(si, "retest_zone_mid")
         price = _safe_get_local(si, "price")
-        if zone_mid is not None and price is not None:
-            if price <= zone_mid:
+        atr   = float(_safe_get_local(si, "atr", 0.0) or 0.0)
+        if zone_mid is not None and price is not None and atr > 0:
+            buf = 0.05 * atr
+            if price <= zone_mid - buf:
                 long_score += 0.5  # gần hỗ trợ/mean
-            if price >= zone_mid:
+            elif price >= zone_mid + buf:
                 short_score += 0.5  # gần kháng cự/mean
 
         # Volume tilt (bonus nếu cùng hướng)
@@ -363,9 +371,18 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
                 short_score += 0.5
 
         # False-break nghiêng mạnh về retest ngược hướng break
-        if _safe_get_local(si, "false_break_long", False):
+        fbl = bool(_safe_get_local(si, "false_break_long", False))
+        fbs = bool(_safe_get_local(si, "false_break_short", False))
+        rcl = (_safe_get_local(si, "reclaim_side") == "long")
+        rcs = (_safe_get_local(si, "reclaim_side") == "short")
+        # Giảm stack khi cùng phía (reclaim + false-break)
+        if fbl and rcl:
+            long_score += 0.5
+        elif fbl:
             long_score += 0.75
-        if _safe_get_local(si, "false_break_short", False):
+        if fbs and rcs:
+            short_score += 0.5
+        elif fbs:
             short_score += 0.75
 
         # Rejection & divergence (nghiêng nhẹ)
@@ -383,15 +400,19 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
 
         meta.update(dict(long_score=long_score, short_score=short_score))
 
+        # Yêu cầu tối thiểu 1 major-evidence để tránh RETEST “trôi”
+        major_long  = int((tr > 0 and momo > 0)) + int(rcl) + int(fbl)
+        major_short = int((tr < 0 and momo < 0)) + int(rcs) + int(fbs)
+
         # Tie & margin policy:
         diff = long_score - short_score
         if abs(diff) <= cfg.tie_eps or abs(diff) < cfg.side_margin:
             return "none_state", None, meta
 
-        if diff > 0 and long_score >= cfg.retest_long_threshold:
+        if diff > 0 and long_score >= cfg.retest_long_threshold and major_long >= 1:
             return "retest_support", "long", meta
 
-        if diff < 0 and short_score >= cfg.retest_short_threshold:
+        if diff < 0 and short_score >= cfg.retest_short_threshold and major_short >= 1:
             return "retest_resistance", "short", meta
 
     # --- 3) None ---
