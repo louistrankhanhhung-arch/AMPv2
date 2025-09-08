@@ -154,7 +154,7 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
 
     def _vol_dir_from_features(ff) -> int:
         vz = float((ff.get('volume', {}) or {}).get('vol_z20', 0.0) or 0.0)
-        vr = float((ff.get('volume', {}) or {}).get('ratio', 1.0) or 1.0)
+        vr = float((ff.get('volume', {}) or {}).get('vol_ratio', 1.0) or 1.0)
         s = 0
         if vz > 0: s += 1
         if vr > 1.0: s += 1
