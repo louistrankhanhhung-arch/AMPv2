@@ -190,11 +190,14 @@ def compute_volume_features(df: pd.DataFrame) -> Dict[str, Any]:
     v20 = float(df['vol_sma20'].iloc[-1]) if 'vol_sma20' in df.columns else v20 if 'v20' in locals() else v10
 
     contraction = (v5 < v10) and (v10 < v20)
+    now = float(df['volume'].iloc[-1]) if len(df) else 0.0
+    median = float(df['volume'].tail(20).median()) if len(df) else 0.0
 
     return {
         "vol_ratio": vr,
         "vol_z20": vz,
         "v3": v3, "v5": v5, "v10": v10, "v20": v20,
+        "now": now, "median": median,
         "contraction": bool(contraction),
         "break_vol_ok": bool((vr >= 1.5) or (vz >= 1.0)),
         "break_vol_strong": bool((vr >= 2.0) or (vz >= 2.0)),
@@ -218,7 +221,6 @@ def compute_momentum(df: pd.DataFrame) -> Dict[str, Any]:
 
 def compute_volatility(df: pd.DataFrame, bbw_lookback: int = 50) -> Dict[str, Any]:
     atr = float(df['atr14'].iloc[-1]) if 'atr14' in df.columns else 0.0
-    close_last = float(df['close'].iloc[-1]) if 'close' in df.columns and len(df) else float('nan')
     close_last = float(df['close'].iloc[-1]) if 'close' in df.columns and len(df) else float('nan')
     natr = (atr / close_last) if (close_last and close_last != 0) else float('nan')
 
