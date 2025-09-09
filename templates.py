@@ -57,9 +57,6 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
         f"<b>TP1:</b> {tp1}",
         f"<b>TP2:</b> {tp2}",
         f"<b>TP3:</b> {tp3}",
-        "",  # dòng trống sau block TP
-        
-        f"<b>R:R:</b> {rr_txt}{hint}",
     ]
 
     if watermark and username:
