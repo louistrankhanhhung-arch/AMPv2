@@ -483,7 +483,7 @@ def ev_pullback_valid(df: pd.DataFrame, swings: Dict[str, Any], atr: float, mom:
             inside = False
         if not ok and inside:
             center = ema20 if np.isfinite(ema20) else bb_mid
-            if np.isfinite(center) and abs(current - center) <= 0.6 * atr:
+            if np.isfinite(center) and abs(current - center) <= ((0.6 if _atr_regime(df).get('regime','normal') in ('low','normal') else 1.0) * atr):
                 ok = True
         ema20 = float(df['ema20'].iloc[-1]) if 'ema20' in df.columns else float('nan')
         bb_mid = float(df['bb_mid'].iloc[-1]) if 'bb_mid' in df.columns else float('nan')
@@ -504,7 +504,7 @@ def ev_pullback_valid(df: pd.DataFrame, swings: Dict[str, Any], atr: float, mom:
             inside = False
         if not ok and inside:
             center = ema20 if np.isfinite(ema20) else bb_mid
-            if np.isfinite(center) and abs(current - center) <= 0.6 * atr:
+            if np.isfinite(center) and abs(current - center) <= ((0.6 if _atr_regime(df).get('regime','normal') in ('low','normal') else 1.0) * atr):
                 ok = True
         ema20 = float(df['ema20'].iloc[-1]) if 'ema20' in df.columns else float('nan')
         bb_mid = float(df['bb_mid'].iloc[-1]) if 'bb_mid' in df.columns else float('nan')
@@ -841,7 +841,7 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     ev_volb = ev_volatility_breakout(f1.get('volume', {}), bbw1, bbw1_med, atr1, atr_series=atr_series)
 
     # ---- enrich 'volume' to expose numeric fields at top-level for logging ----
-    vol_now_safe = float(vol_now) if np.isfinite(vol_now) else None
+    vol_now_safe = float(vol_now_eff) if np.isfinite(vol_now_eff) else None
     vol_med_safe = float(vol_med) if np.isfinite(vol_med) else None
     vol_ratio_1h = float(ev_vol_1h.get('vol_ratio')) if isinstance(ev_vol_1h, dict) and ev_vol_1h.get('vol_ratio') is not None else None
     vol_z20_1h   = float(ev_vol_1h.get('vol_z20'))   if isinstance(ev_vol_1h, dict) and ev_vol_1h.get('vol_z20')   is not None else None
