@@ -823,7 +823,7 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     if elapsed_frac <= grace_frac:
         # Lấy volume nến 1H đã đóng gần nhất làm “điểm tựa”
         try:
-            prev_closed_vol = float(df1['volume'].iloc[-1]) if (df1 is not None and len(df1)>0) else vol_now_raw
+            prev_closed_vol = float(_get_last_closed_bar(df1)['volume']) if (df1 is not None and len(df1)>0) else vol_now_raw
         except Exception:
             prev_closed_vol = vol_now_raw
         # Dùng max để không làm giảm volume nếu vol_now đã lớn
