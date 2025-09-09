@@ -106,6 +106,7 @@ def _no_side_reason(meta, bundle):
     - need_tf_ready: thiếu điều kiện trend-follow sẵn sàng (tf_long/tf_short)
     - need_state_gate(breakout|retest): chưa có cổng state (breakout|retest)
     """
+    ev = bundle.get('evidence', {}) if isinstance(bundle, dict) else {}
     votes = meta.get("side_votes") or {}
     def _sgn(x):
         try:
