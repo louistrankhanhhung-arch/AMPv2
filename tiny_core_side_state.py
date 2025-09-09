@@ -20,6 +20,9 @@ class SideCfg:
     # Guards cho BREAK theo biến động tương đối (NATR) – 4H/execution
     natr_break_min: float = 0.004      # ~0.4%
     natr_break_max: float = 0.060      # ~6% (quá cao -> dễ whipsaw/chasing)
+    # Early-breakout / continuation gate
+    early_breakout_ok: bool = True
+    early_breakout_natr_max: float = 0.012  # <= ~1.2% coi là low-vol
 
     # Early breakout option: allow break without volume/exp when NATR is low
     early_breakout_ok: bool = True
@@ -44,6 +47,12 @@ class SideCfg:
     # Timeframes
     tf_primary: str = "1H"
     tf_confirm: str = "4H"
+
+    # Proximity thresholds theo regime cho RETEST
+    dist_atr_thr_low: float = 0.60
+    dist_atr_thr_normal: float = 0.75
+    dist_atr_thr_high: float = 1.00
+
 
 # Kết quả setup/decision để tương thích engine_adapter.py
 @dataclass
@@ -291,6 +300,11 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.trend_strength = trend_strength
     si.momo_strength = momo_strength
     si.volume_tilt = volume_tilt
+    # candle pattern flags
+    try:
+        si.inside_bar = bool((f1.get('candles', {}) or {}).get('inside_bar', False))
+    except Exception:
+        si.inside_bar = False
 
     si.levels1h = levels1h
     si.levels4h = levels4h
@@ -384,6 +398,18 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
     meta.update(dict(natr=natr, dist_atr=dist_atr, trend=tr, momo=momo, v=vdir))
 
     # --- 1) BREAK regime (trend_break) có guard NATR & volume ---
+    # Early-breakout/Continuation: khi chưa có breakout flag nhưng đủ điều kiện động lượng trong regime NATR thấp
+    if (not _safe_get_local(si, 'breakout_ok', False)) and bool(getattr(cfg, 'early_breakout_ok', True)):
+        # NATR guard cho early-breakout
+        if math.isfinite(natr) and (cfg.natr_break_min <= natr <= min(cfg.natr_break_max, getattr(cfg, 'early_breakout_natr_max', 0.012))):
+            # yêu cầu co giãn/impulse + alignment trend & momentum + không bị guard thanh khoản/slow
+            exp_ok = bool(_safe_get_local(si, 'bb_expanding_ok', False) or _safe_get_local(si, 'volatility_breakout_ok', False) or _safe_get_local(si, 'vol_break_ok', False) or _safe_get_local(si, 'vol_break_strong', False))
+            aligned = (tr != 0 and momo != 0 and (tr == momo))
+            if exp_ok and aligned and (not bool(_safe_get_local(si, 'liquidity_floor', False))) and (not bool(_safe_get_local(si, 'is_slow', False))) and bool(_safe_get_local(si, 'hvn_ok', True)):
+                side_b = 'long' if tr > 0 else 'short'
+                meta['early_breakout'] = True
+                return 'trend_break', side_b, meta
+
     if _safe_get_local(si, "breakout_ok", False) and _safe_get_local(si, "breakout_side") in ("long", "short"):
         side_b = _safe_get_local(si, "breakout_side")
         # 4H NATR guard
@@ -424,19 +450,14 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         reg = str(_safe_get_local(si, 'regime', 'normal'))
         dist_thr = thr_map.get(reg, cfg.dist_atr_thr_normal)
         if not (math.isfinite(dist_atr) and dist_atr <= float(dist_thr)):
-
             return "none_state", None, meta
 
         # Context signals
-        if tr > 0:
-            long_score += 1.0
-        elif tr < 0:
-            short_score += 1.0
-
-        if momo > 0:
-            long_score += 0.5
-        elif momo < 0:
-            short_score += 0.5
+        # Cho phép (inside-bar + volume tilt) đóng vai trò major khi trend & momentum đã align
+        if (tr > 0 and momo > 0 and vdir > 0 and bool(_safe_get_local(si, 'inside_bar', False))):
+            major_long += 1
+        if (tr < 0 and momo < 0 and vdir < 0 and bool(_safe_get_local(si, 'inside_bar', False))):
+            major_short += 1
 
         if _safe_get_local(si, "reclaim_ok", False):
             if _safe_get_local(si, "reclaim_side") == "long":
