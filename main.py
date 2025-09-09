@@ -121,6 +121,13 @@ def _no_side_reason(meta, bundle):
 
     tf_long  = bool(meta.get("tf_long"))
     tf_short = bool(meta.get("tf_short"))
+    if not (tf_long or tf_short):
+        tf_ev = ev.get('trend_follow_ready') or {}
+        try:
+            tf_long = bool((tf_ev.get('long') or {}).get('ok'))
+            tf_short = bool((tf_ev.get('short') or {}).get('ok'))
+        except Exception:
+            pass
 
     # check state gates from evidence bundle
     ev = bundle.get("evidence", {}) if isinstance(bundle, dict) else {}
@@ -131,13 +138,15 @@ def _no_side_reason(meta, bundle):
         return bool(getattr(obj, "ok", False))
     has_brk = _ok("price_breakout") or _ok("price_breakdown")
     has_rt  = _ok("pullback") or _ok("throwback")
+    # Continuation gate (trend-follow) nếu đủ alignment 2/3 và có tf_ready
+    has_ctn = two_of_three and (tf_long or tf_short)
 
     if not two_of_three:
         reason = "need_alignment_2of3"
     elif not (tf_long or tf_short):
         reason = "need_tf_ready"
-    elif not (has_brk or has_rt):
-        reason = "need_state_gate(breakout|retest)"
+    elif not (has_brk or has_rt or has_ctn):
+        reason = "need_state_gate(breakout|retest|continuation)"
     else:
         reason = "unspecified"
     return reason, has_brk, has_rt
