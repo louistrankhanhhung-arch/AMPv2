@@ -25,6 +25,10 @@ class SideCfg:
     early_breakout_ok: bool = True
     early_breakout_natr_max: float = 0.012  # <=1.2% considered low-vol regime
 
+    # Retest proximity thresholds by regime (dist to mid in ATR)
+    dist_atr_thr_low: float = 0.60
+    dist_atr_thr_normal: float = 0.75
+    dist_atr_thr_high: float = 1.00
 
     # Tie handling
     tie_eps: float = 1e-6               # sai số tuyệt đối để coi như hoà
@@ -322,11 +326,11 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.liquidity_floor = float(ev_adapt.get('liquidity_floor', 0.0)) if isinstance(ev_adapt, dict) else 0.0
 
     si.false_break_long = false_break_long
-    si.false_break_short = false_break_short
+    si.false_break_short = false_break_short    
 
-    # Candle shape context
+    # inside-bar flag from candle features
     try:
-        si.inside_bar = bool(inside_bar)
+        si.inside_bar = bool((f1.get('candles', {}) or {}).get('inside_bar', False))
     except Exception:
         si.inside_bar = False
 
@@ -393,6 +397,15 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         early_ok = bool(cfg.early_breakout_ok and math.isfinite(natr) and natr <= cfg.early_breakout_natr_max)
         if not (vol_ok or exp_ok or (early_ok and ((side_b == "long" and tr > 0 and momo >= 0) or (side_b == "short" and tr < 0 and momo <= 0)))):
             return "none_state", None, meta
+            # Early breakout allowance for low-vol regime
+            if bool(getattr(cfg, 'early_breakout_ok', False)) and math.isfinite(natr) and (natr <= float(getattr(cfg, 'early_breakout_natr_max', 0.012))):
+                if (side_b == "long" and tr > 0 and momo >= 0) or (side_b == "short" and tr < 0 and momo <= 0):
+                    pass  # allow trend_break without immediate vol/expansion
+                else:
+                    return "none_state", None, meta
+            else:
+                return "none_state", None, meta
+
         # Trend/momentum alignment với hướng break
         if side_b == "long" and not (tr > 0 and momo >= 0):
             return "none_state", None, meta
@@ -406,7 +419,12 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         short_score = 0.0
         # Proximity gate: chỉ xét RETEST nếu gần mid
         dist_atr = float(_safe_get_local(si, "dist_atr", float("nan")))
-        if not (math.isfinite(dist_atr) and dist_atr <= (0.6 if _safe_get_local(si, 'regime', 'normal') in ('low','normal') else 1.0)):
+        # dynamic proximity by ATR regime
+        thr_map = {'low': cfg.dist_atr_thr_low, 'normal': cfg.dist_atr_thr_normal, 'high': cfg.dist_atr_thr_high}
+        reg = str(_safe_get_local(si, 'regime', 'normal'))
+        dist_thr = thr_map.get(reg, cfg.dist_atr_thr_normal)
+        if not (math.isfinite(dist_atr) and dist_atr <= float(dist_thr)):
+
             return "none_state", None, meta
 
         # Context signals
@@ -484,11 +502,12 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         major_long  = int((tr > 0 and momo > 0)) + int(rcl) + int(fbl)
         major_short = int((tr < 0 and momo < 0)) + int(rcs) + int(fbs)
         # Allow (inside-bar + volume tilt) to count as a major when trend&momo align
-        if bool(_safe_get_local(si, "inside_bar", False)):
-            if (tr > 0 and momo > 0 and _volume_dir(si) > 0):
-                major_long += 1
-            if (tr < 0 and momo < 0 and _volume_dir(si) < 0):
-                major_short += 1
+        ib = bool(_safe_get_local(si, 'inside_bar', False))
+        vdir = int(math.copysign(1, float(_safe_get_local(si, 'volume_tilt', 0.0)))) if float(_safe_get_local(si, 'volume_tilt', 0.0)) != 0 else 0
+        if (tr > 0 and momo > 0 and vdir > 0 and ib):
+            major_long += 1
+        if (tr < 0 and momo < 0 and vdir < 0 and ib):
+            major_short += 1
 
         # Tie & margin policy:
         diff = long_score - short_score
