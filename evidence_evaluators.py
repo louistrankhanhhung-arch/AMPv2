@@ -105,27 +105,28 @@ def _adapt_cfg(cfg_tf: TFThresholds, regime: str) -> TFThresholds:
 
 def _slow_market_guards(bbw_now: float, bbw_med: float,
                         vol_now: float, vol_med: float,
-                        regime: str) -> Dict[str, Any]:
+                        regime: str,
+                        elapsed_frac: float | None = None) -> Dict[str, Any]:
     """
     Two lightweight guards for 'slow/illiquid' sessions.
       - vol_of_vol: bbw_now / bbw_med
       - liq_ratio : vol_now / vol_med
+      elapsed_frac: tỉ lệ thời gian đã trôi của cây nến 1H hiện tại (0..1)
+                  dùng để time-scale ngưỡng liquidity_floor.
     """
     bbw_med = float(bbw_med or 0.0)
     vol_med = float(vol_med or 0.0)
     vov = (float(bbw_now) / bbw_med) if bbw_med > 0 else np.nan
     liq = (float(vol_now) / vol_med) if vol_med > 0 else np.nan
     is_slow = (regime == "low") and (vov < 0.8 if np.isfinite(vov) else False)
-    liq_floor = (liq < 0.7) if np.isfinite(liq) else False
     base_thr = 0.8 if regime == 'low' else (0.5 if regime == 'high' else 0.6)
     # time-weight: thr(t) = base * (elapsed/bar)^0.7
     try:
-        if elapsed_frac is None:
-            elapsed_frac = 1.0
-        elapsed_frac = max(0.0, min(1.0, float(elapsed_frac)))
+        ef = 1.0 if elapsed_frac is None else float(elapsed_frac)
+        ef = max(0.0, min(1.0, ef))
     except Exception:
-        elapsed_frac = 1.0
-    liq_thr = float(base_thr) * (elapsed_frac ** 0.7)
+        ef = 1.0
+    liq_thr = float(base_thr) * (ef ** 0.7)
 
     liq_floor = (liq < liq_thr) if np.isfinite(liq) else False
     return {
@@ -133,7 +134,8 @@ def _slow_market_guards(bbw_now: float, bbw_med: float,
         "vol_of_vol": float(vov) if np.isfinite(vov) else None,
         "liquidity_ratio": float(liq) if np.isfinite(liq) else None,
         "is_slow": bool(is_slow),
-        "liquidity_floor": bool(liq_floor), "liq_thr": float(liq_thr),
+        "liquidity_floor": bool(liq_floor),
+        "liq_thr": float(liq_thr),
     }
 
 def _last_swing(swings: Dict[str, Any], kind: str) -> Optional[float]:
@@ -794,9 +796,29 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     ) if (df1 is not None and side_hint in ('long','short')) else {"ok": False})
  
     # Slow-market guards (Volatility-of-Vol & Liquidity floor)
+    # Tính tỉ lệ thời gian đã trôi của nến 1H hiện tại (0..1)
+    elapsed_frac = 1.0
+    try:
+        if df1 is not None and len(df1.index) > 0:
+            last_close = pd.to_datetime(df1.index[-1])
+            # 'last_close' là thời điểm đóng của nến trước; nến hiện tại bắt đầu ngay tại mốc đó
+            now_utc = pd.Timestamp.utcnow()
+            if getattr(last_close, "tzinfo", None) is not None:
+                now_utc = now_utc.tz_localize("UTC").astimezone(last_close.tz)
+            elapsed_sec = (now_utc - last_close).total_seconds()
+            # 1H bar ⇒ mẫu số 3600s
+            elapsed_frac = max(0.0, min(1.0, elapsed_sec / 3600.0))
+    except Exception:
+        elapsed_frac = 1.0
+        
     vol_now = float(f1.get('volume', {}).get('now', 0.0) or f1.get('volume', {}).get('v', 0.0) or 0.0)
     vol_med = float(f1.get('volume', {}).get('median', 0.0) or 0.0)
-    adaptive_meta = _slow_market_guards(bbw1, bbw1_med, vol_now, vol_med, reg)
+    adaptive_meta = _slow_market_guards(
+        bbw1, bbw1_med,
+        vol_now, vol_med,
+        reg,
+        elapsed_frac=elapsed_frac
+    )
  
     # Optional: volatility breakout with proper ATR slope (series vẫn theo 1H trigger)
     atr_series = df1['atr14'] if (df1 is not None and 'atr14' in df1) else None
