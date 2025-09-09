@@ -158,11 +158,11 @@ def _describe_missing_tags(missing, bundle: dict, wait_meta: dict | None = None)
     for tag in missing:
         t = str(tag)
         if t == "liquidity_floor":
-            vol = pick("volume")
-            vr = vol.get("vol_ratio"); vz = vol.get("vol_z20")
-            reg = meta.get("regime") or "normal"
-            thr = meta.get("liq_thr") or (0.6 if reg == "normal" else (0.8 if reg == "low" else 0.5))
-            out.append(f"liquidity_floor{{ratio={_fmt_float(vr)}, z={_fmt_float(vz)}, thr={_fmt_float(thr)}, regime={reg}}}")
+            liq = ev.get("adaptive") or {}
+            vr  = liq.get("liq_ratio") or liq.get("liquidity_ratio")  # đúng nguồn
+            reg = liq.get("regime") or "normal"
+            thr = liq.get("liq_thr")
+            out.append(f"liquidity_floor{{liq_ratio={_fmt_float(vr)}, thr={_fmt_float(thr)}, regime={reg}}}")
         elif t in ("no_side","direction_undecided"):
             ta = ev.get("trend_alignment") or {}
             vol = ev.get("volume") or {}
