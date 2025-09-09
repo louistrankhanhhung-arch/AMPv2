@@ -367,7 +367,7 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         # Volume & expansion guards
         vol_ok = bool(_safe_get_local(si, "vol_break_ok", False) or _safe_get_local(si, "vol_break_strong", False))
         exp_ok = bool(_safe_get_local(si, "bb_expanding_ok", False) or _safe_get_local(si, "volatility_breakout_ok", False))
-        if not (vol_ok and exp_ok):
+        if not (vol_ok or exp_ok):
             return "none_state", None, meta
         # Trend/momentum alignment với hướng break
         if side_b == "long" and not (tr > 0 and momo >= 0):
