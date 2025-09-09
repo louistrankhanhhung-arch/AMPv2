@@ -772,3 +772,61 @@ def run_side_state_core(
     dec: Decision = decide_5_gates(state, side, setup, si, cfg, meta)
 
     return dec
+
+def _structure_tps(si: SI, side: str, entry: float, sl: float, atr: float, state: str) -> List[float]:
+    """Build structure-based TP ladder (bands/HVN → Fib → ATR)."""
+    tps: List[float] = []
+    cands: List[float] = []
+
+    def _add(p):
+        try:
+            p = float(p)
+        except Exception:
+            return
+        if not (p == p):
+            return
+        if side == "long" and p > entry and abs(p - entry) >= 0.3 * max(atr, 1e-9):
+            cands.append(p)
+        elif side == "short" and p < entry and abs(entry - p) >= 0.3 * max(atr, 1e-9):
+            cands.append(p)
+
+    # 1) SR bands from features (4H first, then 1H)
+    for levels in [getattr(si, "levels4h", {}) or {}, getattr(si, "levels1h", {}) or {}]:
+        key = "bands_up" if side == "long" else "bands_down"
+        bands = (levels.get(key) or []) if isinstance(levels, dict) else []
+        for b in bands:
+            p = None
+            if isinstance(b, dict):
+                p = b.get("tp")
+                if p is None and isinstance(b.get("band"), (list, tuple)) and len(b["band"]) == 2:
+                    p = (float(b["band"][0]) + float(b["band"][1])) / 2.0
+            _add(p)
+
+    # 2) Fib(0.618, 1.0) based on break level (if break) or retest mid
+    ref = getattr(si, "break_level", None) if state == "trend_break" else getattr(si, "retest_zone_mid", None)
+    try:
+        if ref is not None and entry is not None:
+            d = abs(float(entry) - float(ref))
+            if d > 0:
+                if side == "long":
+                    _add(entry + 0.618 * d); _add(entry + 1.000 * d)
+                else:
+                    _add(entry - 0.618 * d); _add(entry - 1.000 * d)
+    except Exception:
+        pass
+
+    # 3) ATR milestones
+    for k in (2.0, 3.0):
+        if side == "long":
+            _add(entry + k * atr)
+        else:
+            _add(entry - k * atr)
+
+    # De-duplicate near-equal and directionally sort
+    uniq: List[float] = []
+    tol = 0.1 * max(atr, 1e-9)
+    for p in sorted(cands, reverse=(side == "short")):
+        if all(abs(p - q) > tol for q in uniq):
+            uniq.append(float(p))
+
+    return uniq[:3]
