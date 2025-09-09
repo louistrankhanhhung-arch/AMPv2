@@ -164,14 +164,11 @@ def _describe_missing_tags(missing, bundle: dict, wait_meta: dict | None = None)
             thr = meta.get("liq_thr") or (0.6 if reg == "normal" else (0.8 if reg == "low" else 0.5))
             out.append(f"liquidity_floor{{ratio={_fmt_float(vr)}, z={_fmt_float(vz)}, thr={_fmt_float(thr)}, regime={reg}}}")
         elif t in ("no_side","direction_undecided"):
-            tf = ev.get("trend_follow_ready") or {}
-            tfl = (tf.get("long") or {}).get("ok")
-            tfs = (tf.get("short") or {}).get("ok")
             ta = ev.get("trend_alignment") or {}
             vol = ev.get("volume") or {}
             votes = meta.get("side_votes") or {}
             out.append(
-                f"{t}{{tf_long={bool(tfl)}, tf_short={bool(tfs)}, trend_ok={bool(ta.get('ok'))}, vol_grade={(vol.get('grade') or '')}, votes={{{', '.join([f'{k}={_fmt_float(v)}' for k,v in votes.items()])}}}}}"
+                f"{t}{{trend_ok={bool(ta.get('ok'))}, vol_grade={(vol.get('grade') or '')}, votes={{ {', '.join([f'{k}={_fmt_float(v)}' for k,v in votes.items()])} }} }}"
             )
         elif t in ("near_heavy_zone","hvn_guard"):
             liq = ev.get("liquidity") or {}
