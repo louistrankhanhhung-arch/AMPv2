@@ -21,6 +21,11 @@ class SideCfg:
     natr_break_min: float = 0.004      # ~0.4%
     natr_break_max: float = 0.060      # ~6% (quá cao -> dễ whipsaw/chasing)
 
+    # Early breakout option: allow break without volume/exp when NATR is low
+    early_breakout_ok: bool = True
+    early_breakout_natr_max: float = 0.012  # <=1.2% considered low-vol regime
+
+
     # Tie handling
     tie_eps: float = 1e-6               # sai số tuyệt đối để coi như hoà
     side_margin: float = 0.5         # yêu cầu chênh tối thiểu để chọn side
@@ -184,6 +189,17 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     momo_strength = _momo_dir_from_features(f1)
     volume_tilt = _vol_dir_from_features(f1)
 
+    # Detect inside-bar on 1H (last two closed bars)
+    inside_bar = False
+    try:
+        df1 = (features_by_tf.get("1H", {}) or {}).get("df")
+        if df1 is not None and len(df1) >= 2:
+            last = df1.iloc[-1]; prev = df1.iloc[-2]
+            inside_bar = bool((float(last.get("high", last["close"])) <= float(prev.get("high", prev["close"]))) and
+                               (float(last.get("low", last["close"]))  >= float(prev.get("low", prev["close"]))))
+    except Exception:
+        inside_bar = False
+
     # levels để dựng TP ladder/SL confluence
     levels1h = f1.get('levels', {}) or {}
     levels4h = f4.get('levels', {}) or {}
@@ -308,6 +324,12 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.false_break_long = false_break_long
     si.false_break_short = false_break_short
 
+    # Candle shape context
+    try:
+        si.inside_bar = bool(inside_bar)
+    except Exception:
+        si.inside_bar = False
+
     # adaptive guards
     si.is_slow = bool(ev_adapt.get('is_slow', False)) if isinstance(ev_adapt, dict) else False
     si.liquidity_floor = bool(ev_adapt.get('liquidity_floor', False)) if isinstance(ev_adapt, dict) else False
@@ -367,7 +389,9 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         # Volume & expansion guards
         vol_ok = bool(_safe_get_local(si, "vol_break_ok", False) or _safe_get_local(si, "vol_break_strong", False))
         exp_ok = bool(_safe_get_local(si, "bb_expanding_ok", False) or _safe_get_local(si, "volatility_breakout_ok", False))
-        if not (vol_ok or exp_ok):
+        # Allow early breakout when configured and NATR is low
+        early_ok = bool(cfg.early_breakout_ok and math.isfinite(natr) and natr <= cfg.early_breakout_natr_max)
+        if not (vol_ok or exp_ok or (early_ok and ((side_b == "long" and tr > 0 and momo >= 0) or (side_b == "short" and tr < 0 and momo <= 0)))):
             return "none_state", None, meta
         # Trend/momentum alignment với hướng break
         if side_b == "long" and not (tr > 0 and momo >= 0):
@@ -382,7 +406,7 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         short_score = 0.0
         # Proximity gate: chỉ xét RETEST nếu gần mid
         dist_atr = float(_safe_get_local(si, "dist_atr", float("nan")))
-        if not (math.isfinite(dist_atr) and dist_atr <= 0.75):
+        if not (math.isfinite(dist_atr) and dist_atr <= (0.6 if _safe_get_local(si, 'regime', 'normal') in ('low','normal') else 1.0)):
             return "none_state", None, meta
 
         # Context signals
@@ -459,6 +483,12 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         # Yêu cầu tối thiểu 1 major-evidence để tránh RETEST “trôi”
         major_long  = int((tr > 0 and momo > 0)) + int(rcl) + int(fbl)
         major_short = int((tr < 0 and momo < 0)) + int(rcs) + int(fbs)
+        # Allow (inside-bar + volume tilt) to count as a major when trend&momo align
+        if bool(_safe_get_local(si, "inside_bar", False)):
+            if (tr > 0 and momo > 0 and _volume_dir(si) > 0):
+                major_long += 1
+            if (tr < 0 and momo < 0 and _volume_dir(si) < 0):
+                major_short += 1
 
         # Tie & margin policy:
         diff = long_score - short_score
