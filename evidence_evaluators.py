@@ -117,14 +117,23 @@ def _slow_market_guards(bbw_now: float, bbw_med: float,
     liq = (float(vol_now) / vol_med) if vol_med > 0 else np.nan
     is_slow = (regime == "low") and (vov < 0.8 if np.isfinite(vov) else False)
     liq_floor = (liq < 0.7) if np.isfinite(liq) else False
-    liq_thr = 0.8 if regime == 'low' else (0.5 if regime == 'high' else 0.6)
+    base_thr = 0.8 if regime == 'low' else (0.5 if regime == 'high' else 0.6)
+    # time-weight: thr(t) = base * (elapsed/bar)^0.7
+    try:
+        if elapsed_frac is None:
+            elapsed_frac = 1.0
+        elapsed_frac = max(0.0, min(1.0, float(elapsed_frac)))
+    except Exception:
+        elapsed_frac = 1.0
+    liq_thr = float(base_thr) * (elapsed_frac ** 0.7)
+
     liq_floor = (liq < liq_thr) if np.isfinite(liq) else False
     return {
         "regime": regime,
         "vol_of_vol": float(vov) if np.isfinite(vov) else None,
         "liquidity_ratio": float(liq) if np.isfinite(liq) else None,
         "is_slow": bool(is_slow),
-        "liquidity_floor": bool(liq_floor),
+        "liquidity_floor": bool(liq_floor), "liq_thr": float(liq_thr),
     }
 
 def _last_swing(swings: Dict[str, Any], kind: str) -> Optional[float]:
@@ -411,12 +420,25 @@ def ev_throwback_valid(df, swings, atr, side, candles=None, lookback=3):
     cc = ev_candles(candles or {}, side)
     confirm = bool(cc.get('ok', False))
 
-    ok = bool(touched and confirm)
+    inside = False
+    try:
+        last = df.iloc[-1]; prev = df.iloc[-2]
+        inside = bool((last['high'] <= prev['high']) and (last['low'] >= prev['low']))
+    except Exception:
+        inside = False
+    mid = float((lo + hi) / 2.0)
+    try:
+        atr_now = float(df['atr14'].iloc[-1])
+    except Exception:
+        atr_now = 0.0
+    dist_ok = (abs(float(df['close'].iloc[-1]) - mid) <= 0.6 * max(atr_now, 1e-9))
+    ok = bool((touched and confirm) or (inside and dist_ok))
+
     return {
         "ok": ok,
         "why": "throwback_valid" if ok else "throwback_not_ok",
         "ref": base.get('ref'),
-        "zone": base.get('zone'),
+        "zone": base.get('zone'), "mid": (float((base.get("zone")[0] + base.get("zone")[1]) / 2.0) if base.get("zone") else None),
         "confirm_candle": confirm
     }
 
@@ -451,23 +473,43 @@ def ev_pullback_valid(df: pd.DataFrame, swings: Dict[str, Any], atr: float, mom:
         current = float(df['close'].iloc[-1])
         retr = float((hh - current) / rng)
         ok = (retr_lo <= retr <= retr_hi) and (rsi > 50) and contracting and (bull or True)
+        # inside-bar tolerance near mid
+        try:
+            last = df.iloc[-1]; prev = df.iloc[-2]
+            inside = bool((last["high"] <= prev["high"]) and (last["low"] >= prev["low"]))
+        except Exception:
+            inside = False
+        if not ok and inside:
+            center = ema20 if np.isfinite(ema20) else bb_mid
+            if np.isfinite(center) and abs(current - center) <= 0.6 * atr:
+                ok = True
         ema20 = float(df['ema20'].iloc[-1]) if 'ema20' in df.columns else float('nan')
         bb_mid = float(df['bb_mid'].iloc[-1]) if 'bb_mid' in df.columns else float('nan')
         center = ema20 if np.isfinite(ema20) else bb_mid
         zone = [float(center - zone_k*atr), float(center + zone_k*atr)] if np.isfinite(center) else None
         fzone = [float(bb_mid - zone_k*atr), float(bb_mid + zone_k*atr)] if np.isfinite(bb_mid) else None
-        return {"ok": bool(ok), "why": "pullback_ok" if ok else "pullback_not_ok", "retrace_pct": round(retr,3), "rsi_ok": bool(rsi>50), "vol_contracting": bool(contracting), "confirm_candle": bool(bull), "zone": zone, "fallback_zone": fzone}
+        return {"ok": bool(ok), "why": "pullback_ok" if ok else "pullback_not_ok", "retrace_pct": round(retr,3), "rsi_ok": bool(rsi>50), "vol_contracting": bool(contracting), "confirm_candle": bool(bull), "zone": zone, "fallback_zone": fzone, "mid": (float((zone[0]+zone[1])/2.0) if zone else (float((fzone[0]+fzone[1])/2.0) if fzone else None))}
     if side == 'short' and hh is not None and ll is not None and hh > ll:
         rng = max(1e-9, hh - ll)
         current = float(df['close'].iloc[-1])
         retr = float((current - ll) / rng)
         ok = (retr_lo <= retr <= retr_hi) and (rsi < 50) and contracting and (bear or True)
+        # inside-bar tolerance near mid
+        try:
+            last = df.iloc[-1]; prev = df.iloc[-2]
+            inside = bool((last["high"] <= prev["high"]) and (last["low"] >= prev["low"]))
+        except Exception:
+            inside = False
+        if not ok and inside:
+            center = ema20 if np.isfinite(ema20) else bb_mid
+            if np.isfinite(center) and abs(current - center) <= 0.6 * atr:
+                ok = True
         ema20 = float(df['ema20'].iloc[-1]) if 'ema20' in df.columns else float('nan')
         bb_mid = float(df['bb_mid'].iloc[-1]) if 'bb_mid' in df.columns else float('nan')
         center = ema20 if np.isfinite(ema20) else bb_mid
         zone = [float(center - zone_k*atr), float(center + zone_k*atr)] if np.isfinite(center) else None
         fzone = [float(bb_mid - zone_k*atr), float(bb_mid + zone_k*atr)] if np.isfinite(bb_mid) else None
-        return {"ok": bool(ok), "why": "pullback_ok" if ok else "pullback_not_ok", "retrace_pct": round(retr,3), "rsi_ok": bool(rsi<50), "vol_contracting": bool(contracting), "confirm_candle": bool(bear), "zone": zone, "fallback_zone": fzone}
+        return {"ok": bool(ok), "why": "pullback_ok" if ok else "pullback_not_ok", "retrace_pct": round(retr,3), "rsi_ok": bool(rsi<50), "vol_contracting": bool(contracting), "confirm_candle": bool(bear), "zone": zone, "fallback_zone": fzone, "mid": (float((zone[0]+zone[1])/2.0) if zone else (float((fzone[0]+fzone[1])/2.0) if fzone else None))}
     return {"ok": False, "why": "insufficient_swings"}
 
 def _ensure_mid(ev):
