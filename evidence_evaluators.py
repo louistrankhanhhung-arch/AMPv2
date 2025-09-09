@@ -48,6 +48,70 @@ def _get_last_closed_bar(df: pd.DataFrame) -> pd.Series:
     if len(df) >= 2:
         return df.iloc[-2]
     return df.iloc[-1] if len(df) else pd.Series(dtype=float)
+
+# --------------------------
+# Mini-retest (1H) detector
+# --------------------------
+def ev_mini_retest_1h(
+    df: pd.DataFrame,
+    lookback_bars: int = 3,
+    atr_frac: float = 0.25,
+) -> Dict[str, Any]:
+    """
+    Mini-retest: trong 2–3 nến gần nhất có 'chạm' basis (EMA20 hoặc BB basis)
+    trong ± atr_frac * ATR, sau đó nến đóng gần nhất đóng theo hướng:
+      - long: close>open và close>b basis
+      - short: close<open và close<b basis
+    Trả về {'ok', 'long', 'short', 'why', 'lookback', 'atr_frac'}.
+    """
+    try:
+        if df is None or len(df) < 5:
+            return {"ok": False, "why": "insufficient_df"}
+        last = _get_last_closed_bar(df)
+        # basis ưu tiên: (bb_upper+bb_lower)/2 nếu có, fallback EMA20
+        has_bb = ("bb_upper" in df.columns) and ("bb_lower" in df.columns)
+        if has_bb:
+            basis_series = (df["bb_upper"] + df["bb_lower"]) / 2.0
+        elif "ema20" in df.columns:
+            basis_series = df["ema20"]
+        else:
+            return {"ok": False, "why": "no_basis"}
+        atr_series = df["atr14"] if "atr14" in df.columns else None
+        if atr_series is None or len(atr_series) < 2:
+            return {"ok": False, "why": "no_atr"}
+
+        # window gồm các nến đã đóng gần nhất (loại bỏ nến đang chạy nếu có)
+        # lấy tối đa lookback_bars nến trước 'last'
+        end_idx = df.index.get_loc(last.name)
+        start_idx = max(0, end_idx - lookback_bars)
+        win = df.iloc[start_idx:end_idx]
+        if win.empty:
+            return {"ok": False, "why": "empty_window"}
+
+        touched = False
+        for i, row in win.iterrows():
+            b = float(basis_series.loc[i])
+            a = float(atr_series.loc[i])
+            k = float(max(0.0, atr_frac) * max(a, 0.0))
+            lo = float(row.get("low", row.get("close", b)))
+            hi = float(row.get("high", row.get("close", b)))
+            if (lo <= b + k) and (hi >= b - k):
+                touched = True
+                break
+
+        if not touched:
+            return {"ok": False, "long": False, "short": False, "why": "no_touch"}
+
+        b_last = float(basis_series.loc[last.name])
+        close_last = float(last["close"])
+        open_last  = float(last["open"])
+        long_ok  = (close_last > open_last) and (close_last > b_last)
+        short_ok = (close_last < open_last) and (close_last < b_last)
+        why = f"touch<=±{atr_frac}ATR_in_{lookback_bars}bars|last_dir={'up' if long_ok else ('down' if short_ok else 'flat')}"
+        return {"ok": bool(long_ok or short_ok), "long": bool(long_ok), "short": bool(short_ok),
+                "why": why, "lookback": int(lookback_bars), "atr_frac": float(atr_frac)}
+    except Exception as e:
+        return {"ok": False, "why": f"mini_retest_err:{e}"}
  
 # --------------------------
 # ATR-adaptive helpers
@@ -847,6 +911,9 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     vol_z20_1h   = float(ev_vol_1h.get('vol_z20'))   if isinstance(ev_vol_1h, dict) and ev_vol_1h.get('vol_z20')   is not None else None
     vol_grade_1h = (ev_vol_1h.get('grade') if isinstance(ev_vol_1h, dict) else None) or ""
 
+    # ---- mini-retest flags (1H) ----
+    mini = ev_mini_retest_1h(df1, lookback_bars=3, atr_frac=0.25) if isinstance(df1, pd.DataFrame) else {"ok": False}
+
     evidences = {
         'price_breakout': ev_pb,
         'price_breakdown': ev_pdn,
@@ -877,7 +944,13 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
         'false_breakout': ev_fb_out,
         'false_breakdown': ev_fb_dn,
         'trend_follow_ready': {'long': ev_tf_long, 'short': ev_tf_short},
-        'adaptive': adaptive_meta,  # regime + slow-market guards (meta, not scored)
+        'adaptive': adaptive_meta,  # regime + slow-market guards (meta, not scored),
+        'mini_retest': {
+            'ok': bool(mini.get('ok', False)),
+            'long': bool(mini.get('long', False)),
+            'short': bool(mini.get('short', False)),
+            'why': mini.get('why'),
+        },
     }
 
     # --- Normalize zones and add 'mid' for retest-style evidences ---
