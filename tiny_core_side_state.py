@@ -33,6 +33,12 @@ class SideCfg:
     dist_atr_thr_normal: float = 0.75
     dist_atr_thr_high: float = 1.00
 
+    # --- Continuation gate & mini-retest (mới) ---
+    use_continuation_gate: bool = True
+    continuation_need_inside_or_minitest: bool = True
+    mini_retest_lookback_bars: int = 3
+    mini_retest_atr_frac: float = 0.25
+
     # Tie handling
     tie_eps: float = 1e-6               # sai số tuyệt đối để coi như hoà
     side_margin: float = 0.5         # yêu cầu chênh tối thiểu để chọn side
@@ -232,6 +238,7 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     ev_fb_dn  = _get_ev(eb, 'false_breakdown')
     ev_adapt  = _get_ev(eb, 'adaptive')  # meta: is_slow, liquidity_floor, regime ...
     ev_liq    = _get_ev(eb, 'liquidity')  # HVN guard (near heavy zone)
+    ev_mini   = _get_ev(eb, 'mini_retest')
 
     # breakout flags
     breakout_ok = bool(ev_pb.get('ok') or ev_pdn.get('ok'))
@@ -305,6 +312,12 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
         si.inside_bar = bool((f1.get('candles', {}) or {}).get('inside_bar', False))
     except Exception:
         si.inside_bar = False
+    # mini-retest flags từ evidence
+    try:
+        si.mini_retest_long  = bool(ev_mini.get('long', False))
+        si.mini_retest_short = bool(ev_mini.get('short', False))
+    except Exception:
+        si.mini_retest_long = si.mini_retest_short = False
 
     si.levels1h = levels1h
     si.levels4h = levels4h
@@ -397,6 +410,23 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
     vdir = _volume_dir(si)
     meta.update(dict(natr=natr, dist_atr=dist_atr, trend=tr, momo=momo, v=vdir))
 
+    # --- 0) CONTINUATION gate (trước BREAK/RETEST) ---
+    if bool(getattr(cfg, "use_continuation_gate", True)):
+        aligned_long  = (tr > 0 and momo > 0 and vdir > 0)
+        aligned_short = (tr < 0 and momo < 0 and vdir < 0)
+        votes3 = aligned_long or aligned_short
+        need_candle = bool(getattr(cfg, "continuation_need_inside_or_minitest", True))
+        mini_ok_long  = bool(_safe_get_local(si, "mini_retest_long", False))
+        mini_ok_short = bool(_safe_get_local(si, "mini_retest_short", False))
+        inside = bool(_safe_get_local(si, "inside_bar", False))
+        cond_long  = aligned_long  and ((inside or mini_ok_long)  if need_candle else True)
+        cond_short = aligned_short and ((inside or mini_ok_short) if need_candle else True)
+        liq_block  = bool(_safe_get_local(si, "liquidity_floor", False)) or (not bool(_safe_get_local(si, "hvn_ok", True)))
+        if votes3 and (cond_long or cond_short) and (not liq_block):
+            side_c = "long" if cond_long else "short"
+            meta.update({"gate": "continuation"})
+            return "trend_break", side_c, meta
+
     # --- 1) BREAK regime (trend_break) có guard NATR & volume ---
     # Early-breakout/Continuation: khi chưa có breakout flag nhưng đủ điều kiện động lượng trong regime NATR thấp
     if (not _safe_get_local(si, 'breakout_ok', False)) and bool(getattr(cfg, 'early_breakout_ok', True)):
@@ -443,7 +473,7 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
     if _safe_get_local(si, "retest_ok", False):
         long_score = 0.0
         short_score = 0.0
-        # Proximity gate: chỉ xét RETEST nếu gần mid
+        # Proximity gate: chỉ xét RETEST nếu gần mid (động theo regime)
         dist_atr = float(_safe_get_local(si, "dist_atr", float("nan")))
         # dynamic proximity by ATR regime
         thr_map = {'low': cfg.dist_atr_thr_low, 'normal': cfg.dist_atr_thr_normal, 'high': cfg.dist_atr_thr_high}
@@ -453,11 +483,11 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
             return "none_state", None, meta
 
         # Context signals
-        # Cho phép (inside-bar + volume tilt) đóng vai trò major khi trend & momentum đã align
-        if (tr > 0 and momo > 0 and vdir > 0 and bool(_safe_get_local(si, 'inside_bar', False))):
-            major_long += 1
-        if (tr < 0 and momo < 0 and vdir < 0 and bool(_safe_get_local(si, 'inside_bar', False))):
-            major_short += 1
+        # Cho phép (inside-bar + volume-tilt) đóng vai trò "major" khi trend & momentum align
+        if (tr > 0 and momo > 0 and vdir > 0 and bool(_safe_get_local(si, "inside_bar", False))):
+            long_score += 0.75
+        if (tr < 0 and momo < 0 and vdir < 0 and bool(_safe_get_local(si, "inside_bar", False))):
+            short_score += 0.75
 
         if _safe_get_local(si, "reclaim_ok", False):
             if _safe_get_local(si, "reclaim_side") == "long":
