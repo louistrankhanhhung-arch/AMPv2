@@ -7,6 +7,80 @@ engine_adapter.py
 from typing import Dict, Any, List, Optional
 from tiny_core_side_state import SideCfg, run_side_state_core
 
+def _atr_from_features(features_by_tf: Dict[str, Any]) -> float:
+    try:
+        df = (features_by_tf or {}).get("1H", {}).get("df")
+        if df is not None and len(df) > 0:
+            return float(df["atr14"].iloc[-1])
+    except Exception:
+        pass
+    return 0.0
+
+def _soft_levels(features_by_tf: Dict[str, Any]) -> Dict[str, float]:
+    """
+    Lấy các mức mềm ở nến mới nhất: BB upper/mid/lower, EMA20/50, Close.
+    """
+    out = {}
+    try:
+        df = (features_by_tf or {}).get("1H", {}).get("df")
+        if df is not None and len(df) > 0:
+            last = df.iloc[-1]
+            for k in ("bb_upper","bb_mid","bb_lower","ema20","ema50","close"):
+                if k in last and last[k] == last[k]:  # not NaN
+                    out[k] = float(last[k])
+    except Exception:
+        pass
+    return out
+
+def _near_soft_level_guard(side: Optional[str], entry: Optional[float], feats: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Trả về {"block": bool, "why": str} nếu entry quá gần BB/EMA theo hướng giao dịch.
+    Quy tắc (mặc định):
+      - BB upper/lower: <= 0.30*ATR
+      - EMA20/EMA50/BB mid: <= 0.25*ATR
+    """
+    if side not in ("long","short") or entry is None:
+        return {"block": False, "why": ""}
+    atr = _atr_from_features(feats)
+    if atr <= 0:
+        return {"block": False, "why": ""}
+    lv = _soft_levels(feats)
+    if not lv:
+        return {"block": False, "why": ""}
+
+    bb_u, bb_m, bb_l = lv.get("bb_upper"), lv.get("bb_mid"), lv.get("bb_lower")
+    e20, e50 = lv.get("ema20"), lv.get("ema50")
+
+    # Ngưỡng tính theo ATR
+    thr_band = 0.30 * atr
+    thr_center = 0.25 * atr
+
+    reasons = []
+    def _dist(a, b): 
+        try: 
+            return abs(float(a) - float(b))
+        except Exception:
+            return float("inf")
+
+    if side == "long":
+        # Chặn khi entry nằm phía dưới cản mềm ngắn hạn (sát BB upper) -> dễ bị nhúng
+        if bb_u is not None and entry <= bb_u and _dist(entry, bb_u) <= thr_band:
+            reasons.append(f"near_BB_upper(<= {thr_band:.4f})")
+        # Center lines: cần nhúng về vùng cân bằng
+        for nm, lvl in (("EMA20", e20), ("EMA50", e50), ("BB_mid", bb_m)):
+            if lvl is not None and entry >= lvl and _dist(entry, lvl) <= thr_center:
+                reasons.append(f"near_{nm}(<= {thr_center:.4f})")
+    else:  # short
+        if bb_l is not None and entry >= bb_l and _dist(entry, bb_l) <= thr_band:
+            reasons.append(f"near_BB_lower(<= {thr_band:.4f})")
+        for nm, lvl in (("EMA20", e20), ("EMA50", e50), ("BB_mid", bb_m)):
+            if lvl is not None and entry <= lvl and _dist(entry, lvl) <= thr_center:
+                reasons.append(f"near_{nm}(<= {thr_center:.4f})")
+
+    if reasons:
+        return {"block": True, "why": ";".join(reasons)}
+    return {"block": False, "why": ""}
+
 def _rr(entry: Optional[float], sl: Optional[float], tp: Optional[float], side: Optional[str]) -> Optional[float]:
     if entry is None or sl is None or tp is None or side is None:
         return None
@@ -36,6 +110,16 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     rr1 = _rr(dec.setup.entry, dec.setup.sl, tp1, dec.side)
     rr2 = _rr(dec.setup.entry, dec.setup.sl, tp2, dec.side)
     rr3 = _rr(dec.setup.entry, dec.setup.sl, tp3, dec.side)
+
+    # -------- SOFT PROXIMITY GUARD (BB/EMA) --------
+    prox = _near_soft_level_guard(dec.side, dec.setup.entry, features_by_tf)
+    if prox.get("block"):
+        # Ép về WAIT + thêm lý do "soft_proximity"
+        dec.decision = "WAIT"
+        reasons = list(dec.reasons or [])
+        reasons.append("soft_proximity")
+        dec.reasons = reasons
+        # Không đổi setup; chỉ cấm vào kèo lúc này
 
     # ---------- price formatting helpers ----------
     def _infer_dp(symbol: str, price: Optional[float], features_by_tf: Dict[str, Any], evidence_bundle: Dict[str, Any]) -> int:
@@ -189,6 +273,8 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         notes.append("Proximity guard: too far from entry")
     if "rr_too_low" in dec.reasons:
         notes.append("RR min not satisfied")
+    if "soft_proximity" in dec.reasons:
+        notes.append(f"Soft proximity (BB/EMA): {prox.get('why','')}")
 
     out = {
         "symbol": symbol,
