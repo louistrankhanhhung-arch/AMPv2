@@ -622,8 +622,15 @@ def build_setup(si: SI, state: str, side: Optional[str], cfg: SideCfg) -> Setup:
     # enforce SL gap theo ATR
     st.sl = _ensure_sl_gap(st.entry, st.sl, atr, side, min_atr=0.6)
 
-    # TP theo RR targets (ví dụ 1.2, 2.0, 3.0) — yêu cầu của bạn
-    st.tps = _tp_by_rr(st.entry, st.sl, side, cfg.rr_targets)
+    # Ưu tiên: TP ladder cấu trúc (bands/HVN → Fib → ATR). Nếu rỗng, fallback R:R.
+    try:
+        struct_tps = _structure_tps(si, side, st.entry, st.sl, atr, state)
+    except Exception:
+        struct_tps = []
+    if struct_tps:
+        st.tps = struct_tps
+    else:
+        st.tps = _tp_by_rr(st.entry, st.sl, side, cfg.rr_targets)
 
     return st
 
