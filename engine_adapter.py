@@ -238,7 +238,10 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
                 f"RR1={f'{rr1:.1f}' if rr1 is not None else 'None'}",
                 f"RR2={f'{rr2:.1f}' if rr2 is not None else 'None'}",
                 f"RR3={f'{rr3:.1f}' if rr3 is not None else 'None'}",
-                (f"LEV={size_hint:.1f}x" if isinstance(size_hint,(int,float)) else ""),
+                (
+                    (lambda _v: f"LEV={__import__('math').floor(float(_v)):.1f}x")(size_hint)
+                    if isinstance(size_hint,(int,float)) else ""
+                ),
             ]
         )
     )
