@@ -6,6 +6,7 @@ engine_adapter.py
 """
 from typing import Dict, Any, List, Optional
 from tiny_core_side_state import SideCfg, run_side_state_core
+import os
 
 def _atr_from_features(features_by_tf: Dict[str, Any]) -> float:
     try:
@@ -94,6 +95,24 @@ def _rr(entry: Optional[float], sl: Optional[float], tp: Optional[float], side: 
         return None
     return reward / risk
 
+def _leverage_hint(side: Optional[str], entry: Optional[float], sl: Optional[float]) -> Optional[float]:
+    """
+    Leverage tối ưu để rủi ro thực ~ risk_pct (ENV RISK_PCT, mặc định 5%).
+    """
+    try:
+        if side not in ("long","short") or entry is None or sl is None or entry <= 0:
+            return None
+        risk_raw = abs((entry - sl) / entry)
+        if risk_raw <= 0:
+            return None
+        risk_pct = float(os.getenv("RISK_PCT", "0.05"))
+        lev = risk_pct / risk_raw
+        lev_min = float(os.getenv("LEVERAGE_MIN", "1.0"))
+        lev_max = float(os.getenv("LEVERAGE_MAX", "5.0"))
+        return float(max(lev_min, min(lev, lev_max)))
+    except Exception:
+        return None
+
 def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]], evidence_bundle: Dict[str, Any]) -> Dict[str, Any]:
     # evidence_bundle expected to include 'evidence' object; pass through as eb-like
     eb = evidence_bundle.get("evidence") or evidence_bundle  # tolerate both shapes
@@ -163,6 +182,10 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
             return f"{float(x):.{dp}f}"
         except Exception:
             return f"{x}"
+
+    # size hint (leverage) theo công thức risk_pct / risk_raw
+    size_hint = _leverage_hint(dec.side, dec.setup.entry, dec.setup.sl)
+
     # ---------- end helpers ----------
 
     plan = {
@@ -177,6 +200,7 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         "rr": rr1,                    # primary RR
         "rr2": rr2,
         "rr3": rr3,
+        "risk_size_hint": size_hint,  # <— leverage đề xuất
     }
 
     # ---- ensure locals before logging ----
@@ -214,6 +238,7 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
                 f"RR1={f'{rr1:.1f}' if rr1 is not None else 'None'}",
                 f"RR2={f'{rr2:.1f}' if rr2 is not None else 'None'}",
                 f"RR3={f'{rr3:.1f}' if rr3 is not None else 'None'}",
+                (f"LEV={size_hint:.1f}x" if isinstance(size_hint,(int,float)) else ""),
             ]
         )
     )
