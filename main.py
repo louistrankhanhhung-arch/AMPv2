@@ -343,16 +343,19 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
         if rr1 is not None: rr_parts.append(f"RR1={rr1}")
         if rr2 is not None: rr_parts.append(f"RR2={rr2}")
         if rr3 is not None: rr_parts.append(f"RR3={rr3}")
+        lev = plan.get("risk_size_hint")
+        lev_part = (f"LEV={lev:.1f}x" if isinstance(lev,(int,float)) else None)
 
         tp_str = " ".join(tp_parts)
         rr_str = " ".join(rr_parts)
+        extra = (" " + lev_part) if lev_part else ""
 
         log.info(
             f"[{symbol}] DECISION={dec} | STATE={state} | "
             f"DIR={str(dir_val).upper()} | "
             f"entry={plan.get('entry')} entry2={plan.get('entry2')} "
             f"sl={plan.get('sl')} "
-            f"{(tp_str + ' ' + rr_str).strip()}".strip()
+            f"{(tp_str + ' ' + rr_str).strip()}{extra}".strip()
         )
     if dec == "WAIT":
         # --- WAIT branch logging (detail) ---
