@@ -1,6 +1,7 @@
 
 from datetime import datetime, timezone
 from typing import Dict, Any
+import math
 
 def fmt_price(v):
     """
@@ -45,7 +46,11 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
     tp1 = fmt_price(plan.get("tp1")); tp2 = fmt_price(plan.get("tp2")); tp3 = fmt_price(plan.get("tp3"))
     # leverage (gợi ý)
     risk = plan.get("risk_size_hint")
-    don_bay_line = f"<b>Đòn bẩy:</b> x{risk:.1f}" if isinstance(risk, (int, float)) else None
+    if isinstance(risk, (int, float)):
+        risk_disp = math.floor(float(risk))
+        don_bay_line = f"<b>Đòn bẩy:</b> x{risk_disp:.1f}"
+    else:
+        don_bay_line = None
     lines = [
         f"🧭 <b>{sym} | {direction}</b>",
         "",  # dòng trống sau tiêu đề
