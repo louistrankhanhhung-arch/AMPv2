@@ -344,7 +344,12 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
         if rr2 is not None: rr_parts.append(f"RR2={rr2}")
         if rr3 is not None: rr_parts.append(f"RR3={rr3}")
         lev = plan.get("risk_size_hint")
-        lev_part = (f"LEV={lev:.1f}x" if isinstance(lev,(int,float)) else None)
+        if isinstance(lev, (int, float)):
+            import math
+            lev_disp = math.floor(float(lev))
+            lev_part = f"LEV={lev_disp:.1f}x"
+        else:
+            lev_part = None
 
         tp_str = " ".join(tp_parts)
         rr_str = " ".join(rr_parts)
