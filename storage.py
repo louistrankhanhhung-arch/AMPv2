@@ -240,6 +240,91 @@ class SignalPerfDB:
                 "win_rate": win_rate, "sum_pct": sum_pct, "avg_pct": avg_pct
             }
         }
+
+# NEW: breakdown theo period (hiện dùng 'day' cho khối hiệu suất)
+    def kpis_detail(self, period: str = "day") -> dict:
+        """
+        Trả về:
+          - items: list[{symbol, status, pct, win(bool)}] cho các lệnh trong 'period'
+          - totals: {n, wins, losses, win_rate, sum_pct, avg_pct, equity_change_pct, tp_counts}
+        period:
+          - 'day'   : từ 00:00 local hôm nay
+          - '24h'   : 24 giờ gần nhất (nếu cần)
+        """
+        import time
+        now = int(time.time())
+        if period == "day":
+            lt = time.localtime(now)
+            start_ts = int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, lt.tm_wday, lt.tm_yday, lt.tm_isdst)))
+        else:
+            start_ts = now - 24*3600
+
+        def _pct(t, price_hit):
+            try:
+                e = float(t.get("entry") or 0.0)
+                if not e: return 0.0
+                if (t.get("dir") or "").upper() == "LONG":
+                    return (float(price_hit) - e) / e * 100.0
+                else:
+                    return (e - float(price_hit)) / e * 100.0
+            except Exception:
+                return 0.0
+
+        items = []
+        for t in self._all().values():
+            if int(t.get("posted_at", 0)) < start_ts:
+                continue
+            status = (t.get("status") or "OPEN").upper()
+            price_hit = None
+            win = False
+            hits = (t.get("hits") or {})
+            # Chỉ tính các lệnh đã hit SL hoặc TP (TP3 > TP2 > TP1).
+            if not (status in ("SL", "TP1", "TP2", "TP3")
+                    or ("TP1" in hits) or ("TP2" in hits) or ("TP3" in hits)):
+                continue
+            if status == "TP3" or ("TP3" in hits):
+                price_hit = t.get("tp3"); win = True; status = "TP3"
+            elif status == "TP2" or ("TP2" in hits):
+                price_hit = t.get("tp2"); win = True; status = "TP2"
+            elif status == "TP1" or ("TP1" in hits):
+                price_hit = t.get("tp1"); win = True; status = "TP1"
+            else:
+                price_hit = t.get("sl");  win = False; status = "SL"
+            items.append({
+                "symbol": (t.get("symbol") or "").upper(),
+                "status": status,
+                "pct": _pct(t, price_hit),
+                "win": bool(win),
+            })
+
+        # Totals (today)
+        n = len(items)
+        wins = sum(1 for i in items if i["win"])
+        losses = sum(1 for i in items if i["status"] == "SL")
+        sum_pct = sum(i["pct"] for i in items)
+        avg_pct = (sum_pct / n) if n else 0.0
+        win_rate = (wins / n) if n else 0.0
+        # Geometric compounding 1x
+        eq_mult = 1.0
+        for i in items:
+            eq_mult *= (1.0 + float(i["pct"])/100.0)
+        equity_change_pct = (eq_mult - 1.0) * 100.0
+        # TP counts
+        tp_counts = {"TP3": 0, "TP2": 0, "TP1": 0, "SL": 0}
+        for i in items:
+            s = i["status"]
+            if s in tp_counts: tp_counts[s] += 1
+
+        return {
+            "items": items,
+            "totals": {
+                "n": n, "wins": wins, "losses": losses,
+                "win_rate": win_rate, "sum_pct": sum_pct, "avg_pct": avg_pct,
+                "equity_change_pct": equity_change_pct,
+                "tp_counts": tp_counts
+            }
+        }
+
 # -------------------------------
 # Users / subscriptions
 # -------------------------------
