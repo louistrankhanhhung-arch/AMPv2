@@ -472,7 +472,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 if t.get("status") in ("OPEN","TP1","TP2") and t.get("tp3") and crossed(side, price_now, t["tp3"]):
                     perf.close(t["sid"], "TP3")
                     t["status"] = "TP3"
-                    note = "🎯 TP3 hit — Đóng lệnh."
+                    note = "🎯 TP3 hit — Tất cả TP đều đạt — Đóng lệnh."
                     extra = {"margin_pct": margin_pct(float(t["tp3"]))}
                     if tn2:
                         if msg_id:
