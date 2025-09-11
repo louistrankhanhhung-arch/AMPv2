@@ -8,11 +8,30 @@ from typing import Dict, Any, List, Optional
 from tiny_core_side_state import SideCfg, run_side_state_core
 import os
 
+def _last_closed_bar(df):
+    """
+    Return the last *closed* bar for streaming safety:
+    use df.iloc[-2] if available, else the last row.
+    """
+    try:
+        n = len(df)
+        if n >= 2:
+            return df.iloc[-2]
+        elif n == 1:
+            return df.iloc[-1]
+    except Exception:
+        pass
+    return None
+
 def _atr_from_features(features_by_tf: Dict[str, Any]) -> float:
+    """Use ATR at the last *closed* bar to avoid partial-candle drift."""
     try:
         df = (features_by_tf or {}).get("1H", {}).get("df")
         if df is not None and len(df) > 0:
-            return float(df["atr14"].iloc[-1])
+            last = _last_closed_bar(df)
+            if last is not None:
+                # read ATR value at the same index as the closed bar
+                return float(df.loc[last.name, "atr14"])
     except Exception:
         pass
     return 0.0
@@ -25,7 +44,9 @@ def _soft_levels(features_by_tf: Dict[str, Any]) -> Dict[str, float]:
     try:
         df = (features_by_tf or {}).get("1H", {}).get("df")
         if df is not None and len(df) > 0:
-            last = df.iloc[-1]
+            last = _last_closed_bar(df)
+            if last is None:
+                return out
             for k in ("bb_upper","bb_mid","bb_lower","ema20","ema50","close"):
                 if k in last and last[k] == last[k]:  # not NaN
                     out[k] = float(last[k])
