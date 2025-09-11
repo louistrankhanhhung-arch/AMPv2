@@ -59,6 +59,18 @@ class SideCfg:
     dist_atr_thr_normal: float = 0.75
     dist_atr_thr_high: float = 1.00
 
+    # --- SL regime adaptation ---
+    sl_min_atr_low: float = 0.50
+    sl_min_atr_normal: float = 0.60
+    sl_min_atr_high: float = 1.00
+
+    # --- 4H confirm rules for breakout/continuation ---
+    use_4h_confirm: bool = True
+    rsi_long_thr_4h: float = 55.0
+    rsi_short_thr_4h: float = 45.0
+    # allow fast trigger without 4H when regime == 'high'
+    skip_4h_when_high_vol: bool = True
+
 
 # Kết quả setup/decision để tương thích engine_adapter.py
 @dataclass
@@ -292,7 +304,44 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     retest_zone_mid = mid1 if mid1 is not None else mid2
 
     # khoảng cách hiện tại đến mid theo ATR (để guard proximity)
-    dist_atr = abs(((price or 0.0) - (retest_zone_mid or (price or 0.0))) / max(atr, 1e-9)) if retest_zone_mid is not None and price is not None else 0.0
+    dist_atr = abs(((price or 0.0) - (retest_zone_mid or (price or 0.0))) / max(atr, 1e-9)) if retest_zone_mid else None
+
+    # -------------- 4H CONFIRM (two-tier) --------------
+    regime = str(ev_adapt.get("regime") or "normal")  # 'low' | 'normal' | 'high' :contentReference[oaicite:3]{index=3}
+    f4_trend = (f4.get('trend') or {})
+    f4_momo  = (f4.get('momentum') or {})
+    trend_ok_long  = (f4_trend.get('state') == 'up')
+    trend_ok_short = (f4_trend.get('state') == 'down')
+    rsi4 = float(f4_momo.get('rsi') or 50.0)
+    rsi_ok_long  = rsi4 >= cfg.rsi_long_thr_4h
+    rsi_ok_short = rsi4 <= cfg.rsi_short_thr_4h
+    trend_not_side = f4_trend.get('state') in ('up','down')
+
+    def _need_4h_confirm() -> bool:
+        if not cfg.use_4h_confirm:
+            return False
+        if regime == 'high' and cfg.skip_4h_when_high_vol:
+            # high-vol: cho phép mini_retest/inside_bar 1H phản ứng nhanh
+            return False
+        return True
+
+    def _confirm_4h(side: str) -> bool:
+        if not _need_4h_confirm():
+            return True
+        if side == 'long':
+            return (trend_ok_long and rsi_ok_long) or trend_not_side
+        if side == 'short':
+            return (trend_ok_short and rsi_ok_short) or trend_not_side
+        return False
+
+    # Ghi vào meta để core sử dụng
+    confirm4h = {
+        "need": _need_4h_confirm(),
+        "trend_state_4h": f4_trend.get('state'),
+        "rsi4": rsi4,
+        "ok_long": _confirm_4h('long'),
+        "ok_short": _confirm_4h('short')
+    }
 
     # đóng gói SI đơn giản bằng object kiểu dict
     class SIObj:
@@ -307,6 +356,7 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.trend_strength = trend_strength
     si.momo_strength = momo_strength
     si.volume_tilt = volume_tilt
+    
     # candle pattern flags
     try:
         si.inside_bar = bool((f1.get('candles', {}) or {}).get('inside_bar', False))
