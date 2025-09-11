@@ -121,3 +121,44 @@ def render_kpi_24h(detail: dict, report_date_str: str, upgrade_url: str | None =
         lines.append("🔒 <b>Nâng cấp Plus</b> để xem full tín hiệu & nhận thông báo sớm hơn.")
         lines.append(f'<a href="{upgrade_url}">👉 Nâng cấp ngay</a>')
     return "\n".join(lines)
+
+# NEW: Teaser 2 phần — Header + danh sách 24H, rồi khối hiệu suất NGÀY (today)
+def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dict, report_date_str: str) -> str:
+    # --- 0) Header ---
+    lines = [f"🧭 <b>Kết quả giao dịch 24H qua — {report_date_str}</b>", ""]
+    # --- 1) Danh sách tín hiệu (24H) ---
+    items = detail_24h.get("items", []) or []
+    if not items:
+        lines += ["Không có tín hiệu nào trong 24H qua.", ""]
+    else:
+        icons = {"TP1": "🟢", "TP2": "🟢", "TP3": "🟢", "SL": "⛔"}
+        for it in items:
+            status = str(it.get("status") or "")
+            icon = icons.get(status, "⚪")
+            try:
+                pct = float(it.get("pct") or 0.0)
+            except Exception:
+                pct = 0.0
+            sym = (it.get("symbol") or "").upper()
+            lines.append(f"{icon} {sym}: {pct:+.2f}%")
+        lines.append("")  # dòng trống ngăn cách khối
+
+    # --- 2) Khối hiệu suất (chỉ dùng 'today') ---
+    totals_day = (detail_day or {}).get("totals", {}) or {}
+    eq1x = float(totals_day.get("equity_change_pct", 0.0) or 0.0)          # Lợi nhuận 1x (ghép lãi)
+    sumR = float(kpi_day.get("sumR", 0.0) or 0.0)                           # Tổng R trong ngày
+    wr = float(kpi_day.get("wr", 0.0) or 0.0) * 100.0                       # Win-rate %
+    pnl_per_100 = sumR * 100.0                                              # PnL trên $100 risk
+    tp_counts = totals_day.get("tp_counts", {}) or {}
+    c3 = int(tp_counts.get("TP3", 0) or 0); c2 = int(tp_counts.get("TP2", 0) or 0)
+    c1 = int(tp_counts.get("TP1", 0) or 0); cs = int(tp_counts.get("SL", 0) or 0)
+
+    lines += [
+        "📊 <b>Hiệu suất (Today)</b>:",
+        f"- Lợi nhuận 1x: {eq1x:+.2f}%",
+        f"- Tổng R: {sumR:+.1f}R",
+        f"- Tỉ lệ thắng: {wr:.0f}%",
+        f"- PnL trên $100 risk: ${pnl_per_100:.0f}",
+        f"- TP theo số lệnh: TP3: {c3}  - TP2: {c2} - TP1: {c1}  -  SL: {cs}",
+    ]
+    return "\n".join(lines)
