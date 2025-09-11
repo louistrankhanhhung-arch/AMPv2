@@ -261,14 +261,23 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     momo_strength = _momo_dir_from_features(f1)
     volume_tilt = _vol_dir_from_features(f1)
 
-    # Detect inside-bar on 1H (last two closed bars)
+    # Detect inside-bar on 1H — use the last *closed* two bars to avoid partial-candle drift
     inside_bar = False
     try:
         df1 = (features_by_tf.get("1H", {}) or {}).get("df")
-        if df1 is not None and len(df1) >= 2:
-            last = df1.iloc[-1]; prev = df1.iloc[-2]
-            inside_bar = bool((float(last.get("high", last["close"])) <= float(prev.get("high", prev["close"]))) and
-                               (float(last.get("low", last["close"]))  >= float(prev.get("low", prev["close"]))))
+        if df1 is not None:
+            n = len(df1)
+            # need at least 3 rows to safely take the last two *closed* bars
+            if n >= 3:
+                last_closed = df1.iloc[-2]
+                prev_closed = df1.iloc[-3]
+                hi_last  = float(last_closed.get("high",  last_closed["close"]))
+                lo_last  = float(last_closed.get("low",   last_closed["close"]))
+                hi_prev  = float(prev_closed.get("high",  prev_closed["close"]))
+                lo_prev  = float(prev_closed.get("low",   prev_closed["close"]))
+                inside_bar = bool((hi_last <= hi_prev) and (lo_last >= lo_prev))
+            else:
+                inside_bar = False
     except Exception:
         inside_bar = False
 
