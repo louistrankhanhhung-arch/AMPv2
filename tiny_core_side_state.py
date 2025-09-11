@@ -20,13 +20,10 @@ class SideCfg:
     # Guards cho BREAK theo biến động tương đối (NATR) – 4H/execution
     natr_break_min: float = 0.004      # ~0.4%
     natr_break_max: float = 0.060      # ~6% (quá cao -> dễ whipsaw/chasing)
-    # Early-breakout / continuation gate
-    early_breakout_ok: bool = True
-    early_breakout_natr_max: float = 0.012  # <= ~1.2% coi là low-vol
-
+    
     # Early breakout option: allow break without volume/exp when NATR is low
     early_breakout_ok: bool = True
-    early_breakout_natr_max: float = 0.012  # <=1.2% considered low-vol regime
+    early_breakout_natr_max: float = 0.012  # <= ~1.2% coi là low-vol
 
     # Retest proximity thresholds by regime (dist to mid in ATR)
     dist_atr_thr_low: float = 0.60
@@ -142,6 +139,50 @@ def _ensure_sl_gap(entry: float, sl: float, atr: float, side: str, min_atr: floa
     else:
         return float(entry + min_gap) if (sl - entry) < min_gap else float(sl)
 
+def _apply_sl_upgrades(side_meta: Any, side: str, entry: float, sl: float, cfg: SideCfg) -> float:
+    """
+    1) Ensure SL gap theo regime (low/normal/high) từ evidence_adaptive.regime:contentReference[oaicite:4]{index=4}
+    2) Tôn trọng swing gần nhất: 
+       - long: nếu có LL gần dưới entry, ưu tiên đặt SL < LL (trừ 0.1*ATR)
+       - short: nếu có HH gần trên entry, ưu tiên đặt SL > HH (cộng 0.1*ATR)
+    """
+    # side_meta có thể là dict hoặc SI object
+    atr = float(_safe_get(side_meta, "atr", 0.0) or 0.0)
+    regime = str(_safe_get(side_meta, "regime", "normal"))
+    if regime == "low":
+        min_atr = cfg.sl_min_atr_low
+    elif regime == "high":
+        min_atr = cfg.sl_min_atr_high
+    else:
+        min_atr = cfg.sl_min_atr_normal
+
+    sl_new = _ensure_sl_gap(entry, sl, atr, side, min_atr=min_atr)  # đã có sẵn trong core:contentReference[oaicite:5]{index=5}
+
+    # nearest swing (1H ưu tiên; fallback 4H)
+    import math
+    def _nearest(vals, ref):
+        try:
+            vals = [float(v) for v in (vals or []) if v is not None and math.isfinite(float(v))]
+        except Exception:
+            vals = []
+        if not vals or ref is None or not math.isfinite(ref):
+            return None
+        return min(vals, key=lambda v: abs(v - ref))
+
+    last_LL = _nearest(_safe_get(side_meta, "last_LL_1h") or _safe_get(side_meta, "last_LL_4h"), entry)
+    last_HH = _nearest(_safe_get(side_meta, "last_HH_1h") or _safe_get(side_meta, "last_HH_4h"), entry)
+
+    if side == "long" and last_LL is not None:
+        sl_floor = float(last_LL) - 0.1 * atr
+        if sl_new > sl_floor:
+            sl_new = sl_floor
+    if side == "short" and last_HH is not None:
+        sl_ceiling = float(last_HH) + 0.1 * atr
+        if sl_new < sl_ceiling:
+            sl_new = sl_ceiling
+
+    return float(sl_new)
+
 def _tp_by_rr(entry: float, sl: float, side: str, targets: Tuple[float, ...]) -> List[float]:
     """
     Tạo TP theo RR tuyệt đối từ cấu hình rr_targets (ví dụ 1.2, 2.0, 3.0).
@@ -234,7 +275,7 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     # levels để dựng TP ladder/SL confluence
     levels1h = f1.get('levels', {}) or {}
     levels4h = f4.get('levels', {}) or {}
-
+        
     # Lấy evidences chính
     ev_pb  = _get_ev(eb, 'price_breakout')
     ev_pdn = _get_ev(eb, 'price_breakdown')
@@ -307,7 +348,7 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     dist_atr = abs(((price or 0.0) - (retest_zone_mid or (price or 0.0))) / max(atr, 1e-9)) if retest_zone_mid else None
 
     # -------------- 4H CONFIRM (two-tier) --------------
-    regime = str(ev_adapt.get("regime") or "normal")  # 'low' | 'normal' | 'high' :contentReference[oaicite:3]{index=3}
+    regime = str(ev_adapt.get("regime") or "normal")  # 'low' | 'normal' | 'high'
     f4_trend = (f4.get('trend') or {})
     f4_momo  = (f4.get('momentum') or {})
     trend_ok_long  = (f4_trend.get('state') == 'up')
@@ -371,6 +412,16 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
 
     si.levels1h = levels1h
     si.levels4h = levels4h
+    # attach swings & regime/confirm to si
+    try:
+        si.last_HH_1h = (levels1h or {}).get("last_HH")
+        si.last_LL_1h = (levels1h or {}).get("last_LL")
+        si.last_HH_4h = (levels4h or {}).get("last_HH")
+        si.last_LL_4h = (levels4h or {}).get("last_LL")
+    except Exception:
+        si.last_HH_1h = si.last_LL_1h = si.last_HH_4h = si.last_LL_4h = None
+    si.regime = regime
+    si.confirm4h = confirm4h
 
     si.breakout_ok = breakout_ok
     si.breakout_side = breakout_side
@@ -827,6 +878,20 @@ def run_side_state_core(
     state, side, meta = classify_state_with_side(si, cfg)
     setup: Setup = build_setup(si, state, side, cfg)
     dec: Decision = decide_5_gates(state, side, setup, si, cfg, meta)
+
+    # (2) Confirm 4H cho breakout/continuation theo two-tier
+    if dec.state in ("trend_break","continuation") and dec.side in ("long","short"):
+        ok4h = _safe_get(si, "confirm4h", {}).get("ok_long" if dec.side=="long" else "ok_short", True)
+        need4h = _safe_get(si, "confirm4h", {}).get("need", False)
+        # Nếu cần 4H mà không pass → WAIT để tránh whipsaw ở low/normal vol
+        if need4h and not ok4h:
+            dec.decision = "WAIT"
+            dec.reasons.append("need_4H_confirm")
+
+    # (3) Finalize setup (giữ nguyên nếu đã có)
+    if dec.setup and dec.setup.entry is not None and dec.setup.sl is not None and dec.side in ("long","short"):
+        # Nâng cấp SL: ensure-gap theo regime + tôn trọng swing gần nhất
+        dec.setup.sl = _apply_sl_upgrades(si, dec.side, dec.setup.entry, dec.setup.sl, cfg)
 
     return dec
 
