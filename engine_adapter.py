@@ -4,7 +4,7 @@ engine_adapter.py
 - Thin wrapper so main.py can call decide(...) without decision_engine.py.
 - Uses tiny_core_side_state to compute decision and formats a legacy-compatible dict.
 """
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Iterable
 from tiny_core_side_state import SideCfg, run_side_state_core
 import os
 
@@ -23,10 +23,10 @@ def _last_closed_bar(df):
         pass
     return None
 
-def _atr_from_features(features_by_tf: Dict[str, Any]) -> float:
+def _atr_from_features_tf(features_by_tf: Dict[str, Any], tf: str = "1H") -> float:
     """Use ATR at the last *closed* bar to avoid partial-candle drift."""
     try:
-        df = (features_by_tf or {}).get("1H", {}).get("df")
+        df = (features_by_tf or {}).get(tf, {}).get("df")
         if df is not None and len(df) > 0:
             last = _last_closed_bar(df)
             if last is not None:
@@ -36,13 +36,13 @@ def _atr_from_features(features_by_tf: Dict[str, Any]) -> float:
         pass
     return 0.0
 
-def _soft_levels(features_by_tf: Dict[str, Any]) -> Dict[str, float]:
+def _soft_levels_by_tf(features_by_tf: Dict[str, Any], tf: str = "1H") -> Dict[str, float]:
     """
-    Lấy các mức mềm ở nến mới nhất: BB upper/mid/lower, EMA20/50, Close.
+    Lấy các mức mềm ở nến đã đóng gần nhất của TF chỉ định: BB upper/mid/lower, EMA20/50, Close.
     """
     out = {}
     try:
-        df = (features_by_tf or {}).get("1H", {}).get("df")
+        df = (features_by_tf or {}).get(tf, {}).get("df")
         if df is not None and len(df) > 0:
             last = _last_closed_bar(df)
             if last is None:
@@ -54,51 +54,47 @@ def _soft_levels(features_by_tf: Dict[str, Any]) -> Dict[str, float]:
         pass
     return out
 
-def _near_soft_level_guard(side: Optional[str], entry: Optional[float], feats: Dict[str, Any]) -> Dict[str, Any]:
+def _near_soft_level_guard_multi(
+    side: Optional[str],
+    entry: Optional[float],
+    feats: Dict[str, Any],
+    tfs: Iterable[str] = ("1H","4H"),
+) -> Dict[str, Any]:
     """
-    Trả về {"block": bool, "why": str} nếu entry quá gần BB/EMA theo hướng giao dịch.
+    Trả về {"block": bool, "why": str} nếu entry quá gần BB/EMA (1H/4H…) theo hướng giao dịch.
     Quy tắc (mặc định):
       - BB upper/lower: <= 0.30*ATR
       - EMA20/EMA50/BB mid: <= 0.25*ATR
     """
     if side not in ("long","short") or entry is None:
         return {"block": False, "why": ""}
-    atr = _atr_from_features(feats)
-    if atr <= 0:
-        return {"block": False, "why": ""}
-    lv = _soft_levels(feats)
-    if not lv:
-        return {"block": False, "why": ""}
-
-    bb_u, bb_m, bb_l = lv.get("bb_upper"), lv.get("bb_mid"), lv.get("bb_lower")
-    e20, e50 = lv.get("ema20"), lv.get("ema50")
-
-    # Ngưỡng tính theo ATR
-    thr_band = 0.30 * atr
-    thr_center = 0.25 * atr
-
-    reasons = []
-    def _dist(a, b): 
-        try: 
-            return abs(float(a) - float(b))
-        except Exception:
-            return float("inf")
-
-    if side == "long":
-        # Chặn khi entry nằm phía dưới cản mềm ngắn hạn (sát BB upper) -> dễ bị nhúng
-        if bb_u is not None and entry <= bb_u and _dist(entry, bb_u) <= thr_band:
-            reasons.append(f"near_BB_upper(<= {thr_band:.4f})")
-        # Center lines: cần nhúng về vùng cân bằng
-        for nm, lvl in (("EMA20", e20), ("EMA50", e50), ("BB_mid", bb_m)):
-            if lvl is not None and entry >= lvl and _dist(entry, lvl) <= thr_center:
-                reasons.append(f"near_{nm}(<= {thr_center:.4f})")
-    else:  # short
-        if bb_l is not None and entry >= bb_l and _dist(entry, bb_l) <= thr_band:
-            reasons.append(f"near_BB_lower(<= {thr_band:.4f})")
-        for nm, lvl in (("EMA20", e20), ("EMA50", e50), ("BB_mid", bb_m)):
-            if lvl is not None and entry <= lvl and _dist(entry, lvl) <= thr_center:
-                reasons.append(f"near_{nm}(<= {thr_center:.4f})")
-
+    reasons: List[str] = []
+    for tf in tfs:
+        atr = _atr_from_features_tf(feats, tf)
+        if atr <= 0:
+            continue
+        lv = _soft_levels_by_tf(feats, tf)
+        if not lv:
+            continue
+        bb_u, bb_m, bb_l = lv.get("bb_upper"), lv.get("bb_mid"), lv.get("bb_lower")
+        e20, e50 = lv.get("ema20"), lv.get("ema50")
+        thr_band   = 0.30 * atr
+        thr_center = 0.25 * atr
+        def _dist(a, b):
+            try: return abs(float(a) - float(b))
+            except Exception: return float("inf")
+        if side == "long":
+            if bb_u is not None and entry <= bb_u and _dist(entry, bb_u) <= thr_band:
+                reasons.append(f"{tf}:near_BB_upper(<= {thr_band:.4f})")
+            for nm, lvl in (("EMA20", e20), ("EMA50", e50), ("BB_mid", bb_m)):
+                if lvl is not None and entry >= lvl and _dist(entry, lvl) <= thr_center:
+                    reasons.append(f"{tf}:near_{nm}(<= {thr_center:.4f})")
+        else:
+            if bb_l is not None and entry >= bb_l and _dist(entry, bb_l) <= thr_band:
+                reasons.append(f"{tf}:near_BB_lower(<= {thr_band:.4f})")
+            for nm, lvl in (("EMA20", e20), ("EMA50", e50), ("BB_mid", bb_m)):
+                if lvl is not None and entry <= lvl and _dist(entry, lvl) <= thr_center:
+                    reasons.append(f"{tf}:near_{nm}(<= {thr_center:.4f})")
     if reasons:
         return {"block": True, "why": ";".join(reasons)}
     return {"block": False, "why": ""}
@@ -152,7 +148,7 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     rr3 = _rr(dec.setup.entry, dec.setup.sl, tp3, dec.side)
 
     # -------- SOFT PROXIMITY GUARD (BB/EMA) --------
-    prox = _near_soft_level_guard(dec.side, dec.setup.entry, features_by_tf)
+    prox = _near_soft_level_guard_multi(dec.side, dec.setup.entry, features_by_tf)
     if prox.get("block"):
         # Ép về WAIT + thêm lý do "soft_proximity"
         dec.decision = "WAIT"
