@@ -62,6 +62,7 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
         f"<b>TP1:</b> {tp1}",
         f"<b>TP2:</b> {tp2}",
         f"<b>TP3:</b> {tp3}",
+        "",  # dòng trống sau Entry/SL
     ]
     if don_bay_line:
         lines.append(don_bay_line)
