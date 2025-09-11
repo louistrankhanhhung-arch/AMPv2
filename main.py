@@ -578,15 +578,17 @@ def loop_scheduler():
         try:
             if now.hour == 8 and now.minute == 18 and (last_kpi_day != (now.year, now.month, now.day)):
                 last_kpi_day = (now.year, now.month, now.day)
-                # dựng báo cáo 24H
+                # Teaser KPI: list 24H + hiệu suất NGÀY (today)
                 perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
-                detail = perf.kpis_24h_detail()
+                detail_24h = perf.kpis_24h_detail()
+                kpi_day = perf.kpis("day")          # sumR, wr, ...
+                detail_day = perf.kpis_detail("day")# equity 1x + tp_counts
                 # ngày/tháng cho header
                 report_date_str = now.strftime("%d/%m/%Y")
-                from templates import render_kpi_24h
+                from templates import render_kpi_teaser_two_parts
                 tn = _get_notifier()
                 if tn:
-                    html = render_kpi_24h(detail, report_date_str, upgrade_url=f"https://t.me/{tn.username}?start=upgrade")
+                    html = render_kpi_teaser_two_parts(detail_24h, kpi_day, detail_day, report_date_str)
                     tn.send_kpi24(html)
         except Exception as e:
             log.warning(f"KPI-24H send failed: {e}")
