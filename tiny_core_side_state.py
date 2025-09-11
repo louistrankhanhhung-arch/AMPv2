@@ -488,7 +488,18 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
 
     # Helper an toàn (nếu field không tồn tại thì trả mặc định)
     def _safe_get_local(obj: Any, name: str, default: Any = None) -> Any:
-        return getattr(obj, name, default)
+        """getattr an toàn: nếu thuộc tính = None thì trả về default."""
+        try:
+            val = getattr(obj, name)
+        except Exception:
+            val = default
+        return default if val is None else val
+
+    def _to_float(x, default=float("nan")) -> float:
+        try:
+            return float(x)
+        except Exception:
+            return default
 
     # Hướng trend/momentum/volume: quy về {-1, 0, +1}
     def _trend_dir(x: SI) -> int:
@@ -504,8 +515,8 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         return 0 if val == 0 else int(math.copysign(1, val))
 
     # Meta context
-    natr = float(_safe_get_local(si, "natr", float("nan")))
-    dist_atr = float(_safe_get_local(si, "dist_atr", float("nan")))
+    natr = _to_float(_safe_get_local(si, "natr", float("nan")), float("nan"))
+    dist_atr = _to_float(_safe_get_local(si, "dist_atr", float("nan")), float("nan"))
     tr = _trend_dir(si)
     momo = _momo_dir(si)
     vdir = _volume_dir(si)
@@ -654,8 +665,9 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         major_long  = int((tr > 0 and momo > 0)) + int(rcl) + int(fbl)
         major_short = int((tr < 0 and momo < 0)) + int(rcs) + int(fbs)
         # Allow (inside-bar + volume tilt) to count as a major when trend&momo align
-        ib = bool(_safe_get_local(si, 'inside_bar', False))
-        vdir = int(math.copysign(1, float(_safe_get_local(si, 'volume_tilt', 0.0)))) if float(_safe_get_local(si, 'volume_tilt', 0.0)) != 0 else 0
+        ib = bool(_safe_get(si, 'inside_bar', False))
+        vt = _to_float(_safe_get(si, 'volume_tilt', 0.0), 0.0)
+        vdir = int(math.copysign(1, vt)) if vt != 0 else 0
         if (tr > 0 and momo > 0 and vdir > 0 and ib):
             major_long += 1
         if (tr < 0 and momo < 0 and vdir < 0 and ib):
