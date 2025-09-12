@@ -124,6 +124,18 @@ class SignalPerfDB:
         self._write(data)
         return t
 
+    # NEW: count trades posted within a [start_ts, end_ts) range
+    def count_released_between(self, start_ts: int, end_ts: int) -> int:
+        """
+        Đếm số tín hiệu đã đăng (open) trong khoảng [start_ts, end_ts).
+        Dùng để giới hạn số lượng tín hiệu được release theo time-window.
+        """
+        n = 0
+        for t in self._all().values():
+            ts = int(t.get("posted_at", 0))
+            if start_ts <= ts < end_ts:
+                n += 1
+        return n
 
     def kpis(self, period: str = "day") -> dict:
         """
