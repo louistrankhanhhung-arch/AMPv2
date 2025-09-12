@@ -38,6 +38,26 @@ log = logging.getLogger("worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
                     format="%(asctime)s %(levelname)s %(message)s")
 
+def _current_vn_window(now_local: datetime) -> tuple[int, int] | None:
+    """
+    Nếu now_local (Asia/Ho_Chi_Minh) đang nằm trong một trong hai khung:
+      - 05:30–07:30
+      - 17:30–19:30
+    thì trả về (start_ts, end_ts) theo epoch seconds. Ngược lại trả None.
+    """
+    def _ts(h: int, m: int) -> int:
+        dt = now_local.replace(hour=h, minute=m, second=0, microsecond=0)
+        return int(dt.timestamp())
+    # hôm nay theo VN
+    am_start, am_end = _ts(5, 30), _ts(7, 30)
+    pm_start, pm_end = _ts(17, 30), _ts(19, 30)
+    now_ts = int(now_local.timestamp())
+    if am_start <= now_ts < am_end:
+        return am_start, am_end
+    if pm_start <= now_ts < pm_end:
+        return pm_start, pm_end
+    return None
+
 # -------- helper: evidence detail formatting ----------
 def _fmt_float(x, nd=2):
     try:
@@ -407,14 +427,25 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     "notes": out.get("notes", []),
                 })
                 perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
-                # 12h cooldown
-                if perf.cooldown_active(symbol, seconds=12*3600):
-                    log.info(f"[{symbol}] skip ENTER due to cooldown (12h)")
+                # 24h cooldown
+                if perf.cooldown_active(symbol, seconds=24*3600):
+                    log.info(f"[{symbol}] skip ENTER due to cooldown (24h)")
                 else:
+                    # --- NEW: quota theo khung giờ VN (05:30–07:30, 17:30–19:30) — tối đa 1 tín hiệu ---
+                    now_local = datetime.now(TZ)
+                    win = _current_vn_window(now_local)
+                    if win is not None:
+                        start_ts, end_ts = win
+                        released = perf.count_released_between(start_ts, end_ts)
+                        if released >= 1:
+                            log.info(f"[{symbol}] skip ENTER due to window quota ({released}) at {now_local.strftime('%H:%M')}")
+                            # Chặn phát hành trong khung giờ nếu đã có 1 tín hiệu
+                            return
                     sid, msg_id = tn.post_teaser(plan_for_teaser)
                     perf.open(sid, plan_for_teaser, message_id=msg_id)
             except Exception as e:
                 log.warning(f"[{symbol}] teaser post failed: {e}")
+                
     # --- end teaser post ---
 # --- progress check: update TP/SL hits for existing OPEN trades ---
     try:
