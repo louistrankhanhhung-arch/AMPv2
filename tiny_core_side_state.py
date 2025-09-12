@@ -767,9 +767,9 @@ def decide_5_gates(state: str, side: Optional[str], setup: Setup, si: SI, cfg: S
         regime = (_safe_get(si, "regime") or "normal")
     except Exception:
         regime = "normal"
-    liq_thr_map = {"low": 0.8, "normal": 0.6, "high": 0.5}
+    liq_thr_map = {"low": 0.7, "normal": 0.55, "high": 0.5}
     dec.meta["regime"] = regime
-    dec.meta["liq_thr"] = liq_thr_map.get(regime, 0.6)
+    dec.meta["liq_thr"] = liq_thr_map.get(regime, 0.55)
     # Side votes (numeric strengths; may be -1..+1 or scaled)
     try:
         dec.meta["side_votes"] = {
