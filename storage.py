@@ -165,17 +165,23 @@ class SignalPerfDB:
     def kpis_24h_detail(self) -> dict:
         """
         Trả về:
-          - items: list[{symbol, status, pct, win(bool)}] cho các lệnh posted trong 24h qua
-          - totals: {n, wins, losses, win_rate, sum_pct, avg_pct}
-        Quy ước %:
+          - items: list[{symbol, status, pct, win, R}] cho các lệnh posted trong 24h qua
+          - totals: {
+                n, wins, losses, win_rate,
+                sum_pct, avg_pct,
+                sum_R, avg_R,
+                tp_counts: {TP1, TP2, TP3, SL}
+            }
+        Quy ước:
           • TPx: dùng (TPx-entry)/entry * 100 cho LONG; ngược lại cho SHORT
-          • SL: âm tương tự
-          • Nếu chưa chạm TP/SL: pct=0, win=False
+          • SL : âm tương tự; R = -1.0
+          • CLOSE (về entry, chưa chạm TP/SL) -> bỏ qua (đúng theo yêu cầu)
         """
         import time
         now = int(time.time())
         start_ts = now - 24*3600
-        def _pct(t, price_hit):
+
+        def _pct(t: dict, price_hit):
             try:
                 e = float(t.get("entry") or 0.0)
                 if not e: return 0.0
@@ -185,59 +191,74 @@ class SignalPerfDB:
                     return (e - float(price_hit)) / e * 100.0
             except Exception:
                 return 0.0
+
+        def _r_estimate(t: dict, status: str) -> float:
+            """Ước lượng R theo status; ưu tiên r_ladder nếu có, SL = -1.0"""
+            rl = (t.get("r_ladder") or {})
+            if status == "TP3":
+                return float(rl.get("tp3") or rl.get("TP3") or 3.0)
+            if status == "TP2":
+                return float(rl.get("tp2") or rl.get("TP2") or 2.0)
+            if status == "TP1":
+                return float(rl.get("tp1") or rl.get("TP1") or 1.0)
+            if status == "SL":
+                return -1.0
+            return 0.0
+
         items = []
+        tp_counts = {"TP1": 0, "TP2": 0, "TP3": 0, "SL": 0}
         for t in self._all().values():
             if int(t.get("posted_at", 0)) < start_ts:
                 continue
             status = (t.get("status") or "OPEN").upper()
-            # chọn mức đã đạt cao nhất
-            price_hit = None
-            win = False
             hits = (t.get("hits") or {})
-            # Chỉ tính các lệnh đã hit SL hoặc TP (TP3 > TP2 > TP1).
-            # Các lệnh OPEN/CLOSE do quay về entry mà chưa từng hit TP/SL -> bỏ qua.
-            if not (status in ("SL", "TP1", "TP2", "TP3")
-                    or ("TP1" in hits) or ("TP2" in hits) or ("TP3" in hits)):
-                # chưa có kết quả có ý nghĩa -> skip
+
+            # Bỏ qua CLOSE (không chạm TP/SL) và các lệnh chưa có kết quả có ý nghĩa
+            if not (status in ("SL","TP1","TP2","TP3") or ("TP1" in hits) or ("TP2" in hits) or ("TP3" in hits)):
                 continue
-            if status == "TP3" or ("TP3" in (t.get("hits") or {})):
-                price_hit = t.get("tp3"); win = True
-                status = "TP3"
-            elif status == "TP2" or ("TP2" in (t.get("hits") or {})):
-                price_hit = t.get("tp2"); win = True
-                status = "TP2"
-            elif status == "TP1" or ("TP1" in (t.get("hits") or {})):
-                price_hit = t.get("tp1"); win = True
-                status = "TP1"
+
+            win = False
+            price_hit = None
+            if status == "TP3" or ("TP3" in hits):
+                price_hit = t.get("tp3"); win = True; status = "TP3"; tp_counts["TP3"] += 1
+            elif status == "TP2" or ("TP2" in hits):
+                price_hit = t.get("tp2"); win = True; status = "TP2"; tp_counts["TP2"] += 1
+            elif status == "TP1" or ("TP1" in hits):
+                price_hit = t.get("tp1"); win = True; status = "TP1"; tp_counts["TP1"] += 1
             elif status == "SL":
-                price_hit = t.get("sl"); win = False
-            else:
-                # CLOSE nhưng đã từng hit TP1/TP2 (retrace về entry): dùng TP cao nhất đã có trong hits
-                # (Nhánh này chỉ đến được khi đã pass bộ lọc ở trên)
-                if "TP3" in hits:
-                    price_hit = t.get("tp3"); win = True; status = "TP3"
-                elif "TP2" in hits:
-                    price_hit = t.get("tp2"); win = True; status = "TP2"
-                else:
-                    price_hit = t.get("tp1"); win = True; status = "TP1"
+                price_hit = t.get("sl"); win = False; status = "SL"; tp_counts["SL"] += 1
+
             pct = _pct(t, price_hit)
+            R   = _r_estimate(t, status)
             items.append({
-                "symbol": t.get("symbol"),
+                "symbol": (t.get("symbol") or "").upper(),
                 "status": status,
                 "pct": float(pct),
                 "win": bool(win),
+                "R": float(R),
             })
+
         n = len(items)
         wins = sum(1 for i in items if i["win"])
         losses = sum(1 for i in items if i["status"] == "SL")
-        sum_pct = sum(i["pct"] for i in items)
+        sum_pct = sum(float(i["pct"]) for i in items)
         avg_pct = (sum_pct / n) if n else 0.0
         win_rate = (wins / n) if n else 0.0
+        sum_R = sum(float(i.get("R") or 0.0) for i in items)
+        avg_R = (sum_R / n) if n else 0.0
+
         return {
             "items": items,
             "totals": {
-                "n": n, "wins": wins, "losses": losses,
-                "win_rate": win_rate, "sum_pct": sum_pct, "avg_pct": avg_pct
+                "n": n,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": win_rate,
+                "sum_pct": sum_pct,
+                "avg_pct": avg_pct,
+                "sum_R": sum_R,
+                "avg_R": avg_R,
+                "tp_counts": tp_counts
             }
         }
 
