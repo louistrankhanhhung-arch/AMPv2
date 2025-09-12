@@ -187,17 +187,22 @@ def compute_volume_features(df: pd.DataFrame) -> Dict[str, Any]:
     v3 = float(df['volume'].tail(3).mean())
     v5 = float(df['volume'].tail(5).mean())
     v10 = float(df['volume'].tail(10).mean())
-    v20 = float(df['vol_sma20'].iloc[-1]) if 'vol_sma20' in df.columns else v20 if 'v20' in locals() else v10
+    v20 = float(df['vol_sma20'].iloc[-1]) if 'vol_sma20' in df.columns else v10
 
     contraction = (v5 < v10) and (v10 < v20)
     now = float(df['volume'].iloc[-1]) if len(df) else 0.0
+    # Khối lượng nến đã đóng gần nhất (tránh now=0 ở đầu nến do stream)
+    try:
+        prev_closed = float(_last_closed_bar(df).get('volume', 0.0))
+    except Exception:
+        prev_closed = 0.0
     median = float(df['volume'].tail(20).median()) if len(df) else 0.0
 
     return {
         "vol_ratio": vr,
         "vol_z20": vz,
         "v3": v3, "v5": v5, "v10": v10, "v20": v20,
-        "now": now, "median": median,
+        "now": now, "prev_closed": prev_closed, "median": median,
         "contraction": bool(contraction),
         "break_vol_ok": bool((vr >= 1.5) or (vz >= 1.0)),
         "break_vol_strong": bool((vr >= 2.0) or (vz >= 2.0)),
