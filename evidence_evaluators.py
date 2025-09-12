@@ -183,7 +183,7 @@ def _slow_market_guards(bbw_now: float, bbw_med: float,
     vov = (float(bbw_now) / bbw_med) if bbw_med > 0 else np.nan
     liq = (float(vol_now) / vol_med) if vol_med > 0 else np.nan
     is_slow = (regime == "low") and (vov < 0.8 if np.isfinite(vov) else False)
-    base_thr = 0.8 if regime == 'low' else (0.5 if regime == 'high' else 0.6)
+    base_thr = 0.8 if regime == 'low' else (0.5 if regime == 'high' else 0.55)
     # time-weight: thr(t) = base * (elapsed/bar)^0.7
     try:
         ef = 1.0 if elapsed_frac is None else float(elapsed_frac)
