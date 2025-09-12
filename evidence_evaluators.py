@@ -200,6 +200,7 @@ def _slow_market_guards(bbw_now: float, bbw_med: float,
         "is_slow": bool(is_slow),
         "liquidity_floor": bool(liq_floor),
         "liq_thr": float(liq_thr),
+        "elapsed_frac": float(ef),
     }
 
 def _last_swing(swings: Dict[str, Any], kind: str) -> Optional[float]:
@@ -878,20 +879,23 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     # --- Volume at 1H boundary: ưu tiên dùng volume nến ĐÃ ĐÓNG trong vài phút đầu giờ ---
     vol_now_raw = float(f1.get('volume', {}).get('now', 0.0) or f1.get('volume', {}).get('v', 0.0) or 0.0)
     vol_med     = float(f1.get('volume', {}).get('median', 0.0) or 0.0)
-    vol_now_eff = vol_now_raw
+    # Nếu feature đã cung cấp prev_closed thì dùng trực tiếp; nếu không thì truy xuất từ df1
+    prev_closed_vol = f1.get('volume', {}).get('prev_closed', None)
+    if prev_closed_vol is None:
+        try:
+            prev_closed_vol = float(_get_last_closed_bar(df1)['volume']) if (df1 is not None and len(df1) > 0) else None
+        except Exception:
+            prev_closed_vol = None
+    # Grace window đầu nến (mặc định 8 phút, có thể override qua ENV)
     try:
         grace_min = float(os.getenv("VOLUME_GUARD_GRACE_MIN", "8"))
         grace_frac = max(0.0, min(1.0, grace_min / 60.0))
     except Exception:
         grace_frac = 0.1333  # ~8 phút
-    if elapsed_frac <= grace_frac:
-        # Lấy volume nến 1H đã đóng gần nhất làm “điểm tựa”
-        try:
-            prev_closed_vol = float(_get_last_closed_bar(df1)['volume']) if (df1 is not None and len(df1)>0) else vol_now_raw
-        except Exception:
-            prev_closed_vol = vol_now_raw
-        # Dùng max để không làm giảm volume nếu vol_now đã lớn
-        vol_now_eff = max(vol_now_raw, prev_closed_vol)
+    vol_now_eff = vol_now_raw
+    if (elapsed_frac <= grace_frac) and (prev_closed_vol is not None):
+        # Dùng max để tránh làm giảm khối lượng nếu now đã lớn
+        vol_now_eff = max(vol_now_raw, float(prev_closed_vol))
 
     adaptive_meta = _slow_market_guards(
         bbw1, bbw1_med,
@@ -899,6 +903,11 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
         reg,
         elapsed_frac=elapsed_frac
     )
+    # Bổ sung thêm trường phục vụ log/trace
+    adaptive_meta.update({
+        "vol_now_eff": float(vol_now_eff),
+        "prev_closed_vol": (float(prev_closed_vol) if prev_closed_vol is not None else None),
+    })
  
     # Optional: volatility breakout with proper ATR slope (series vẫn theo 1H trigger)
     atr_series = df1['atr14'] if (df1 is not None and 'atr14' in df1) else None
@@ -925,6 +934,7 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
             'confirm': ev_vol_4h,
             'ok': bool(vol_ok),
             'vol_now': vol_now_safe,
+            'vol_now_eff': vol_now_safe,
             'vol_med': vol_med_safe,
             'vol_ratio': vol_ratio_1h,
             'vol_z20': vol_z20_1h,
