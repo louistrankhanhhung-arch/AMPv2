@@ -176,24 +176,17 @@ class SignalPerfDB:
 # NEW: breakdown 24H theo % dựa trên TP cao nhất/SL đã đạt
     def kpis_24h_detail(self) -> dict:
         """
-        Trả về:
-          - items: list[{symbol, status, pct, win, R}] cho các lệnh posted trong 24h qua
-          - totals: {
-                n, wins, losses, win_rate,
-                sum_pct, avg_pct,
-                sum_R, avg_R,
-                tp_counts: {TP1, TP2, TP3, SL}
-            }
+        Trả về danh sách và KPI dựa trên **các lệnh đã ĐÓNG và CÓ TP/SL** tại thời điểm quét,
+        KHÔNG phụ thuộc thời điểm mở lệnh (posted_at).
+        - items: list[{symbol, status, pct, win, R}]
+        - totals: {n, wins, losses, win_rate, sum_pct, avg_pct, sum_R, avg_R, tp_counts}
         Quy ước:
-          • TPx: dùng (TPx-entry)/entry * 100 cho LONG; ngược lại cho SHORT
-          • SL : âm tương tự; R = -1.0
-          • CLOSE (về entry, chưa chạm TP/SL) -> bỏ qua (đúng theo yêu cầu)
+          • Chỉ lấy status ∈ {"TP3","SL","CLOSE"}.
+          • Với CLOSE: chỉ giữ nếu đã có ít nhất một TPx trong hits (close do retrace).
+          • pct: tính theo mốc TP cao nhất đạt được (TP3 > TP2 > TP1) hoặc SL.
+          • R: ưu tiên realized_R; nếu thiếu thì ước lượng theo r_ladder.
         """
-        import time
-        now = int(time.time())
-        start_ts = now - 24*3600
-
-        def _pct(t: dict, price_hit):
+        def _pct_for_hit(t: dict, price_hit) -> float:
             try:
                 e = float(t.get("entry") or 0.0)
                 if not e: return 0.0
@@ -220,31 +213,35 @@ class SignalPerfDB:
         items = []
         tp_counts = {"TP1": 0, "TP2": 0, "TP3": 0, "SL": 0}
         for t in self._all().values():
-            if int(t.get("posted_at", 0)) < start_ts:
-                continue
             status = (t.get("status") or "OPEN").upper()
             hits = (t.get("hits") or {})
 
-            # Bỏ qua CLOSE (không chạm TP/SL) và các lệnh chưa có kết quả có ý nghĩa
-            if not (status in ("SL","TP1","TP2","TP3") or ("TP1" in hits) or ("TP2" in hits) or ("TP3" in hits)):
+            # Chỉ nhận các lệnh đã ĐÓNG: TP3 / SL / CLOSE (CLOSE phải có TP trong hits)
+            if status not in ("TP3","SL","CLOSE"):
+                continue
+            if status == "CLOSE" and not any(k in hits for k in ("TP1","TP2","TP3")):
                 continue
 
             win = False
             price_hit = None
-            if status == "TP3" or ("TP3" in hits):
-                price_hit = t.get("tp3"); win = True; status = "TP3"; tp_counts["TP3"] += 1
-            elif status == "TP2" or ("TP2" in hits):
-                price_hit = t.get("tp2"); win = True; status = "TP2"; tp_counts["TP2"] += 1
-            elif status == "TP1" or ("TP1" in hits):
-                price_hit = t.get("tp1"); win = True; status = "TP1"; tp_counts["TP1"] += 1
-            elif status == "SL":
-                price_hit = t.get("sl"); win = False; status = "SL"; tp_counts["SL"] += 1
+            show_status = status
 
-            pct = _pct(t, price_hit)
-            R   = _r_estimate(t, status)
+            if status == "TP3" or ("TP3" in hits):
+                price_hit = t.get("tp3"); win = True; show_status = "TP3"; tp_counts["TP3"] += 1
+            elif ("TP2" in hits):
+                price_hit = t.get("tp2"); win = True; show_status = "TP2"; tp_counts["TP2"] += 1
+            elif ("TP1" in hits):
+                price_hit = t.get("tp1"); win = True; show_status = "TP1"; tp_counts["TP1"] += 1
+            else:
+                price_hit = t.get("sl"); win = False; show_status = "SL"; tp_counts["SL"] += 1
+
+            pct = _pct_for_hit(t, price_hit)
+            R = float(t.get("realized_R", 0.0) or 0.0)
+            if R == 0.0:
+                R = _r_estimate(t, show_status)
             items.append({
                 "symbol": (t.get("symbol") or "").upper(),
-                "status": status,
+                "status": show_status,
                 "pct": float(pct),
                 "win": bool(win),
                 "R": float(R),
