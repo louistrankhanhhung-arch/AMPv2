@@ -125,12 +125,10 @@ def render_kpi_24h(detail: dict, report_date_str: str, upgrade_url: str | None =
 
 # NEW: Teaser 2 phần — Header + danh sách 24H, rồi khối hiệu suất NGÀY (today)
 def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dict, report_date_str: str) -> str:
-    # --- 0) Header ---
     lines = [f"🧭 <b>Kết quả giao dịch 24H qua — {report_date_str}</b>", ""]
-    # --- 1) Danh sách tín hiệu (24H) ---
     items = detail_24h.get("items", []) or []
     if not items:
-        lines += ["Không có tín hiệu nào trong 24H qua.", ""]
+        lines += ["Không có tín hiệu nào phù hợp.", ""]
     else:
         icons = {"TP1": "🟢", "TP2": "🟢", "TP3": "🟢", "SL": "⛔"}
         for it in items:
@@ -140,22 +138,24 @@ def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dic
                 pct = float(it.get("pct") or 0.0)
             except Exception:
                 pct = 0.0
-            sym = (it.get("symbol") or "").upper()
+            sym = it.get("symbol") or "?"
             lines.append(f"{icon} {sym}: {pct:+.2f}%")
-        lines.append("")  # dòng trống ngăn cách khối
+        lines.append("")
 
-    # --- 2) Khối hiệu suất (chỉ dùng 'today') ---
-    totals_day = (detail_day or {}).get("totals", {}) or {}
-    eq1x = float(totals_day.get("equity_change_pct", 0.0) or 0.0)          # Lợi nhuận 1x (ghép lãi)
-    sumR = float(kpi_day.get("sumR", 0.0) or 0.0)                           # Tổng R trong ngày
-    wr = float(kpi_day.get("wr", 0.0) or 0.0) * 100.0                       # Win-rate %
-    pnl_per_100 = sumR * 100.0                                              # PnL trên $100 risk
-    tp_counts = totals_day.get("tp_counts", {}) or {}
+    totals = (detail_24h.get("totals") or {}) if isinstance(detail_24h, dict) else {}
+    n = int(totals.get("n", 0) or 0)
+    wr = float(totals.get("win_rate", 0.0) or 0.0)
+    sumR = float(totals.get("sum_R", 0.0) or 0.0)
+    sum_pct = float(totals.get("sum_pct", 0.0) or 0.0)
+    eq1x = sum_pct
+    pnl_per_100 = sumR * 100.0
+    tp_counts = (totals.get("tp_counts") or {})
     c3 = int(tp_counts.get("TP3", 0) or 0); c2 = int(tp_counts.get("TP2", 0) or 0)
     c1 = int(tp_counts.get("TP1", 0) or 0); cs = int(tp_counts.get("SL", 0) or 0)
 
     lines += [
-        "📊 <b>Hiệu suất (Today)</b>:",
+        "📊 <b>Hiệu suất (tính trên danh sách trên)</b>:",
+        f"- Tổng lệnh đã đóng: {n}",
         f"- Lợi nhuận 1x: {eq1x:+.2f}%",
         f"- Tổng R: {sumR:+.1f}R",
         f"- Tỉ lệ thắng: {wr:.0f}%",
