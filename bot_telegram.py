@@ -14,6 +14,25 @@ users = UserDB(store)
 signals = SignalCache(store)
 payments = PaymentDB(store)
 
+MAX_TG = 4096
+
+def _split_for_tg(text: str, limit: int = 4000):
+    if not text or len(text) <= limit:
+        return [text or ""]
+    parts, s = [], text
+    while s:
+        if len(s) <= limit:
+            parts.append(s); break
+        head = s[:limit+1]
+        # ưu tiên cắt ở ranh giới tự nhiên
+        for sep in ["\n\n", "\n", " "]:
+            p = head.rfind(sep)
+            if p >= int(limit*0.6):
+                parts.append(s[:p]); s = s[p:].lstrip(); break
+        else:
+            parts.append(s[:limit]); s = s[limit:]
+    return parts
+
 def is_owner(uid: int) -> bool:
     return uid in OWNER_IDS
 
@@ -74,6 +93,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(txt, parse_mode="HTML", protect_content=PROTECT_CONTENT)
         else:
             await upsell(update, context)
+    elif payload.startswith("kpi_"):
+            # mở KPI đầy đủ từ cache và gửi trong DM
+            kpi_id = payload.strip()
+            full = signals.get_full(kpi_id.replace("kpi_", "", 1)) or signals.get_full(kpi_id)
+            if not full:
+                await update.message.reply_text("KPI đã hết hạn cache hoặc không tồn tại.")
+                return
+            chunks = _split_for_tg(full, 4000)
+            for i, ch in enumerate(chunks, 1):
+                header = f"<b>KPI đầy đủ (phần {i}/{len(chunks)})</b>\n" if len(chunks) > 1 else ""
+                await update.message.reply_text(header + ch, parse_mode="HTML", protect_content=PROTECT_CONTENT)
+            return
     elif payload.startswith("upgrade"):
         await upsell(update, context)
     else:
