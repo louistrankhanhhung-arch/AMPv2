@@ -13,6 +13,7 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
                     format="%(asctime)s %(levelname)s %(message)s")
 
 API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
+SAFE_LIMIT = 3900  # chừa biên so với trần 4096 của Telegram
 
 def _build_session() -> requests.Session:
     s = requests.Session()
@@ -118,15 +119,46 @@ class TelegramNotifier:
 
     # NEW: gửi KPI 24H với nút nâng cấp
     def send_kpi24(self, html: str):
-        # build inline keyboard: nút nâng cấp
         url_upgr = f"https://t.me/{self.username}?start=upgrade"
-        kb = {"inline_keyboard": [[{"text": "✨ Nâng cấp Plus", "url": url_upgr}]]}
+
+        text_to_send = html
+        kb_rows = []
+
+        # Nếu KPI quá dài: cache full và rút gọn phần đăng kênh + nút Xem thêm
+        if html and len(html) > SAFE_LIMIT:
+            import uuid
+            kpi_id = f"kpi_{str(uuid.uuid4())[:8]}"
+            # Lưu toàn văn KPI vào cache để bot DM gửi lại khi user bấm "Xem thêm"
+            self.cache.put_full(kpi_id, html)
+
+            suffix = "\n\n<i>KPI dài — bấm “Xem thêm” để đọc đầy đủ.</i>"
+            keep = SAFE_LIMIT - len(suffix) - 3  # trừ chỗ cho "…"
+            keep = max(0, keep)
+            text_to_send = (html[:keep].rstrip() + "…") + suffix
+
+            url_more = f"https://t.me/{self.username}?start={kpi_id}"
+            kb_rows.append([{"text": "📖 Xem thêm", "url": url_more}])
+
+        # Hàng nút “Nâng cấp Plus” luôn có
+        kb_rows.append([{"text": "✨ Nâng cấp Plus", "url": url_upgr}])
+        kb = {"inline_keyboard": kb_rows}
+
         payload = {
             "chat_id": int(CHANNEL_ID),
-            "text": html,
+            "text": text_to_send,
             "parse_mode": "HTML",
+            "disable_web_page_preview": True,
             "reply_markup": kb
         }
         r = self.session.post(f"{API_BASE}/sendMessage", json=payload, timeout=15)
-        r.raise_for_status()
+        try:
+            r.raise_for_status()
+        except requests.RequestException as e:
+            # log description/response để debug (nếu vẫn còn lỗi 400 do ký tự)
+            try:
+                desc = r.json().get("description", "")
+            except Exception:
+                desc = r.text[:300]
+            log.warning("KPI-24H send failed: %s | %s", e, desc)
+            raise
         return r.json()["result"]["message_id"]
