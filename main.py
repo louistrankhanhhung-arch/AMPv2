@@ -605,9 +605,9 @@ def loop_scheduler():
         if blk is not None and tick_key != last_tick and now.second < 10:
             last_tick = tick_key
             run_block(blk, blocks[blk], cfg, limit, ex=shared_ex)
-        # NEW: KPI lúc 08:18 local (VN) ~ 01:18 UTC
+        # NEW: KPI lúc 18:18 local (VN) ~ 11:18 UTC
         try:
-            if now.hour == 8 and now.minute == 18 and (last_kpi_day != (now.year, now.month, now.day)):
+            if now.hour == 18 and now.minute == 18 and (last_kpi_day != (now.year, now.month, now.day)):
                 last_kpi_day = (now.year, now.month, now.day)
                 # Teaser KPI: list 24H + hiệu suất NGÀY (today)
                 perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
