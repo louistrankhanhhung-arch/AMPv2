@@ -172,8 +172,6 @@ def _apply_sl_upgrades(side_meta: Any, side: str, entry: float, sl: float, cfg: 
     last_LL = _nearest(_safe_get(side_meta, "last_LL_4h") or _safe_get(side_meta, "last_LL_1h"), entry)
     last_HH = _nearest(_safe_get(side_meta, "last_HH_4h") or _safe_get(side_meta, "last_HH_1h"), entry)
 
-tiny_core_side_state
-
     if side == "long" and last_LL is not None:
         sl_floor = float(last_LL) - 0.1 * atr
         if sl_new > sl_floor:
