@@ -23,7 +23,7 @@ def _last_closed_bar(df):
         pass
     return None
 
-def _atr_from_features_tf(features_by_tf: Dict[str, Any], tf: str = "1H") -> float:
+def _atr_from_features_tf(features_by_tf: Dict[str, Any], tf: str = "4H") -> float:
     """Use ATR at the last *closed* bar to avoid partial-candle drift."""
     try:
         df = (features_by_tf or {}).get(tf, {}).get("df")
@@ -36,7 +36,7 @@ def _atr_from_features_tf(features_by_tf: Dict[str, Any], tf: str = "1H") -> flo
         pass
     return 0.0
 
-def _soft_levels_by_tf(features_by_tf: Dict[str, Any], tf: str = "1H") -> Dict[str, float]:
+def _soft_levels_by_tf(features_by_tf: Dict[str, Any], tf: str = "4H") -> Dict[str, float]:
     """
     Lấy các mức mềm ở nến đã đóng gần nhất của TF chỉ định: BB upper/mid/lower, EMA20/50, Close.
     """
@@ -58,7 +58,7 @@ def _near_soft_level_guard_multi(
     side: Optional[str],
     entry: Optional[float],
     feats: Dict[str, Any],
-    tfs: Iterable[str] = ("1H","4H"),
+    tfs: Iterable[str] = ("4H",),
 ) -> Dict[str, Any]:
     """
     Trả về {"block": bool, "why": str} nếu entry quá gần BB/EMA (1H/4H…) theo hướng giao dịch.
