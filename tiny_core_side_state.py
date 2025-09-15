@@ -858,6 +858,20 @@ def decide_5_gates(state: str, side: Optional[str], setup: Setup, si: SI, cfg: S
     if rr1 < 1.0:
         reasons.append("rr_too_low")
 
+    # Continuation requirement: cần (pullback OR inside OR mini-retest)
+    try:
+        is_cont = bool(dec.meta.get("gate") == "continuation")
+        if is_cont and side in ("long","short"):
+            inside_ok = bool(getattr(si, "inside_bar", False))
+            mini_ok = bool(getattr(si, "mini_retest_long", False) if side=="long"
+                           else getattr(si, "mini_retest_short", False))
+            # si.retest_ok đã gộp pullback/throwback validator từ evidences
+            pb_ok = bool(getattr(si, "retest_ok", False))
+            if not (inside_ok or mini_ok or pb_ok):
+                reasons.append("need_pullback_or_inside")
+    except Exception:
+        pass
+
     # ---------- Build rich 'missing_tags' for logging ----------
     def _sgn(x: float) -> int:
         if x > 0: return 1
