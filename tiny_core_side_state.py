@@ -24,6 +24,7 @@ class SideCfg:
     # Early breakout option: allow break without volume/exp when NATR is low
     early_breakout_ok: bool = True
     early_breakout_natr_max: float = 0.012  # <= ~1.2% coi là low-vol
+    early_breakout_need_inside_or_minitest: bool = True  # yêu cầu inside/mini-retest cho early
 
     # Retest proximity thresholds by regime (dist to mid in ATR)
     dist_atr_thr_low: float = 0.60
@@ -573,10 +574,17 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
     if (not _safe_get_local(si, 'breakout_ok', False)) and bool(getattr(cfg, 'early_breakout_ok', True)):
         # NATR guard cho early-breakout
         if math.isfinite(natr) and (cfg.natr_break_min <= natr <= min(cfg.natr_break_max, getattr(cfg, 'early_breakout_natr_max', 0.012))):
-            # yêu cầu co giãn/impulse + alignment trend & momentum + không bị guard thanh khoản/slow
+            # yêu cầu co giãn/impulse + alignment trend & momentum 
             exp_ok = bool(_safe_get_local(si, 'bb_expanding_ok', False) or _safe_get_local(si, 'volatility_breakout_ok', False) or _safe_get_local(si, 'vol_break_ok', False) or _safe_get_local(si, 'vol_break_strong', False))
             aligned = (tr != 0 and momo != 0 and (tr == momo))
-            if exp_ok and aligned and (not bool(_safe_get_local(si, 'liquidity_floor', False))) and (not bool(_safe_get_local(si, 'is_slow', False))) and bool(_safe_get_local(si, 'hvn_ok', True)):
+            # extra guards: volume tilt không âm + không dính liquidity/HVN/near heavy zone + (tuỳ chọn) inside/mini-retest
+            liq_block  = bool(_safe_get_local(si, 'liquidity_floor', False)) or (not bool(_safe_get_local(si, 'hvn_ok', True))) or bool(_safe_get_local(si, 'near_heavy_zone', False))
+            inside = bool(_safe_get_local(si, 'inside_bar', False))
+            mini_ok_long  = bool(_safe_get_local(si, 'mini_retest_long', False))
+            mini_ok_short = bool(_safe_get_local(si, 'mini_retest_short', False))
+            need_micro = bool(getattr(cfg, 'early_breakout_need_inside_or_minitest', True))
+            micro_ok = (inside or (mini_ok_long if tr > 0 else mini_ok_short)) if need_micro else True
+            if exp_ok and aligned and (vdir >= 0) and (not liq_block) and micro_ok:
                 side_b = 'long' if tr > 0 else 'short'
                 meta['early_breakout'] = True
                 return 'trend_break', side_b, meta
@@ -592,16 +600,30 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         exp_ok = bool(_safe_get_local(si, "bb_expanding_ok", False) or _safe_get_local(si, "volatility_breakout_ok", False))
         # Allow early breakout when configured and NATR is low
         early_ok = bool(cfg.early_breakout_ok and math.isfinite(natr) and natr <= cfg.early_breakout_natr_max)
-        if not (vol_ok or exp_ok or (early_ok and ((side_b == "long" and tr > 0 and momo >= 0) or (side_b == "short" and tr < 0 and momo <= 0)))):
+        # Determine if we can allow early without vol/expansion
+        allow_early = False
+        if not (vol_ok or exp_ok) and early_ok:
+            if (side_b == "long" and tr > 0 and momo >= 0) or (side_b == "short" and tr < 0 and momo <= 0):
+                allow_early = True
+        if not (vol_ok or exp_ok or allow_early):
             return "none_state", None, meta
-            # Early breakout allowance for low-vol regime
-            if bool(getattr(cfg, 'early_breakout_ok', False)) and math.isfinite(natr) and (natr <= float(getattr(cfg, 'early_breakout_natr_max', 0.012))):
-                if (side_b == "long" and tr > 0 and momo >= 0) or (side_b == "short" and tr < 0 and momo <= 0):
-                    pass  # allow trend_break without immediate vol/expansion
-                else:
-                    return "none_state", None, meta
-            else:
+        # Extra guards when using early allowance
+        if allow_early:
+            meta["early_breakout"] = True
+            # volume tilt phải không âm
+            if _volume_dir(si) < 0:
                 return "none_state", None, meta
+            # chặn thanh khoản/HVN/khu vực nặng profile
+            if bool(_safe_get_local(si, "liquidity_floor", False)) or (not bool(_safe_get_local(si, "hvn_ok", True))) or bool(_safe_get_local(si, "near_heavy_zone", False)):
+                return "none_state", None, meta
+            # (tuỳ chọn) yêu cầu inside/mini-retest cùng phía
+            if bool(getattr(cfg, "early_breakout_need_inside_or_minitest", True)):
+                inside = bool(_safe_get_local(si, "inside_bar", False))
+                mini_ok_long  = bool(_safe_get_local(si, "mini_retest_long", False))
+                mini_ok_short = bool(_safe_get_local(si, "mini_retest_short", False))
+                micro_ok = inside or (mini_ok_long if side_b == "long" else mini_ok_short)
+                if not micro_ok:
+                    return "none_state", None, meta
 
         # Trend/momentum alignment với hướng break
         if side_b == "long" and not (tr > 0 and momo >= 0):
