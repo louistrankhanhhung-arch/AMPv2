@@ -614,12 +614,19 @@ def loop_scheduler():
                 # Teaser KPI: list 24H + hiệu suất NGÀY (today)
                 perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
                 detail_24h = perf.kpis_24h_detail()
+                # Chỉ lấy các lệnh đóng CHƯA từng được báo cáo
+                detail_24h, sids_to_mark = perf.kpis_24h_unreported()
                 kpi_day = perf.kpis("day")          # sumR, wr, ...
                 detail_day = perf.kpis_detail("day")# equity 1x + tp_counts
                 # ngày/tháng cho header
                 report_date_str = now.strftime("%d/%m/%Y")
                 from templates import render_kpi_teaser_two_parts
-                tn = _get_notifier()
+                # Gửi thành công mới đánh dấu đã báo cáo
+                    tn.send_kpi24(html)
+                    try:
+                        perf.mark_kpi24_reported(sids_to_mark)
+                    except Exception as _:
+                        pass
                 if tn:
                     html = render_kpi_teaser_two_parts(detail_24h, kpi_day, detail_day, report_date_str)
                     tn.send_kpi24(html)
