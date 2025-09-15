@@ -611,25 +611,22 @@ def loop_scheduler():
         try:
             if now.hour == 18 and now.minute == 18 and (last_kpi_day != (now.year, now.month, now.day)):
                 last_kpi_day = (now.year, now.month, now.day)
-                # Teaser KPI: list 24H + hiệu suất NGÀY (today)
-                perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
-                detail_24h = perf.kpis_24h_detail()
-                # Chỉ lấy các lệnh đóng CHƯA từng được báo cáo
+                # Teaser KPI: list 24H (chỉ lệnh ĐÓNG-chưa-báo-cáo) + hiệu suất NGÀY
+                perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR", "./data")))
                 detail_24h, sids_to_mark = perf.kpis_24h_unreported()
-                kpi_day = perf.kpis("day")          # sumR, wr, ...
-                detail_day = perf.kpis_detail("day")# equity 1x + tp_counts
-                # ngày/tháng cho header
+                kpi_day = perf.kpis("day")           # sumR, wr, ...
+                detail_day = perf.kpis_detail("day") # equity 1x + tp_counts
                 report_date_str = now.strftime("%d/%m/%Y")
                 from templates import render_kpi_teaser_two_parts
-                # Gửi thành công mới đánh dấu đã báo cáo
-                    tn.send_kpi24(html)
-                    try:
-                        perf.mark_kpi24_reported(sids_to_mark)
-                    except Exception as _:
-                        pass
+                tn = _get_notifier()
                 if tn:
                     html = render_kpi_teaser_two_parts(detail_24h, kpi_day, detail_day, report_date_str)
                     tn.send_kpi24(html)
+                    # đánh dấu đã báo cáo KPI 24h
+                    try:
+                        perf.mark_kpi24_reported(sids_to_mark)
+                    except Exception:
+                        pass
         except Exception as e:
             log.warning(f"KPI-24H send failed: {e}")
         # sleep until next 5-minute boundary
