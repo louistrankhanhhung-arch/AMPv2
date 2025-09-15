@@ -309,7 +309,9 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     t2 = time.time()
     feats_by_tf = compute_features_by_tf(dfs)   # builds trend/momentum/volatility/levels/vp-bands,…
     log.debug(f"[{symbol}] features done in {time.time()-t2:.2f}s")
-    # attach df to 1H for decision (decision engine expects it)
+    # attach df to 4H (primary/execution) & 1H (phụ nếu cần)
+    if '4H' in feats_by_tf:
+        feats_by_tf['4H']['df'] = dfs.get('4H')
     if '1H' in feats_by_tf:
         feats_by_tf['1H']['df'] = dfs.get('1H')
 
