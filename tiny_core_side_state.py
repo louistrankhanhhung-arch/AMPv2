@@ -210,9 +210,9 @@ def _tp_by_rr(entry: float, sl: float, side: str, targets: Tuple[float, ...]) ->
 # Collect side indicators từ features + evidence bundle
 # -------------------------------------------------------
 def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[str, Any], cfg: SideCfg) -> Any:
-    # Respect SideCfg timeframes: 1H trigger, 4H execution
-    tf_primary = getattr(cfg, "tf_primary", "1H")
-    tf_confirm = getattr(cfg, "tf_confirm", "4H")   # dùng như execution
+    # Force 4H for both trigger & execution when building setup params
+    tf_primary = "4H"
+    tf_confirm = "4H"
     f1 = features_by_tf.get(tf_primary, {}) or {}
     f4 = features_by_tf.get(tf_confirm, {}) or {}
 
