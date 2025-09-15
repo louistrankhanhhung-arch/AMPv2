@@ -11,6 +11,74 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import os, json, logging
+import math
+
+# --------------------------
+# MINI RE-TEST (4H, self-contained)
+# --------------------------
+def ev_mini_retest_4h(
+    df: pd.DataFrame,
+    lookback_bars: int = 3,
+    atr_frac: float = 0.25,
+) -> Dict[str, Any]:
+    """
+    Mini-retest cho khung 4H:
+    - Dùng 2 nến đã đóng gần nhất (tránh whipsaw intrabar).
+    - 'Retest nhỏ' nếu biên retest nằm trong atr_frac * ATR của nến trước.
+    - Xác định hướng bằng close so với high/low nến trước.
+    Trả về: {"ok": bool, "dir": "long"|"short"|None, "detail": {...}}
+    """
+    out: Dict[str, Any] = {"ok": False, "dir": None, "detail": {}}
+    try:
+        if df is None or len(df) < max(lookback_bars + 2, 3):
+            return out
+
+        # Dùng 2 nến đã đóng gần nhất
+        last = df.iloc[-2]
+        prev = df.iloc[-3]
+
+        hi_last = float(last.get("high", last["close"]))
+        lo_last = float(last.get("low",  last["close"]))
+        cl_last = float(last.get("close", last["close"]))
+
+        hi_prev = float(prev.get("high", prev["close"]))
+        lo_prev = float(prev.get("low",  prev["close"]))
+        cl_prev = float(prev.get("close", prev["close"]))
+
+        # ATR: lấy từ cột 'atr' nếu có; nếu không, xấp xỉ bằng (high-low) trung bình 3 nến gần nhất
+        if "atr" in df.columns:
+            atr_val = float(df.iloc[-3:]["atr"].dropna().iloc[-1])
+        else:
+            _rng = (df.iloc[-3:]["high"] - df.iloc[-3:]["low"]).abs()
+            atr_val = float(_rng.mean())
+        if not math.isfinite(atr_val) or atr_val <= 0:
+            return out
+
+        tol = atr_frac * atr_val
+
+        # Retest LONG nhỏ: nến hiện tại (last) lùi kiểm định đỉnh cũ (hi_prev) trong phạm vi tol,
+        # và đóng cửa vẫn giữ xu hướng (cl_last > cl_prev).
+        long_retest = (abs(lo_last - hi_prev) <= tol) and (cl_last > cl_prev)
+
+        # Retest SHORT nhỏ: nến hiện tại (last) lùi kiểm định đáy cũ (lo_prev) trong phạm vi tol,
+        # và đóng cửa vẫn giữ xu hướng giảm (cl_last < cl_prev).
+        short_retest = (abs(hi_last - lo_prev) <= tol) and (cl_last < cl_prev)
+
+        if long_retest and not short_retest:
+            out["ok"] = True
+            out["dir"] = "long"
+        elif short_retest and not long_retest:
+            out["ok"] = True
+            out["dir"] = "short"
+
+        out["detail"] = {
+            "hi_prev": hi_prev, "lo_prev": lo_prev, "hi_last": hi_last, "lo_last": lo_last,
+            "cl_prev": cl_prev, "cl_last": cl_last, "atr": atr_val, "tol": tol,
+            "long_retest": bool(long_retest), "short_retest": bool(short_retest),
+        }
+    except Exception as e:
+        out["detail"] = {"error": str(e)}
+    return out
 
 # --------------------------------------------------------------------------------------
 # 1) Types & Config (per-TF thresholds with sensible defaults)
