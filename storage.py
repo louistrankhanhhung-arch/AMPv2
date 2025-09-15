@@ -272,20 +272,16 @@ class SignalPerfDB:
                 "tp_counts": tp_counts
             }
         }
-# NEW: KPI 24h chỉ cho các lệnh ĐÓNG nhưng CHƯA từng được báo cáo
+    # === KPI 24h: chỉ lấy các lệnh ĐÓNG nhưng CHƯA từng được báo cáo ===
     def kpis_24h_unreported(self) -> tuple[dict, list[str]]:
-        """
-        Giống kpis_24h_detail nhưng chỉ lấy những lệnh đóng chưa có kpi24_reported_at.
-        Trả về (detail_dict, sids_to_mark).
-        """
         def _pct_for_hit(t: dict, price_hit) -> float:
             try:
                 e = float(t.get("entry") or 0.0)
-                if not e: return 0.0
+                if not e:
+                    return 0.0
                 if (t.get("dir") or "").upper() == "LONG":
                     return (float(price_hit) - e) / e * 100.0
-                else:
-                    return (e - float(price_hit)) / e * 100.0
+                return (e - float(price_hit)) / e * 100.0
             except Exception:
                 return 0.0
         def _r_estimate(t: dict, status: str) -> float:
@@ -295,31 +291,26 @@ class SignalPerfDB:
             if status == "TP1": return float(rl.get("tp1") or rl.get("TP1") or 1.0)
             if status == "SL":  return -1.0
             return 0.0
-
         items, sids_to_mark = [], []
         tp_counts = {"TP1": 0, "TP2": 0, "TP3": 0, "SL": 0}
         for t in self._all().values():
             status = (t.get("status") or "OPEN").upper()
             hits = (t.get("hits") or {})
-            # Phải là lệnh đóng & chưa báo cáo
             if status not in ("TP3", "SL", "CLOSE"):
                 continue
-            if status == "CLOSE" and not any(k in hits for k in ("TP1","TP2","TP3")):
+            if status == "CLOSE" and not any(k in hits for k in ("TP1", "TP2", "TP3")):
                 continue
             if t.get("kpi24_reported_at"):
                 continue
-
-            # build item
             win = False; price_hit = None; show_status = status
             if status == "TP3" or ("TP3" in hits):
                 price_hit = t.get("tp3"); win = True; show_status = "TP3"; tp_counts["TP3"] += 1
-            elif ("TP2" in hits):
+            elif "TP2" in hits:
                 price_hit = t.get("tp2"); win = True; show_status = "TP2"; tp_counts["TP2"] += 1
-            elif ("TP1" in hits):
+            elif "TP1" in hits:
                 price_hit = t.get("tp1"); win = True; show_status = "TP1"; tp_counts["TP1"] += 1
             else:
                 price_hit = t.get("sl");  win = False; show_status = "SL";  tp_counts["SL"]  += 1
-
             pct = _pct_for_hit(t, price_hit)
             R = float(t.get("realized_R", 0.0) or 0.0)
             if R == 0.0:
@@ -333,7 +324,6 @@ class SignalPerfDB:
                 "R": float(R),
             })
             sids_to_mark.append(t.get("sid"))
-
         n = len(items)
         wins = sum(1 for i in items if i["win"])
         losses = sum(1 for i in items if i["status"] == "SL")
@@ -342,7 +332,6 @@ class SignalPerfDB:
         win_rate = (wins / n) if n else 0.0
         sum_R = sum(float(i.get("R") or 0.0) for i in items)
         avg_R = (sum_R / n) if n else 0.0
-
         detail = {
             "items": items,
             "totals": {
@@ -359,7 +348,6 @@ class SignalPerfDB:
         }
         return detail, sids_to_mark
 
-    # NEW: đánh dấu đã báo cáo KPI 24h
     def mark_kpi24_reported(self, sids: list[str]) -> None:
         if not sids:
             return
@@ -370,7 +358,6 @@ class SignalPerfDB:
             if not t:
                 continue
             t["kpi24_reported_at"] = now
-            data[sid] = t
         self._write(data)
 
 # NEW: breakdown theo period (hiện dùng 'day' cho khối hiệu suất)
