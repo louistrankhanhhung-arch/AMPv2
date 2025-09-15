@@ -47,8 +47,8 @@ class SideCfg:
     # TP ladder mặc định cho tính RR (fallback khi thiếu band)
     rr_targets: Tuple[float, float, float] = (1.2, 2.0, 3.0)
 
-    # Timeframes
-    tf_primary: str = "1H"
+    # Timeframes (trigger/execution thống nhất 4H)
+    tf_primary: str = "4H"
     tf_confirm: str = "4H"
 
     # Proximity thresholds theo regime cho RETEST
@@ -158,7 +158,7 @@ def _apply_sl_upgrades(side_meta: Any, side: str, entry: float, sl: float, cfg: 
 
     sl_new = _ensure_sl_gap(entry, sl, atr, side, min_atr=min_atr)  # đã có sẵn trong core:contentReference[oaicite:5]{index=5}
 
-    # nearest swing (1H ưu tiên; fallback 4H)
+    # nearest swing (4H ưu tiên; fallback 1H)
     import math
     def _nearest(vals, ref):
         try:
@@ -169,8 +169,10 @@ def _apply_sl_upgrades(side_meta: Any, side: str, entry: float, sl: float, cfg: 
             return None
         return min(vals, key=lambda v: abs(v - ref))
 
-    last_LL = _nearest(_safe_get(side_meta, "last_LL_1h") or _safe_get(side_meta, "last_LL_4h"), entry)
-    last_HH = _nearest(_safe_get(side_meta, "last_HH_1h") or _safe_get(side_meta, "last_HH_4h"), entry)
+    last_LL = _nearest(_safe_get(side_meta, "last_LL_4h") or _safe_get(side_meta, "last_LL_1h"), entry)
+    last_HH = _nearest(_safe_get(side_meta, "last_HH_4h") or _safe_get(side_meta, "last_HH_1h"), entry)
+
+tiny_core_side_state
 
     if side == "long" and last_LL is not None:
         sl_floor = float(last_LL) - 0.1 * atr
@@ -261,23 +263,9 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     momo_strength = _momo_dir_from_features(f1)
     volume_tilt = _vol_dir_from_features(f1)
 
-    # Detect inside-bar on 1H — use the last *closed* two bars to avoid partial-candle drift
-    inside_bar = False
+    # Inside-bar dùng directly từ candles 4H
     try:
-        df1 = (features_by_tf.get("1H", {}) or {}).get("df")
-        if df1 is not None:
-            n = len(df1)
-            # need at least 3 rows to safely take the last two *closed* bars
-            if n >= 3:
-                last_closed = df1.iloc[-2]
-                prev_closed = df1.iloc[-3]
-                hi_last  = float(last_closed.get("high",  last_closed["close"]))
-                lo_last  = float(last_closed.get("low",   last_closed["close"]))
-                hi_prev  = float(prev_closed.get("high",  prev_closed["close"]))
-                lo_prev  = float(prev_closed.get("low",   prev_closed["close"]))
-                inside_bar = bool((hi_last <= hi_prev) and (lo_last >= lo_prev))
-            else:
-                inside_bar = False
+        inside_bar = bool((f4.get('candles', {}) or {}).get('inside_bar', False))
     except Exception:
         inside_bar = False
 
@@ -409,7 +397,7 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     
     # candle pattern flags
     try:
-        si.inside_bar = bool((f1.get('candles', {}) or {}).get('inside_bar', False))
+        si.inside_bar = bool((f4.get('candles', {}) or {}).get('inside_bar', False))
     except Exception:
         si.inside_bar = False
     # mini-retest flags từ evidence
