@@ -57,9 +57,9 @@ class SideCfg:
     dist_atr_thr_high: float = 1.00
 
     # --- SL regime adaptation ---
-    sl_min_atr_low: float = 0.50
-    sl_min_atr_normal: float = 0.60
-    sl_min_atr_high: float = 1.00
+    sl_min_atr_low: float = 0.60
+    sl_min_atr_normal: float = 0.80
+    sl_min_atr_high: float = 1.20
 
     # --- 4H confirm rules for breakout/continuation ---
     use_4h_confirm: bool = True
