@@ -272,7 +272,7 @@ class SignalPerfDB:
                 "tp_counts": tp_counts
             }
         }
- NEW: KPI 24h chỉ cho các lệnh ĐÓNG nhưng CHƯA từng được báo cáo
+# NEW: KPI 24h chỉ cho các lệnh ĐÓNG nhưng CHƯA từng được báo cáo
     def kpis_24h_unreported(self) -> tuple[dict, list[str]]:
         """
         Giống kpis_24h_detail nhưng chỉ lấy những lệnh đóng chưa có kpi24_reported_at.
