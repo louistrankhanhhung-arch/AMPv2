@@ -54,6 +54,51 @@ def _soft_levels_by_tf(features_by_tf: Dict[str, Any], tf: str = "4H") -> Dict[s
         pass
     return out
 
+def _rsi_from_features_tf(features_by_tf: Dict[str, Any], tf: str = "1H") -> Optional[float]:
+    """
+    Lấy RSI (mặc định cột rsi14) tại nến *đã đóng* gần nhất của TF cho trước.
+    """
+    try:
+        df = (features_by_tf or {}).get(tf, {}).get("df")
+        if df is not None and len(df) > 0:
+            last = _last_closed_bar(df)
+            if last is not None:
+                for col in ("rsi14", "rsi", "RSI"):
+                    if col in df.columns:
+                        return float(df.loc[last.name, col])
+    except Exception:
+        pass
+    return None
+
+def _guard_near_bb_low_4h_and_rsi1h_extreme(side: Optional[str], entry: Optional[float], feats: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    WAIT guard khi:
+      - entry đang 'ôm' BB-lower 4H (<= 0.30 * ATR_4H)
+      - VÀ RSI(1H) đang cực trị (<=20 hoặc >=80)
+    Áp dụng cả long/short. Tránh ENTER kể cả khi state=trend_break.
+    """
+    try:
+        if side not in ("long","short") or entry is None:
+            return {"block": False, "why": ""}
+        atr4 = _atr_from_features_tf(feats, "4H")
+        if atr4 <= 0:
+            return {"block": False, "why": ""}
+        lv = _soft_levels_by_tf(feats, "4H")
+        bb_l = lv.get("bb_lower")
+        if bb_l is None:
+            return {"block": False, "why": ""}
+        rsi1 = _rsi_from_features_tf(feats, "1H")
+        if rsi1 is None:
+            return {"block": False, "why": ""}
+        thr = 0.30 * atr4
+        near_bb_low = (entry >= bb_l) and (abs(entry - bb_l) <= thr)
+        rsi_extreme = (rsi1 <= 20.0) or (rsi1 >= 80.0)
+        if near_bb_low and rsi_extreme:
+            return {"block": True, "why": f"4H_bb_low±{thr:.4f} & RSI1H={rsi1:.1f}"}
+    except Exception:
+        pass
+    return {"block": False, "why": ""}
+
 def _near_soft_level_guard_multi(
     side: Optional[str],
     entry: Optional[float],
@@ -156,6 +201,54 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         reasons.append("soft_proximity")
         dec.reasons = reasons
         # Không đổi setup; chỉ cấm vào kèo lúc này
+
+    # -------- BB-low(4H) + RSI(1H) extreme guard --------
+    bb_rsi_guard = _guard_near_bb_low_4h_and_rsi1h_extreme(dec.side, dec.setup.entry, features_by_tf)
+    if bb_rsi_guard.get("block"):
+        dec.decision = "WAIT"
+        reasons = list(dec.reasons or [])
+        reasons.append("guard:near_4h_bb_low_and_rsi1h_os")
+        dec.reasons = reasons
+
+    # -------- RR2/RR3 floor check -> WAIT + entry2 hint --------
+    rr2_floor = float(os.getenv("RR2_FLOOR", "1.30"))
+    rr3_floor = float(os.getenv("RR3_FLOOR", "1.80"))
+
+    def _suggest_entry2_for_floor(side: str, sl: float, tp: float, floor: float, cur_entry: float) -> Optional[float]:
+        try:
+            if side == "long":
+                # (tp - e2) / (e2 - sl) >= floor  =>  e2 <= (tp + floor*sl) / (1 + floor)
+                e2 = (tp + floor * sl) / (1.0 + floor)
+                return float(e2) if e2 > 0 else None
+            elif side == "short":
+                # (e2 - tp) / (sl - e2) >= floor  =>  e2 >= (floor*sl + tp) / (1 + floor)
+                e2 = (floor * sl + tp) / (1.0 + floor)
+                return float(e2) if e2 > 0 else None
+        except Exception:
+            return None
+        return None
+
+    rr_floor_hit = False
+    suggest_from = None  # ("TP2"/"TP3", tp_value, floor_value)
+    if tp2 is not None and rr2 is not None and rr2 < rr2_floor:
+        rr_floor_hit = True
+        suggest_from = ("TP2", tp2, rr2_floor)
+    if tp3 is not None and rr3 is not None and rr3 < rr3_floor:
+        rr_floor_hit = True
+        # nếu cả 2 dưới sàn, ưu tiên ràng buộc nghiêm hơn (TP3)
+        suggest_from = ("TP3", tp3, rr3_floor)
+
+    if rr_floor_hit and dec.side in ("long","short") and dec.setup.entry is not None and dec.setup.sl is not None:
+        dec.decision = "WAIT"
+        reasons = list(dec.reasons or [])
+        if "rr_floor" not in reasons:
+            reasons.append("rr_floor")
+        dec.reasons = reasons
+        _tpname, _tpval, _floor = suggest_from
+        e2 = _suggest_entry2_for_floor(dec.side, dec.setup.sl, float(_tpval), float(_floor), dec.setup.entry)
+        if e2 is not None:
+            # long: entry2 thấp hơn; short: entry2 cao hơn
+            dec.setup.entry2 = float(e2)
 
     # ---------- price formatting helpers ----------
     def _infer_dp(symbol: str, price: Optional[float], features_by_tf: Dict[str, Any], evidence_bundle: Dict[str, Any]) -> int:
