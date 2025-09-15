@@ -61,6 +61,10 @@ class SideCfg:
     sl_min_atr_normal: float = 0.80
     sl_min_atr_high: float = 1.20
 
+    # EMA50 4H cushion for SL
+    use_ema50_sl_cushion: bool = True
+    ema50_sl_cushion_atr_frac: float = 0.15  # 0.10–0.20 ATR recommended
+
     # --- 4H confirm rules for breakout/continuation ---
     use_4h_confirm: bool = True
     rsi_long_thr_4h: float = 55.0
@@ -181,7 +185,25 @@ def _apply_sl_upgrades(side_meta: Any, side: str, entry: float, sl: float, cfg: 
         if sl_new < sl_ceiling:
             sl_new = sl_ceiling
 
-    return float(sl_new)
+    # 3) EMA50 4H cushion (optional)
+    if getattr(cfg, "use_ema50_sl_cushion", True):
+        ema50 = _safe_get(side_meta, "ema50_4h", None)
+        try:
+            ema50 = float(ema50)
+        except Exception:
+            ema50 = None
+        if isinstance(ema50, (int, float)) and (ema50 == ema50):  # not NaN
+            c = max(0.0, float(getattr(cfg, "ema50_sl_cushion_atr_frac", 0.15)) * atr)
+            if side == "long":
+                sl_floor = float(ema50) - c
+                if sl_new > sl_floor:
+                    sl_new = sl_floor
+            elif side == "short":
+                sl_ceiling = float(ema50) + c
+                if sl_new < sl_ceiling:
+                    sl_new = sl_ceiling
+return float(sl_new)
+
 
 def _tp_by_rr(entry: float, sl: float, side: str, targets: Tuple[float, ...]) -> List[float]:
     """
@@ -221,6 +243,13 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     price = _price(df_trigger)
     atr  = float((f4.get('volatility', {}) or {}).get('atr', 0.0) or 0.0)
     natr = float((f4.get('volatility', {}) or {}).get('natr', 0.0) or 0.0)
+
+    # read EMA 4H for SL cushion
+    df_confirm = f4.get('df')
+    try:
+        ema50_4h = float(df_confirm['ema50'].iloc[-1]) if df_confirm is not None and len(df_confirm) else float('nan')
+    except Exception:
+        ema50_4h = float('nan')
 
     # trend/momentum/volume phía 1H (đưa về sign)
     def _trend_dir_from_features(ff) -> int:
@@ -388,6 +417,11 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.atr = atr
     si.natr = natr
     si.dist_atr = dist_atr
+    # attach EMA50 4H for SL cushion
+    try:
+        si.ema50_4h = float(ema50_4h)
+    except Exception:
+        si.ema50_4h = None
 
     si.trend_strength = trend_strength
     si.momo_strength = momo_strength
