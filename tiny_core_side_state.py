@@ -202,7 +202,7 @@ def _apply_sl_upgrades(side_meta: Any, side: str, entry: float, sl: float, cfg: 
                 sl_ceiling = float(ema50) + c
                 if sl_new < sl_ceiling:
                     sl_new = sl_ceiling
-return float(sl_new)
+    return float(sl_new)
 
 
 def _tp_by_rr(entry: float, sl: float, side: str, targets: Tuple[float, ...]) -> List[float]:
