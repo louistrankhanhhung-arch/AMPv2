@@ -121,39 +121,6 @@ def _get_last_closed_bar(df: pd.DataFrame) -> pd.Series:
         return df.iloc[-2]
     return df.iloc[-1] if len(df) else pd.Series(dtype=float)
 
-        # window gồm các nến đã đóng gần nhất (loại bỏ nến đang chạy nếu có)
-        # lấy tối đa lookback_bars nến trước 'last'
-        end_idx = df.index.get_loc(last.name)
-        start_idx = max(0, end_idx - lookback_bars)
-        win = df.iloc[start_idx:end_idx]
-        if win.empty:
-            return {"ok": False, "why": "empty_window"}
-
-        touched = False
-        for i, row in win.iterrows():
-            b = float(basis_series.loc[i])
-            a = float(atr_series.loc[i])
-            k = float(max(0.0, atr_frac) * max(a, 0.0))
-            lo = float(row.get("low", row.get("close", b)))
-            hi = float(row.get("high", row.get("close", b)))
-            if (lo <= b + k) and (hi >= b - k):
-                touched = True
-                break
-
-        if not touched:
-            return {"ok": False, "long": False, "short": False, "why": "no_touch"}
-
-        b_last = float(basis_series.loc[last.name])
-        close_last = float(last["close"])
-        open_last  = float(last["open"])
-        long_ok  = (close_last > open_last) and (close_last > b_last)
-        short_ok = (close_last < open_last) and (close_last < b_last)
-        why = f"touch<=±{atr_frac}ATR_in_{lookback_bars}bars|last_dir={'up' if long_ok else ('down' if short_ok else 'flat')}"
-        return {"ok": bool(long_ok or short_ok), "long": bool(long_ok), "short": bool(short_ok),
-                "why": why, "lookback": int(lookback_bars), "atr_frac": float(atr_frac)}
-    except Exception as e:
-        return {"ok": False, "why": f"mini_retest_err:{e}"}
- 
 # --------------------------
 # ATR-adaptive helpers
 # --------------------------
