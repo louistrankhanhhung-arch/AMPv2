@@ -36,7 +36,7 @@ class Config:
         "1D": TFThresholds(break_buffer_atr=0.15, vol_ratio_thr=1.2, vol_z_thr=0.5, rsi_long=55, rsi_short=45, bbw_lookback=50, zigzag_pct=2.0, ema_spread_small_atr=0.25, hvn_guard_atr=1.0),
     })
 
-PRIMARY_TF = "1H"
+PRIMARY_TF = "4H"
 CONFIRM_TF = "4H"
 CONTEXT_TF = "1D"
 
@@ -52,11 +52,13 @@ def _get_last_closed_bar(df: pd.DataFrame) -> pd.Series:
 # --------------------------
 # Mini-retest (1H) detector
 # --------------------------
-def ev_mini_retest_1h(
+def ev_mini_retest_4h(
     df: pd.DataFrame,
     lookback_bars: int = 3,
     atr_frac: float = 0.25,
 ) -> Dict[str, Any]:
+    # Dùng lại logic 1H cho 4H (nến đã đóng), tránh whipsaw intrabar
+    return ev_mini_retest_1h(df, lookback_bars=lookback_bars, atr_frac=atr_frac)
     """
     Mini-retest: trong 2–3 nến gần nhất có 'chạm' basis (EMA20 hoặc BB basis)
     trong ± atr_frac * ATR, sau đó nến đóng gần nhất đóng theo hướng:
@@ -920,8 +922,8 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
     vol_z20_1h   = float(ev_vol_1h.get('vol_z20'))   if isinstance(ev_vol_1h, dict) and ev_vol_1h.get('vol_z20')   is not None else None
     vol_grade_1h = (ev_vol_1h.get('grade') if isinstance(ev_vol_1h, dict) else None) or ""
 
-    # ---- mini-retest flags (1H) ----
-    mini = ev_mini_retest_1h(df1, lookback_bars=3, atr_frac=0.25) if isinstance(df1, pd.DataFrame) else {"ok": False}
+    # ---- mini-retest flags (4H) ----
+    mini = ev_mini_retest_4h(df4, lookback_bars=3, atr_frac=0.25) if isinstance(df4, pd.DataFrame) else {"ok": False}
 
     evidences = {
         'price_breakout': ev_pb,
