@@ -28,7 +28,7 @@ def ev_mini_retest_4h(
     - Xác định hướng bằng close so với high/low nến trước.
     Trả về: {"ok": bool, "dir": "long"|"short"|None, "detail": {...}}
     """
-    out: Dict[str, Any] = {"ok": False, "dir": None, "detail": {}}
+    out: Dict[str, Any] = {"ok": False, "dir": None, "long": False, "short": False, "detail": {}}
     try:
         if df is None or len(df) < max(lookback_bars + 2, 3):
             return out
@@ -67,9 +67,13 @@ def ev_mini_retest_4h(
         if long_retest and not short_retest:
             out["ok"] = True
             out["dir"] = "long"
+            out["long"] = True
+            out["short"] = False
         elif short_retest and not long_retest:
             out["ok"] = True
             out["dir"] = "short"
+            out["long"] = False
+            out["short"] = True
 
         out["detail"] = {
             "hi_prev": hi_prev, "lo_prev": lo_prev, "hi_last": hi_last, "lo_last": lo_last,
@@ -116,39 +120,6 @@ def _get_last_closed_bar(df: pd.DataFrame) -> pd.Series:
     if len(df) >= 2:
         return df.iloc[-2]
     return df.iloc[-1] if len(df) else pd.Series(dtype=float)
-
-# --------------------------
-# Mini-retest (1H) detector
-# --------------------------
-def ev_mini_retest_4h(
-    df: pd.DataFrame,
-    lookback_bars: int = 3,
-    atr_frac: float = 0.25,
-) -> Dict[str, Any]:
-    # Dùng lại logic 1H cho 4H (nến đã đóng), tránh whipsaw intrabar
-    return ev_mini_retest_1h(df, lookback_bars=lookback_bars, atr_frac=atr_frac)
-    """
-    Mini-retest: trong 2–3 nến gần nhất có 'chạm' basis (EMA20 hoặc BB basis)
-    trong ± atr_frac * ATR, sau đó nến đóng gần nhất đóng theo hướng:
-      - long: close>open và close>b basis
-      - short: close<open và close<b basis
-    Trả về {'ok', 'long', 'short', 'why', 'lookback', 'atr_frac'}.
-    """
-    try:
-        if df is None or len(df) < 5:
-            return {"ok": False, "why": "insufficient_df"}
-        last = _get_last_closed_bar(df)
-        # basis ưu tiên: (bb_upper+bb_lower)/2 nếu có, fallback EMA20
-        has_bb = ("bb_upper" in df.columns) and ("bb_lower" in df.columns)
-        if has_bb:
-            basis_series = (df["bb_upper"] + df["bb_lower"]) / 2.0
-        elif "ema20" in df.columns:
-            basis_series = df["ema20"]
-        else:
-            return {"ok": False, "why": "no_basis"}
-        atr_series = df["atr14"] if "atr14" in df.columns else None
-        if atr_series is None or len(atr_series) < 2:
-            return {"ok": False, "why": "no_atr"}
 
         # window gồm các nến đã đóng gần nhất (loại bỏ nến đang chạy nếu có)
         # lấy tối đa lookback_bars nến trước 'last'
@@ -616,12 +587,12 @@ def ev_pullback_valid(df: pd.DataFrame, swings: Dict[str, Any], atr: float, mom:
             inside = bool((last["high"] <= prev["high"]) and (last["low"] >= prev["low"]))
         except Exception:
             inside = False
+        ema20 = float(df['ema20'].iloc[-1]) if 'ema20' in df.columns else float('nan')
+        bb_mid = float(df['bb_mid'].iloc[-1]) if 'bb_mid' in df.columns else float('nan')
         if not ok and inside:
             center = ema20 if np.isfinite(ema20) else bb_mid
             if np.isfinite(center) and abs(current - center) <= ((0.6 if _atr_regime(df).get('regime','normal') in ('low','normal') else 1.0) * atr):
                 ok = True
-        ema20 = float(df['ema20'].iloc[-1]) if 'ema20' in df.columns else float('nan')
-        bb_mid = float(df['bb_mid'].iloc[-1]) if 'bb_mid' in df.columns else float('nan')
         center = ema20 if np.isfinite(ema20) else bb_mid
         zone = [float(center - zone_k*atr), float(center + zone_k*atr)] if np.isfinite(center) else None
         fzone = [float(bb_mid - zone_k*atr), float(bb_mid + zone_k*atr)] if np.isfinite(bb_mid) else None
@@ -637,12 +608,12 @@ def ev_pullback_valid(df: pd.DataFrame, swings: Dict[str, Any], atr: float, mom:
             inside = bool((last["high"] <= prev["high"]) and (last["low"] >= prev["low"]))
         except Exception:
             inside = False
+        ema20 = float(df['ema20'].iloc[-1]) if 'ema20' in df.columns else float('nan')
+        bb_mid = float(df['bb_mid'].iloc[-1]) if 'bb_mid' in df.columns else float('nan')
         if not ok and inside:
             center = ema20 if np.isfinite(ema20) else bb_mid
             if np.isfinite(center) and abs(current - center) <= ((0.6 if _atr_regime(df).get('regime','normal') in ('low','normal') else 1.0) * atr):
                 ok = True
-        ema20 = float(df['ema20'].iloc[-1]) if 'ema20' in df.columns else float('nan')
-        bb_mid = float(df['bb_mid'].iloc[-1]) if 'bb_mid' in df.columns else float('nan')
         center = ema20 if np.isfinite(ema20) else bb_mid
         zone = [float(center - zone_k*atr), float(center + zone_k*atr)] if np.isfinite(center) else None
         fzone = [float(bb_mid - zone_k*atr), float(bb_mid + zone_k*atr)] if np.isfinite(bb_mid) else None
