@@ -164,6 +164,6 @@ def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dic
         f"- Lợi nhuận trước đòn bẩy: {eq1x:+.2f}%",
         f"- Tổng R: {sumR:+.1f}R",
         f"- PnL/$100 rủi ro: ${pnl_per_100:.0f}",
-        f"- TP theo số lệnh: TP3: {c3}  - TP2: {c2} - TP1: {c1}  -  SL: {cs}",
+        f"- TP theo số lệnh: TP3: {c3} - TP2: {c2} - TP1: {c1} - SL: {cs}",
     ]
     return "\n".join(lines)
