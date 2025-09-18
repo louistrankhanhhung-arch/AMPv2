@@ -247,13 +247,16 @@ def _get_notifier():
     return TN
 # --- end telegram notifier helper ---
 
-def split_into_4_blocks(symbols: List[str]) -> List[List[str]]:
-    """Stable split: [s[0], s[4], ...], [s[1], s[5], ...], ..."""
-    return [symbols[i::4] for i in range(4)]
+def split_into_5_blocks(symbols: List[str]) -> List[List[str]]:
+    """Stable split into 5 blocks: [s[0], s[5], ...], [s[1], s[6], ...], ..."""
+    return [symbols[i::5] for i in range(5)]
 
 def which_block_for_minute(minute: int):
-    # Twice per hour schedule
-    mapping = {0:0, 5:1, 10:2, 15:3, 30:0, 35:1, 40:2, 45:3}
+    # Twice per hour schedule for 5 blocks (VN time)
+    mapping = {
+        0: 0, 5: 1, 10: 2, 15: 3, 20: 4,
+        30: 0, 35: 1, 40: 2, 45: 3, 50: 4
+    }
     return mapping.get(minute % 60)
 
 def send_telegram(text: str):
@@ -564,7 +567,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
         send_telegram(out["telegram_signal"])
 
 def run_block(block_idx: int, symbols: List[str], cfg: Config, limit: int, ex=None):
-    log.info(f"=== Running block {block_idx+1}/4 ({len(symbols)} symbols) ===")
+    log.info(f"=== Running block {block_idx+1}/5 ({len(symbols)} symbols) ===")
     sleep_between_symbols = float(os.getenv("SLEEP_BETWEEN_SYMBOLS", "0.15"))
     for sym in symbols:
         try:
@@ -575,7 +578,7 @@ def run_block(block_idx: int, symbols: List[str], cfg: Config, limit: int, ex=No
 
 def loop_scheduler():
     symbols = get_universe_from_env()
-    blocks = split_into_4_blocks(symbols)
+    blocks = split_into_5_blocks(symbols)
     cfg = Config()  # default thresholds per TF
     limit = int(os.getenv("BATCH_LIMIT", "300"))
     # Create ONE shared exchange to let ccxt throttler pace requests correctly
@@ -587,13 +590,14 @@ def loop_scheduler():
 
     if os.getenv("RUN_ONCE") == "1":
         # Run all blocks immediately (useful for CI/test)
-        for i in range(4):
+        for i in range(5):
             run_block(i, blocks[i], cfg, limit, ex=shared_ex)
         return
 
     log.info(f"Universe size={len(symbols)}; block sizes={[len(b) for b in blocks]}")
-    log.info("Schedule each hour: block0 at :00 & :30, block1 at :05 & :35, "
-             "block2 at :10 & :40, block3 at :15 & :45 (Asia/Ho_Chi_Minh)")
+    log.info("Schedule each hour (Asia/Ho_Chi_Minh): "
+             "block1 at :00 & :30, block2 at :05 & :35, block3 at :10 & :40, "
+             "block4 at :15 & :45, block5 at :20 & :50")
  
 
     last_tick = None
