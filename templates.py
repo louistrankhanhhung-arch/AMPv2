@@ -154,12 +154,12 @@ def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dic
     c1 = int(tp_counts.get("TP1", 0) or 0); cs = int(tp_counts.get("SL", 0) or 0)
 
     lines += [
-        "📊 <b>Hiệu suất (tính trên danh sách trên)</b>:",
+        "📊 <b>Hiệu suất giao dịch:</b>",
         f"- Tổng lệnh đã đóng: {n}",
-        f"- Lợi nhuận 1x: {eq1x:+.2f}%",
-        f"- Tổng R: {sumR:+.1f}R",
         f"- Tỉ lệ thắng: {wr:.0f}%",
-        f"- PnL trên $100 risk: ${pnl_per_100:.0f}",
+        f"- Lợi nhuận trước đòn bẩy: {eq1x:+.2f}%",
+        f"- Tổng R: {sumR:+.1f}R",
+        f"- PnL/$100 rủi ro: ${pnl_per_100:.0f}",
         f"- TP theo số lệnh: TP3: {c3}  - TP2: {c2} - TP1: {c1}  -  SL: {cs}",
     ]
     return "\n".join(lines)
