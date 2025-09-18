@@ -2,8 +2,8 @@
 """
 Main worker for Crypto Signal (Railway ready)
 
-- Splits symbols into 4 blocks and scans twice per hour:
-  block1 at :00 & :30, block2 at :05 & :35, block3 at :10 & :40, block4 at :15 & :45 (Asia/Ho_Chi_Minh)
+- Splits symbols into 5 blocks and scans twice per hour:
+  block1 at :00 & :30, block2 at :05 & :35, block3 at :10 & :40, block4 at :15 & :45, block5 at :20 & :50, (Asia/Ho_Chi_Minh)
 - Workflow per symbol:
   1) fetch OHLCV for 1H/4H/1D (1H drop partial bar; 4H/1D keep realtime)
   2) enrich indicators (EMA/RSI/BB/ATR/volume, candle anatomy)
@@ -25,7 +25,6 @@ from indicators import enrich_indicators, enrich_more
 from feature_primitives import compute_features_by_tf
 from engine_adapter import decide
 from evidence_evaluators import build_evidence_bundle, Config
-
 
 from notifier_telegram import TelegramNotifier
 from storage import SignalPerfDB, JsonStore, UserDB
@@ -208,7 +207,7 @@ def _describe_missing_tags(missing, bundle: dict, wait_meta: dict | None = None)
         else:
             out.append(t)
     return out
-# -------- helper: list evidences that are OK ----------
+
 def _extract_evidence_ok(bundle: dict):
     """
     Trả về list evidence đang 'ok' (kèm side nếu có), ví dụ:
@@ -345,7 +344,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     state = out.get("state")
     plan = out.get("plan") or {}
     log.debug(f"[{symbol}] decide done in {elapsed_dec:.2f}s; total {total_time:.2f}s")
-   # Prefer concise headline from decision_engine if available (already includes DIR/TP ladder)
+    # Prefer concise headline from decision_engine if available (already includes DIR/TP ladder)
     headline = out.get("headline")
     if headline:
         log.info(headline)
@@ -417,8 +416,6 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
             log.info(f"[{symbol}] WHY no_side: {_reason} votes={wait_meta.get('side_votes')} tf_long={wait_meta.get('tf_long')} tf_short={wait_meta.get('tf_short')} gates={{breakout:{_has_brk}, retest:{_has_rt}}}")
         log.info(f"[{symbol}] WAIT missing={miss_detail} have={have_detail}")
 
-
-    # log JSON line
     # --- post teaser to Telegram Channel when ENTER ---
     if dec == "ENTER":
         tn = _get_notifier()
@@ -452,7 +449,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 log.warning(f"[{symbol}] teaser post failed: {e}")
                 
     # --- end teaser post ---
-# --- progress check: update TP/SL hits for existing OPEN trades ---
+    # --- progress check: update TP/SL hits for existing OPEN trades ---
     try:
         df_1h = dfs.get("1H")
         if df_1h is None or df_1h.empty:
@@ -557,7 +554,6 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                         else:
                             tn2.send_channel(render_update(t, note, extra))
 
-                  
         # nếu không có open_trades -> không làm gì, không log warning
     except Exception as e:
         log.warning("progress-check failed: %s", e)
@@ -598,7 +594,6 @@ def loop_scheduler():
     log.info("Schedule each hour (Asia/Ho_Chi_Minh): "
              "block1 at :00 & :30, block2 at :05 & :35, block3 at :10 & :40, "
              "block4 at :15 & :45, block5 at :20 & :50")
- 
 
     last_tick = None
     last_kpi_day = None  # NEW: để gửi KPI 1 lần/ngày
