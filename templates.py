@@ -144,7 +144,6 @@ def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dic
 
     totals = (detail_24h.get("totals") or {}) if isinstance(detail_24h, dict) else {}
     n = int(totals.get("n", 0) or 0)
-    wr = float(totals.get("win_rate", 0.0) or 0.0)
     sumR = float(totals.get("sum_R", 0.0) or 0.0)
     sum_pct = float(totals.get("sum_pct", 0.0) or 0.0)
     eq1x = sum_pct
@@ -152,11 +151,16 @@ def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dic
     tp_counts = (totals.get("tp_counts") or {})
     c3 = int(tp_counts.get("TP3", 0) or 0); c2 = int(tp_counts.get("TP2", 0) or 0)
     c1 = int(tp_counts.get("TP1", 0) or 0); cs = int(tp_counts.get("SL", 0) or 0)
+    # Win-rate theo yêu cầu:
+    #   (tổng số lệnh có TP1-3 đã ĐÓNG trong danh sách liệt kê) / (tổng lệnh đã đóng trong danh sách) * 100%
+    wins_tp = c1 + c2 + c3
+    n_closed = n
+    wr_pct = (wins_tp / n_closed * 100.0) if n_closed else 0.0
 
     lines += [
         "📊 <b>Hiệu suất giao dịch:</b>",
         f"- Tổng lệnh đã đóng: {n}",
-        f"- Tỉ lệ thắng: {wr:.0f}%",
+        f"- Tỉ lệ thắng: {wr_pct:.0f}%",
         f"- Lợi nhuận trước đòn bẩy: {eq1x:+.2f}%",
         f"- Tổng R: {sumR:+.1f}R",
         f"- PnL/$100 rủi ro: ${pnl_per_100:.0f}",
