@@ -308,6 +308,18 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     t1 = time.time()
     dfs = _enrich_all(dfs)
     log.debug(f"[{symbol}] enrich done in {time.time()-t1:.2f}s")
+    # --- DEBUG: xác nhận các cột sau khi enrich (đặc biệt 4H để guard RSI4H/ATR4H) ---
+    try:
+        cols_4h = list(dfs.get("4H").columns) if (dfs.get("4H") is not None and not dfs.get("4H").empty) else []
+        cols_1h = list(dfs.get("1H").columns) if (dfs.get("1H") is not None and not dfs.get("1H").empty) else []
+        log.debug(f"[{symbol}] 4H cols: {cols_4h}")
+        log.debug(f"[{symbol}] 1H cols: {cols_1h}")
+        if "atr14" not in cols_4h or "rsi14" not in cols_4h:
+            log.warning(f"[{symbol}] 4H missing columns -> atr14={ 'atr14' in cols_4h }, rsi14={ 'rsi14' in cols_4h }")
+        if not {"bb_upper","bb_mid","bb_lower"}.issubset(set(cols_4h)):
+            log.warning(f"[{symbol}] 4H missing Bollinger columns -> have={set(cols_4h) & {'bb_upper','bb_mid','bb_lower'}}")
+    except Exception as _e:
+        log.debug(f"[{symbol}] enrich debug skipped: {_e}")
     t2 = time.time()
     feats_by_tf = compute_features_by_tf(dfs)   # builds trend/momentum/volatility/levels/vp-bands,…
     log.debug(f"[{symbol}] features done in {time.time()-t2:.2f}s")
@@ -316,6 +328,14 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
         feats_by_tf['4H']['df'] = dfs.get('4H')
     if '1H' in feats_by_tf:
         feats_by_tf['1H']['df'] = dfs.get('1H')
+    # --- DEBUG: nếu volatility/natr thiếu ở 4H, cảnh báo sớm ---
+    try:
+        vol4 = ((feats_by_tf.get("4H") or {}).get("primitives") or {}).get("volatility") or {}
+        natr4 = vol4.get("natr", None)
+        if natr4 in (None, 0.0) or (isinstance(natr4, float) and natr4 != natr4):  # None/0.0/NaN
+            log.warning(f"[{symbol}] 4H natr looks invalid (natr={natr4}) — check atr14/close_last & Bollinger presence")
+    except Exception:
+        pass
 
     # evidence bundle (STRUCT JSON)
     t3 = time.time()
