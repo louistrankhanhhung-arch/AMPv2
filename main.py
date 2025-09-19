@@ -2,8 +2,9 @@
 """
 Main worker for Crypto Signal (Railway ready)
 
-- Splits symbols into 5 blocks and scans twice per hour:
-  block1 at :00 & :30, block2 at :05 & :35, block3 at :10 & :40, block4 at :15 & :45, block5 at :20 & :50, (Asia/Ho_Chi_Minh)
+- Splits symbols into 6 blocks and scans twice per hour:
+  block1 at :05 & :35, block2 at :08 & :38, block3 at :11 & :41,
+  block4 at :14 & :44, block5 at :17 & :47, block6 at :20 & :50 (Asia/Ho_Chi_Minh)
 - Workflow per symbol:
   1) fetch OHLCV for 1H/4H/1D (1H drop partial bar; 4H/1D keep realtime)
   2) enrich indicators (EMA/RSI/BB/ATR/volume, candle anatomy)
@@ -246,15 +247,15 @@ def _get_notifier():
     return TN
 # --- end telegram notifier helper ---
 
-def split_into_5_blocks(symbols: List[str]) -> List[List[str]]:
-    """Stable split into 5 blocks: [s[0], s[5], ...], [s[1], s[6], ...], ..."""
-    return [symbols[i::5] for i in range(5)]
+def split_into_6_blocks(symbols: List[str]) -> List[List[str]]:
+    """Stable split into 6 blocks: [s[0], s[6], ...], [s[1], s[7], ...], ..."""
+    return [symbols[i::6] for i in range(6)]
 
 def which_block_for_minute(minute: int):
-    # Twice per hour schedule for 5 blocks (VN time)
+    # Twice per hour schedule for 6 blocks (VN time)
     mapping = {
-        0: 0, 5: 1, 10: 2, 15: 3, 20: 4,
-        30: 0, 35: 1, 40: 2, 45: 3, 50: 4
+        5: 0,  8: 1, 11: 2, 14: 3, 17: 4, 20: 5,
+        35: 0, 38: 1, 41: 2, 44: 3, 47: 4, 50: 5
     }
     return mapping.get(minute % 60)
 
@@ -562,8 +563,8 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     if out.get("telegram_signal"):
         send_telegram(out["telegram_signal"])
 
-def run_block(block_idx: int, symbols: List[str], cfg: Config, limit: int, ex=None):
-    log.info(f"=== Running block {block_idx+1}/5 ({len(symbols)} symbols) ===")
+def run_block(block_idx: int, symbols: List[str], cfg: Config, limit: int, total_blocks: int, ex=None):
+    log.info(f"=== Running block {block_idx+1}/{total_blocks} ({len(symbols)} symbols) ===")
     sleep_between_symbols = float(os.getenv("SLEEP_BETWEEN_SYMBOLS", "0.15"))
     for sym in symbols:
         try:
@@ -574,7 +575,7 @@ def run_block(block_idx: int, symbols: List[str], cfg: Config, limit: int, ex=No
 
 def loop_scheduler():
     symbols = get_universe_from_env()
-    blocks = split_into_5_blocks(symbols)
+    blocks = split_into_6_blocks(symbols)
     cfg = Config()  # default thresholds per TF
     limit = int(os.getenv("BATCH_LIMIT", "300"))
     # Create ONE shared exchange to let ccxt throttler pace requests correctly
@@ -586,14 +587,14 @@ def loop_scheduler():
 
     if os.getenv("RUN_ONCE") == "1":
         # Run all blocks immediately (useful for CI/test)
-        for i in range(5):
-            run_block(i, blocks[i], cfg, limit, ex=shared_ex)
+        for i in range(len(blocks)):
+            run_block(i, blocks[i], cfg, limit, len(blocks), ex=shared_ex)
         return
 
     log.info(f"Universe size={len(symbols)}; block sizes={[len(b) for b in blocks]}")
     log.info("Schedule each hour (Asia/Ho_Chi_Minh): "
-             "block1 at :00 & :30, block2 at :05 & :35, block3 at :10 & :40, "
-             "block4 at :15 & :45, block5 at :20 & :50")
+             "block1 at :05 & :35, block2 at :08 & :38, block3 at :11 & :41, "
+             "block4 at :14 & :44, block5 at :17 & :47, block6 at :20 & :50")
 
     last_tick = None
     last_kpi_day = None  # NEW: để gửi KPI 1 lần/ngày
@@ -605,7 +606,7 @@ def loop_scheduler():
         tick_key = (now.year, now.month, now.day, now.hour, half, blk)
         if blk is not None and tick_key != last_tick and now.second < 10:
             last_tick = tick_key
-            run_block(blk, blocks[blk], cfg, limit, ex=shared_ex)
+            run_block(blk, blocks[blk], cfg, limit, len(blocks), ex=shared_ex)
         # NEW: KPI lúc 18:18 local (VN) ~ 11:18 UTC
         try:
             if now.hour == 18 and now.minute == 18 and (last_kpi_day != (now.year, now.month, now.day)):
