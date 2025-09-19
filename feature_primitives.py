@@ -256,21 +256,24 @@ def compute_momentum(df: pd.DataFrame) -> dict:
     return {"rsi_last": rsi_last, "divergence": divergence}
 
 def compute_volatility(df: pd.DataFrame, bbw_lookback: int = 50) -> dict:
-   """
+    """
     Robust volatility snapshot:
       - Nếu thiếu/NaN atr14: cố gắng tự khôi phục thay vì trả 0 (tránh natr=0.0).
       - Nếu thiếu BB columns: fallback về close (BBW=NaN an toàn).
     """
     # --- ATR14 robust ---
     try:
-        atr14_val = pd.to_numeric(df["atr14"], errors="coerce").iloc[-1] if "atr14" in df.columns else np.nan
+        atr14_val = (
+            pd.to_numeric(df["atr14"], errors="coerce").iloc[-1]
+            if "atr14" in df.columns else np.nan
+        )
     except Exception:
         atr14_val = np.nan
     if pd.isna(atr14_val):
         # nỗ lực khôi phục bằng enrich một bản copy nhỏ (tránh mutate df gốc)
         try:
             _tmp = enrich_indicators(df.tail(200).copy())
-            atr14_val = pd.to_numeric(_tmp.get("atr14", np.nan), errors="coerce").iloc[-1]
+            atr14_val = pd.to_numeric(_tmp["atr14"], errors="coerce").iloc[-1]
         except Exception:
             atr14_val = np.nan
 
@@ -279,7 +282,8 @@ def compute_volatility(df: pd.DataFrame, bbw_lookback: int = 50) -> dict:
         close_last = float(pd.to_numeric(df["close"], errors="coerce").iloc[-1])
     except Exception:
         close_last = np.nan
-    natr = (float(atr14_val) / close_last) if (pd.notna(atr14_val) and close_last not in (0.0, np.nan)) else np.nan
+    natr = (float(atr14_val) / close_last) if (pd.notna(atr14_val) and close_last and not pd.isna(close_last)) else np.nan
+
 
     # --- BBW robust ---
     try:
@@ -290,9 +294,9 @@ def compute_volatility(df: pd.DataFrame, bbw_lookback: int = 50) -> dict:
             bbw_series = (pd.to_numeric(df["bb_upper"], errors="coerce")
                           - pd.to_numeric(df["bb_lower"], errors="coerce")) / base * 100.0
         else:
-            bbw_series = pd.Series([np.nan]*len(df), index=df.index)
+            bbw_series = pd.Series([np.nan] * len(df), index=df.index)
     except Exception:
-        bbw_series = pd.Series([np.nan]*len(df), index=df.index)
+        bbw_series = pd.Series([np.nan] * len(df), index=df.index)
 
     try:
         bbw_med = float(pd.to_numeric(bbw_series.tail(bbw_lookback), errors="coerce").median())
@@ -302,7 +306,7 @@ def compute_volatility(df: pd.DataFrame, bbw_lookback: int = 50) -> dict:
         bbw_last = float(pd.to_numeric(bbw_series, errors="coerce").iloc[-1])
     except Exception:
         bbw_last = np.nan
-    squeeze = bool((pd.notna(bbw_last) and pd.notna(bbw_med)) and (bbw_last < bbw_med))
+    squeeze = bool(pd.notna(bbw_last) and pd.notna(bbw_med) and (bbw_last < bbw_med))
 
     return {
         "atr": float(atr14_val) if pd.notna(atr14_val) else np.nan,
