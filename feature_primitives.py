@@ -256,19 +256,61 @@ def compute_momentum(df: pd.DataFrame) -> dict:
     return {"rsi_last": rsi_last, "divergence": divergence}
 
 def compute_volatility(df: pd.DataFrame, bbw_lookback: int = 50) -> dict:
-    atr14 = float(df["atr14"].iloc[-1])
-    close_last = float(df["close"].iloc[-1])
-    natr = atr14 / close_last if close_last else np.nan
-    # BBW (%): prefer bb_width_pct if exists; otherwise compute
-    if "bb_width_pct" in df.columns:
-        bbw_series = pd.to_numeric(df["bb_width_pct"], errors="coerce")
-    else:
-        base = df["bb_mid"].where((df["bb_mid"] != 0) & df["bb_mid"].notna(), other=df["close"])
-        bbw_series = (df["bb_upper"] - df["bb_lower"]) / base * 100.0
-    bbw_med = float(bbw_series.tail(bbw_lookback).median())
-    bbw_last = float(bbw_series.iloc[-1])
-    squeeze = bool(bbw_last < bbw_med)
-    return {"atr": atr14, "natr": natr, "bbw_last": bbw_last, "bbw_med": bbw_med, "squeeze": squeeze}
+   """
+    Robust volatility snapshot:
+      - Nếu thiếu/NaN atr14: cố gắng tự khôi phục thay vì trả 0 (tránh natr=0.0).
+      - Nếu thiếu BB columns: fallback về close (BBW=NaN an toàn).
+    """
+    # --- ATR14 robust ---
+    try:
+        atr14_val = pd.to_numeric(df["atr14"], errors="coerce").iloc[-1] if "atr14" in df.columns else np.nan
+    except Exception:
+        atr14_val = np.nan
+    if pd.isna(atr14_val):
+        # nỗ lực khôi phục bằng enrich một bản copy nhỏ (tránh mutate df gốc)
+        try:
+            _tmp = enrich_indicators(df.tail(200).copy())
+            atr14_val = pd.to_numeric(_tmp.get("atr14", np.nan), errors="coerce").iloc[-1]
+        except Exception:
+            atr14_val = np.nan
+
+    # close_last
+    try:
+        close_last = float(pd.to_numeric(df["close"], errors="coerce").iloc[-1])
+    except Exception:
+        close_last = np.nan
+    natr = (float(atr14_val) / close_last) if (pd.notna(atr14_val) and close_last not in (0.0, np.nan)) else np.nan
+
+    # --- BBW robust ---
+    try:
+        if "bb_width_pct" in df.columns:
+            bbw_series = pd.to_numeric(df["bb_width_pct"], errors="coerce")
+        elif {"bb_upper", "bb_mid", "bb_lower"}.issubset(df.columns):
+            base = df["bb_mid"].where((df["bb_mid"] != 0) & df["bb_mid"].notna(), other=df["close"])
+            bbw_series = (pd.to_numeric(df["bb_upper"], errors="coerce")
+                          - pd.to_numeric(df["bb_lower"], errors="coerce")) / base * 100.0
+        else:
+            bbw_series = pd.Series([np.nan]*len(df), index=df.index)
+    except Exception:
+        bbw_series = pd.Series([np.nan]*len(df), index=df.index)
+
+    try:
+        bbw_med = float(pd.to_numeric(bbw_series.tail(bbw_lookback), errors="coerce").median())
+    except Exception:
+        bbw_med = np.nan
+    try:
+        bbw_last = float(pd.to_numeric(bbw_series, errors="coerce").iloc[-1])
+    except Exception:
+        bbw_last = np.nan
+    squeeze = bool((pd.notna(bbw_last) and pd.notna(bbw_med)) and (bbw_last < bbw_med))
+
+    return {
+        "atr": float(atr14_val) if pd.notna(atr14_val) else np.nan,
+        "natr": float(natr) if pd.notna(natr) else np.nan,
+        "bbw_last": float(bbw_last) if pd.notna(bbw_last) else np.nan,
+        "bbw_med": float(bbw_med) if pd.notna(bbw_med) else np.nan,
+        "squeeze": squeeze,
+    }
 
 # =========================
 # Support / Resistance block
@@ -297,7 +339,17 @@ def compute_levels(
     e = df.tail(int(lookback)).copy()
     px = float(e["close"].iloc[-1])
     if atr is None:
-        atr = float(e["atr14"].iloc[-1])
+        # robust atr: tránh KeyError/NaN
+        try:
+            atr = float(pd.to_numeric(e["atr14"], errors="coerce").iloc[-1])
+        except Exception:
+            atr = np.nan
+    if pd.isna(atr):
+        # fallback nhẹ: dùng biên độ gần nhất nếu ATR chưa sẵn
+        try:
+            atr = float((e["high"].iloc[-1] - e["low"].iloc[-1]))
+        except Exception:
+            atr = 0.0
     tol = max(1e-9, atr * float(tol_coef))
     highs = e["high"]
     lows = e["low"]
