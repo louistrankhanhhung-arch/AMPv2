@@ -203,12 +203,12 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         dec.reasons = reasons
         # Không đổi setup; chỉ cấm vào kèo lúc này
 
-    # -------- BB-low(4H) + RSI(1H) extreme guard --------
+    # -------- BB-low(4H) + RSI(4H) extreme guard --------
     bb_rsi_guard = _guard_near_bb_low_4h_and_rsi1h_extreme(dec.side, dec.setup.entry, features_by_tf)
     if bb_rsi_guard.get("block"):
         dec.decision = "WAIT"
         reasons = list(dec.reasons or [])
-        reasons.append("guard:near_4h_bb_low_and_rsi1h_os")
+        reasons.append("guard:near_4h_bb_low_and_rsi4h_os")
         dec.reasons = reasons
 
     # -------- RR2/RR3 floor check -> WAIT + entry2 hint --------
