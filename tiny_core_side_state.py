@@ -238,20 +238,12 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     tf_confirm = "4H"
     f1 = features_by_tf.get(tf_primary, {}) or {}
     f4 = features_by_tf.get(tf_confirm, {}) or {}
-    # NEW: primitives theo cấu trúc feature_primitives.compute_features_by_tf
-    p1 = (f1.get("primitives") or {}) if isinstance(f1, dict) else {}
-    p4 = (f4.get("primitives") or {}) if isinstance(f4, dict) else {}
-
-    # primitives theo đúng cấu trúc của feature_primitives.compute_features_by_tf
-    p1 = (f1.get('primitives') or {}) if isinstance(f1, dict) else {}
-    p4 = (f4.get('primitives') or {}) if isinstance(f4, dict) else {}
 
     # Price theo trigger; ATR/NATR theo execution để dựng SL/TP
     df_trigger = f1.get('df')
     price = _price(df_trigger)
-    vol4 = p4.get('volatility') or {}
-    atr  = float(vol4.get('atr', 0.0) or 0.0)
-    natr = float(vol4.get('natr', 0.0) or 0.0)
+    atr  = float((f4.get('volatility', {}) or {}).get('atr', 0.0) or 0.0)
+    natr = float((f4.get('volatility', {}) or {}).get('natr', 0.0) or 0.0)
 
     # read EMA 4H for SL cushion
     df_confirm = f4.get('df')
@@ -261,21 +253,20 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
         ema50_4h = float('nan')
 
     # trend/momentum/volume phía 1H (đưa về sign)
-    def _trend_dir_from_features(prims) -> int:
-        st = (prims.get('trend', {}) or {}).get('state')
+    def _trend_dir_from_features(ff) -> int:
+        st = (ff.get('trend', {}) or {}).get('state')
         if st == 'up': return +1
         if st == 'down': return -1
         return 0
 
-    def _momo_dir_from_features(prims) -> int:
-        # momentum dùng 'rsi_last' theo feature_primitives
-        rsi = float((prims.get('momentum', {}) or {}).get('rsi_last', 50.0) or 50.0)
+    def _momo_dir_from_features(ff) -> int:
+        rsi = float((ff.get('momentum', {}) or {}).get('rsi', 50.0) or 50.0)
         return +1 if rsi > 50 else (-1 if rsi < 50 else 0)
 
-    def _vol_dir_from_features(prims) -> int:
-        vol = (prims.get('volume', {}) or {})
+    def _vol_dir_from_features(ff) -> int:
+        vol = (ff.get('volume', {}) or {})
         vz = float(vol.get('vol_z20', 0.0) or 0.0)
-        vr = float(vol.get('vol_ratio', 1.0) or 1.0)
+        vr = float((ff.get('volume', {}) or {}).get('vol_ratio', 1.0) or 1.0)
         contraction = bool(vol.get('contraction', False))
         strong = bool(vol.get('break_vol_strong', False))
         ok = bool(vol.get('break_vol_ok', False))
@@ -296,13 +287,13 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
 
         return 1 if pos > neg else (-1 if neg > pos else 0)
 
-    trend_strength = _trend_dir_from_features(p1)
-    momo_strength  = _momo_dir_from_features(p1)
-    volume_tilt    = _vol_dir_from_features(p1)
+    trend_strength = _trend_dir_from_features(f1)
+    momo_strength = _momo_dir_from_features(f1)
+    volume_tilt = _vol_dir_from_features(f1)
 
-    # Inside-bar dùng từ candles 4H (dưới primitives)
+    # Inside-bar dùng directly từ candles 4H
     try:
-        inside_bar = bool((p4.get('candles', {}) or {}).get('inside_bar', False))
+        inside_bar = bool((f4.get('candles', {}) or {}).get('inside_bar', False))
     except Exception:
         inside_bar = False
 
@@ -383,12 +374,11 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
 
     # -------------- 4H CONFIRM (two-tier) --------------
     regime = str(ev_adapt.get("regime") or "normal")  # 'low' | 'normal' | 'high'
-    # Trend/Momo 4H dùng primitives
-    f4_trend = (p4.get('trend') or {})
-    f4_momo  = (p4.get('momentum') or {})
+    f4_trend = (f4.get('trend') or {})
+    f4_momo  = (f4.get('momentum') or {})
     trend_ok_long  = (f4_trend.get('state') == 'up')
     trend_ok_short = (f4_trend.get('state') == 'down')
-    rsi4 = float(f4_momo.get('rsi_last') or 50.0)
+    rsi4 = float(f4_momo.get('rsi') or 50.0)
     rsi_ok_long  = rsi4 >= cfg.rsi_long_thr_4h
     rsi_ok_short = rsi4 <= cfg.rsi_short_thr_4h
     trend_not_side = f4_trend.get('state') in ('up','down')
@@ -496,9 +486,9 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.false_break_long = false_break_long
     si.false_break_short = false_break_short    
 
-    # inside-bar flag from candle features (1H primitives khi cần)
+    # inside-bar flag from candle features
     try:
-        si.inside_bar = bool(((p1.get('candles') or {}) or {}).get('inside_bar', False))
+        si.inside_bar = bool((f1.get('candles', {}) or {}).get('inside_bar', False))
     except Exception:
         si.inside_bar = False
 
