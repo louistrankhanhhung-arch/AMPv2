@@ -74,7 +74,7 @@ def _guard_near_bb_low_4h_and_rsi1h_extreme(side: Optional[str], entry: Optional
     """
     WAIT guard khi:
       - entry đang 'ôm' BB-lower 4H (<= 0.30 * ATR_4H)
-      - VÀ RSI(4H) đang cực trị (<=20 hoặc >=80)
+      - VÀ RSI(1H) đang cực trị (<=20 hoặc >=80)
     Áp dụng cả long/short. Tránh ENTER kể cả khi state=trend_break.
     """
     try:
@@ -87,15 +87,14 @@ def _guard_near_bb_low_4h_and_rsi1h_extreme(side: Optional[str], entry: Optional
         bb_l = lv.get("bb_lower")
         if bb_l is None:
             return {"block": False, "why": ""}
-        # Đổi kiểm tra cực trị sang RSI khung 4H
-        rsi4 = _rsi_from_features_tf(feats, "4H")
-        if rsi4 is None:
+        rsi1 = _rsi_from_features_tf(feats, "1H")
+        if rsi1 is None:
             return {"block": False, "why": ""}
         thr = 0.30 * atr4
         near_bb_low = (entry >= bb_l) and (abs(entry - bb_l) <= thr)
-        rsi_extreme = (rsi4 <= 20.0) or (rsi4 >= 80.0)
+        rsi_extreme = (rsi1 <= 20.0) or (rsi1 >= 80.0)
         if near_bb_low and rsi_extreme:
-            return {"block": True, "why": f"4H_bb_low±{thr:.4f} & RSI4H={rsi4:.1f}"}
+            return {"block": True, "why": f"4H_bb_low±{thr:.4f} & RSI1H={rsi1:.1f}"}
     except Exception:
         pass
     return {"block": False, "why": ""}
@@ -203,12 +202,12 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         dec.reasons = reasons
         # Không đổi setup; chỉ cấm vào kèo lúc này
 
-    # -------- BB-low(4H) + RSI(4H) extreme guard --------
+    # -------- BB-low(4H) + RSI(1H) extreme guard --------
     bb_rsi_guard = _guard_near_bb_low_4h_and_rsi1h_extreme(dec.side, dec.setup.entry, features_by_tf)
     if bb_rsi_guard.get("block"):
         dec.decision = "WAIT"
         reasons = list(dec.reasons or [])
-        reasons.append("guard:near_4h_bb_low_and_rsi4h_os")
+        reasons.append("guard:near_4h_bb_low_and_rsi1h_os")
         dec.reasons = reasons
 
     # -------- RR2/RR3 floor check -> WAIT + entry2 hint --------
