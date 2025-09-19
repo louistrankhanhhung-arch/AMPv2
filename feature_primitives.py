@@ -257,62 +257,94 @@ def compute_momentum(df: pd.DataFrame) -> dict:
 
 def compute_volatility(df: pd.DataFrame, bbw_lookback: int = 50) -> dict:
     """
-    Robust volatility snapshot:
-      - Nếu thiếu/NaN atr14: cố gắng tự khôi phục thay vì trả 0 (tránh natr=0.0).
-      - Nếu thiếu BB columns: fallback về close (BBW=NaN an toàn).
+    Robust volatility snapshot (stream-safe):
+      - Luôn đọc tại NẾN ĐÃ ĐÓNG gần nhất.
+      - Nếu thiếu/NaN atr14: khôi phục bằng Wilder ATR trên tail(64), rồi fallback simple ATR.
+      - BBW: lấy tại nến đã đóng; median tính trên lịch sử tới nến đó (không dùng nến đang chạy).
     """
-    # --- ATR14 robust ---
+    # Lấy nến đã đóng
     try:
-        atr14_val = (
-            pd.to_numeric(df["atr14"], errors="coerce").iloc[-1]
-            if "atr14" in df.columns else np.nan
-        )
+        last = _last_closed_bar(df)
+        idx = last.name
     except Exception:
-        atr14_val = np.nan
-    if pd.isna(atr14_val):
-        # nỗ lực khôi phục bằng enrich một bản copy nhỏ (tránh mutate df gốc)
-        try:
-            _tmp = enrich_indicators(df.tail(200).copy())
-            atr14_val = pd.to_numeric(_tmp["atr14"], errors="coerce").iloc[-1]
-        except Exception:
-            atr14_val = np.nan
+        return {"atr": np.nan, "natr": np.nan, "bbw_last": np.nan, "bbw_med": np.nan, "squeeze": False}
 
-    # close_last
+    # --- close_last (guard 0/NaN) ---
     try:
-        close_last = float(pd.to_numeric(df["close"], errors="coerce").iloc[-1])
+        close_last = float(pd.to_numeric(df.loc[idx, "close"], errors="coerce"))
     except Exception:
         close_last = np.nan
-    natr = (float(atr14_val) / close_last) if (pd.notna(atr14_val) and close_last and not pd.isna(close_last)) else np.nan
 
+    # --- ATR14 robust ---
+    def _wilder_atr(_df: pd.DataFrame, period: int = 14) -> pd.Series:
+        h = pd.to_numeric(_df["high"], errors="coerce")
+        l = pd.to_numeric(_df["low"], errors="coerce")
+        c = pd.to_numeric(_df["close"], errors="coerce")
+        tr = pd.concat([(h - l), (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+        alpha = 1.0 / float(period)
+        return tr.ewm(alpha=alpha, adjust=False).mean().rename("atr14")
 
-    # --- BBW robust ---
+    # 1) ưu tiên atr14 đã enrich tại nến đã đóng
+    try:
+        atr14_val = float(pd.to_numeric(df.loc[idx, "atr14"], errors="coerce")) if "atr14" in df.columns else np.nan
+    except Exception:
+        atr14_val = np.nan
+
+    # 2) nếu NaN → tính lại Wilder ATR trên tail(64) với kỳ linh hoạt
+    if not np.isfinite(atr14_val):
+        tail = df[["high", "low", "close"]].dropna().loc[:idx].tail(64)
+        if len(tail) >= 4:
+            period = int(min(14, max(3, len(tail) - 1)))
+            atr_series = _wilder_atr(tail, period=period)
+            if len(atr_series):
+                atr14_val = float(atr_series.iloc[-1])
+
+    # 3) nếu vẫn thiếu → simple ATR (mean TR 5–10 nến cuối)
+    if not np.isfinite(atr14_val):
+        tail = df[["high", "low", "close"]].dropna().loc[:idx].tail(10)
+        if len(tail) >= 5:
+            tr = pd.concat([
+                (pd.to_numeric(tail["high"]) - pd.to_numeric(tail["low"])),
+                (pd.to_numeric(tail["high"]) - pd.to_numeric(tail["close"]).shift()).abs(),
+                (pd.to_numeric(tail["low"])  - pd.to_numeric(tail["close"]).shift()).abs(),
+            ], axis=1).max(axis=1)
+            atr14_val = float(tr.tail(5).mean())
+
+    # natr
+    natr = (atr14_val / close_last) if (np.isfinite(atr14_val) and np.isfinite(close_last) and close_last > 0.0) else np.nan
+
+    # --- BBW robust tại nến đã đóng ---
     try:
         if "bb_width_pct" in df.columns:
             bbw_series = pd.to_numeric(df["bb_width_pct"], errors="coerce")
         elif {"bb_upper", "bb_mid", "bb_lower"}.issubset(df.columns):
-            base = df["bb_mid"].where((df["bb_mid"] != 0) & df["bb_mid"].notna(), other=df["close"])
+            bb_mid = pd.to_numeric(df["bb_mid"], errors="coerce")
+            base = bb_mid.where((bb_mid != 0) & bb_mid.notna(), other=pd.to_numeric(df["close"], errors="coerce"))
             bbw_series = (pd.to_numeric(df["bb_upper"], errors="coerce")
                           - pd.to_numeric(df["bb_lower"], errors="coerce")) / base * 100.0
+            bbw_series = bbw_series.replace([np.inf, -np.inf], np.nan)
         else:
             bbw_series = pd.Series([np.nan] * len(df), index=df.index)
     except Exception:
         bbw_series = pd.Series([np.nan] * len(df), index=df.index)
 
     try:
-        bbw_med = float(pd.to_numeric(bbw_series.tail(bbw_lookback), errors="coerce").median())
-    except Exception:
-        bbw_med = np.nan
-    try:
-        bbw_last = float(pd.to_numeric(bbw_series, errors="coerce").iloc[-1])
+        bbw_last = float(pd.to_numeric(bbw_series.loc[idx], errors="coerce")) if idx in bbw_series.index else np.nan
     except Exception:
         bbw_last = np.nan
-    squeeze = bool(pd.notna(bbw_last) and pd.notna(bbw_med) and (bbw_last < bbw_med))
+    try:
+        hist = pd.to_numeric(bbw_series.loc[:idx], errors="coerce").tail(int(bbw_lookback))
+        bbw_med = float(hist.median()) if len(hist) else np.nan
+    except Exception:
+        bbw_med = np.nan
+
+    squeeze = bool(np.isfinite(bbw_last) and np.isfinite(bbw_med) and (bbw_last < bbw_med))
 
     return {
-        "atr": float(atr14_val) if pd.notna(atr14_val) else np.nan,
-        "natr": float(natr) if pd.notna(natr) else np.nan,
-        "bbw_last": float(bbw_last) if pd.notna(bbw_last) else np.nan,
-        "bbw_med": float(bbw_med) if pd.notna(bbw_med) else np.nan,
+        "atr": float(atr14_val) if np.isfinite(atr14_val) else np.nan,
+        "natr": float(natr) if np.isfinite(natr) else np.nan,
+        "bbw_last": float(bbw_last) if np.isfinite(bbw_last) else np.nan,
+        "bbw_med": float(bbw_med) if np.isfinite(bbw_med) else np.nan,
         "squeeze": squeeze,
     }
 
