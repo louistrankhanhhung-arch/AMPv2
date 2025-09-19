@@ -29,11 +29,13 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 # =========================
 # Config: TF → Volume Profile params & SR weights
+# (khôi phục cấu hình gốc có cả 1H)
 # =========================
 TF_VP = {
-    "4H": {"window_bars": 240, "bins": 30, "top_k": 6},
-    "1D": {"window_bars": 180, "bins": 24, "top_k": 5},
-    "1W": {"window_bars": 156, "bins": 18, "top_k": 5},
+    "1H": {"window_bars": 240, "bins": 40, "top_k": 10},  # ~10 ngày 1H
+    "4H": {"window_bars": 240, "bins": 30, "top_k": 10},  # ~40 ngày 4H
+    "1D": {"window_bars": 180, "bins": 24, "top_k": 8},   # ~6 tháng 1D
+    # "1W" có thể thêm nếu bạn cần tuần; bản gốc không yêu cầu bắt buộc
 }
 LEVEL_WEIGHTS = {"touch": 0.35, "dwell": 0.20, "psych": 0.25, "vp": 0.20}
 
@@ -361,12 +363,12 @@ def _round_to_psych(p: float) -> float:
 
 def compute_levels(
     df: pd.DataFrame,
-    atr: float | None = None,
+    atr: Optional[float] = None,
     tol_coef: float = 0.5,
     extremes: int = 12,
     lookback: int = 300,
-    vp_zones: Optional[pd.DataFrame] = None,
-    weights: Optional[dict] = None,
+    vp_zones: Optional[List[Dict[str, Any]]] = None,
+    weights: Optional[Dict[str, float]] = None,
 ) -> dict:
     """
     Hard SR levels: cluster price levels by tolerance and score via touch/dwell/psych/vp.
@@ -415,7 +417,28 @@ def compute_levels(
             cur = [c]
     if cur:
         bands.append(cur)
-    # enrich bands
+    # ---------- Helpers (gốc) ----------
+    import math
+    def overlap_ratio(a_lo: float, a_hi: float, b_lo: float, b_hi: float) -> float:
+        inter = max(0.0, min(a_hi, b_hi) - max(a_lo, b_lo))
+        base = max(1e-9, a_hi - a_lo)
+        return inter / base
+    def vp_band_weight(band: Tuple[float, float], zones: Optional[List[Dict[str, Any]]]) -> float:
+        if not zones:
+            return 0.0
+        vmax = max((float(z.get("volume_sum", 0.0)) for z in zones), default=0.0) or 1.0
+        lo, hi = band
+        best = 0.0
+        for z in zones:
+            pr = z.get("price_range", (np.nan, np.nan))
+            zlo = float(pr[0]) if pr and pr[0] is not None else np.nan
+            zhi = float(pr[1]) if pr and pr[1] is not None else np.nan
+            r = overlap_ratio(lo, hi, zlo, zhi)
+            v = float(z.get("volume_sum", 0.0)) / vmax
+            best = max(best, r * v)  # overlap * normalized volume strength
+        return max(0.0, min(1.0, best))
+
+    # enrich bands (khôi phục logic gốc, dùng vp_zones dạng list[dict])
     recs = []
     for b in bands:
         low = float(min(b))
@@ -428,12 +451,8 @@ def compute_levels(
         # psych: proximity to a rounded psychological level
         psych_mid = _round_to_psych(mid)
         psych_conf = float(1.0 - min(1.0, abs(mid - psych_mid) / max(1e-9, tol)))
-        # vp overlap
-        vp_weight = 0.0
-        if vp_zones is not None and len(vp_zones):
-            for _, z in vp_zones.iterrows():
-                if (z["low"] <= mid <= z["high"]) or (low <= z["mid"] <= high):
-                    vp_weight = max(vp_weight, float(z["volume_sum"]))
+        # vp overlap (dùng list[dict] thay vì DataFrame)
+        vp_weight = vp_band_weight((low, high), vp_zones)
         recs.append({
             "low": low,
             "high": high,
@@ -441,14 +460,13 @@ def compute_levels(
             "touches": int(in_band),
             "dwell": int(dwell),
             "psych_conf": float(psych_conf),
-            "vp_raw": vp_weight
+            "vp_weight": float(vp_weight)
         })
     dfb = pd.DataFrame(recs)
     if dfb.empty:
         return {"sr_up": [], "sr_down": [], "bands_up": [], "bands_down": [], "tol": tol}
-    if dfb["vp_raw"].max() > 0:
-        dfb["vp_weight"] = dfb["vp_raw"] / dfb["vp_raw"].max()
-    else:
+    # chuẩn hoá vp_weight nếu cần (đề phòng mọi trường hợp)
+    if "vp_weight" not in dfb.columns:
         dfb["vp_weight"] = 0.0
     dfb["touch_n"] = dfb["touches"] / max(1, dfb["touches"].max())
     dfb["dwell_n"] = dfb["dwell"] / max(1, dfb["dwell"].max())
@@ -479,20 +497,30 @@ def compute_levels(
         "tol": tol,
     }
 
-def compute_soft_levels(df: pd.DataFrame) -> dict:
-    px = float(df["close"].iloc[-1])
-    levels = {
-        "BB.upper": float(df["bb_upper"].iloc[-1]),
-        "BB.mid": float(df["bb_mid"].iloc[-1]),
-        "BB.lower": float(df["bb_lower"].iloc[-1]),
-        "EMA20": float(df["ema20"].iloc[-1]),
-        "EMA50": float(df["ema50"].iloc[-1]),
-        "SMA20": float(df.get("sma20", df["close"].rolling(20).mean()).iloc[-1]),
-        "SMA50": float(df.get("sma50", df["close"].rolling(50).mean()).iloc[-1]),
+def compute_soft_levels(df: pd.DataFrame) -> Dict[str, List[Dict[str, float]]]:
+    # trả về đúng format bản gốc: list[{name, level}]
+    last = df.iloc[-1]
+    px = float(last["close"])
+    candidates = {
+        "BB.upper": float(last["bb_upper"]),
+        "BB.mid": float(last["bb_mid"]),
+        "BB.lower": float(last["bb_lower"]),
+        "EMA20": float(last["ema20"]),
+        "EMA50": float(last["ema50"]),
+        "SMA20": float(last.get("sma20", last["ema20"])),
+        "SMA50": float(last.get("sma50", last["ema50"])),
     }
-    soft_up = sorted([v for v in levels.values() if v > px], key=lambda x: x)
-    soft_down = sorted([v for v in levels.values() if v < px], key=lambda x: -x)
-    return {"soft_up": soft_up, "soft_down": soft_down, "all": levels}
+    up, dn = [], []
+    for name, lvl in candidates.items():
+        if not np.isfinite(lvl):
+            continue
+        if lvl > px:
+            up.append((name, lvl))
+        elif lvl < px:
+            dn.append((name, lvl))
+    up = [dict(name=n, level=l) for n, l in sorted(up, key=lambda x: x[1])]
+    dn = [dict(name=n, level=l) for n, l in sorted(dn, key=lambda x: x[1], reverse=True)]
+    return {"soft_up": up, "soft_down": dn}
 
 # =========================
 # Public APIs
@@ -571,14 +599,16 @@ def compute_features_by_tf(dfs_by_tf: Dict[str, pd.DataFrame]) -> Dict[str, dict
                 if "natr" not in vola or vola["natr"] is None:
                     vola["natr"] = float("nan")
             # VP zones per TF
-            vp_cfg = TF_VP.get(tf, TF_VP["1D"])
+            vp_cfg = TF_VP.get(tf.upper(), TF_VP["4H"])
             try:
                 vp_zones = calc_vp(enriched, **vp_cfg)
             except Exception:
-                vp_zones = None
+                vp_zones = []
             # Levels (hard + soft)
             levels = compute_levels(
-                enriched, atr=None, tol_coef=0.5, lookback=300, vp_zones=vp_zones, weights=LEVEL_WEIGHTS
+                enriched, atr=vola.get("atr", 0.0),
+                tol_coef=0.5, extremes=12, lookback=300,
+                vp_zones=vp_zones, weights=LEVEL_WEIGHTS
             )
             soft = compute_soft_levels(enriched)
             results[tf] = {
@@ -592,7 +622,7 @@ def compute_features_by_tf(dfs_by_tf: Dict[str, pd.DataFrame]) -> Dict[str, dict
                     "momentum": momentum,
                     "volatility": vola,
                 },
-                "vp_zones": None if vp_zones is None else vp_zones.to_dict("records"),
+                "vp_zones": vp_zones,
                 "levels": levels,
                 "soft_levels": soft,
                 "weights": LEVEL_WEIGHTS,
