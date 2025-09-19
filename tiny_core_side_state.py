@@ -238,6 +238,9 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     tf_confirm = "4H"
     f1 = features_by_tf.get(tf_primary, {}) or {}
     f4 = features_by_tf.get(tf_confirm, {}) or {}
+    # NEW: primitives theo cấu trúc feature_primitives.compute_features_by_tf
+    p1 = (f1.get("primitives") or {}) if isinstance(f1, dict) else {}
+    p4 = (f4.get("primitives") or {}) if isinstance(f4, dict) else {}
 
     # primitives theo đúng cấu trúc của feature_primitives.compute_features_by_tf
     p1 = (f1.get('primitives') or {}) if isinstance(f1, dict) else {}
@@ -380,11 +383,12 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
 
     # -------------- 4H CONFIRM (two-tier) --------------
     regime = str(ev_adapt.get("regime") or "normal")  # 'low' | 'normal' | 'high'
-    f4_trend = (f4.get('trend') or {})
-    f4_momo  = (f4.get('momentum') or {})
+    # Trend/Momo 4H dùng primitives
+    f4_trend = (p4.get('trend') or {})
+    f4_momo  = (p4.get('momentum') or {})
     trend_ok_long  = (f4_trend.get('state') == 'up')
     trend_ok_short = (f4_trend.get('state') == 'down')
-    rsi4 = float(f4_momo.get('rsi') or 50.0)
+    rsi4 = float(f4_momo.get('rsi_last') or 50.0)
     rsi_ok_long  = rsi4 >= cfg.rsi_long_thr_4h
     rsi_ok_short = rsi4 <= cfg.rsi_short_thr_4h
     trend_not_side = f4_trend.get('state') in ('up','down')
@@ -492,9 +496,9 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.false_break_long = false_break_long
     si.false_break_short = false_break_short    
 
-    # inside-bar flag from candle features
+    # inside-bar flag from candle features (1H primitives khi cần)
     try:
-        si.inside_bar = bool((f1.get('candles', {}) or {}).get('inside_bar', False))
+        si.inside_bar = bool(((p1.get('candles') or {}) or {}).get('inside_bar', False))
     except Exception:
         si.inside_bar = False
 
