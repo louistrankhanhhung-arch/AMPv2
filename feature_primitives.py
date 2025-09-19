@@ -23,7 +23,7 @@ import pandas as pd
 from zoneinfo import ZoneInfo
 
 # Import from indicators (must exist in your project)
-from indicators import enrich_indicators, calc_vp
+from indicators import enrich_indicators, enrich_more, calc_vp
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
@@ -537,7 +537,13 @@ def compute_features_by_tf(dfs_by_tf: Dict[str, pd.DataFrame]) -> Dict[str, dict
                 results[tf] = {"timeframe": tf, "df": raw, "error": "empty"}
                 continue
             d = raw.sort_index()
+            # Enrich đủ bộ: base + more (để có bb_width_pct/vol_z20,…)
             enriched = enrich_indicators(d)
+            try:
+                enriched = enrich_more(enriched)
+            except Exception:
+                # an toàn: nếu enrich_more lỗi thì vẫn dùng enriched hiện có
+                pass
             # Core primitives
             swings = compute_swings(enriched, pct=2.0)
             trend = compute_trend(enriched)
@@ -545,6 +551,25 @@ def compute_features_by_tf(dfs_by_tf: Dict[str, pd.DataFrame]) -> Dict[str, dict
             vol = compute_volume_features(enriched)
             momentum = compute_momentum(enriched)
             vola = compute_volatility(enriched)
+            # --- Sanitize volatility snapshot tại nến ĐÃ ĐÓNG ---
+            try:
+                last_closed = _last_closed_bar(enriched)
+                idx = last_closed.name
+                # atr/natr luôn là số hoặc np.nan (không để None)
+                atr_val = float(enriched.loc[idx, "atr14"]) if "atr14" in enriched.columns else float("nan")
+                close_val = float(enriched.loc[idx, "close"])
+                if not (np.isfinite(vola.get("atr", np.nan))):
+                    vola["atr"] = float(atr_val) if np.isfinite(atr_val) else float("nan")
+                natr_val = (vola["atr"] / close_val) if (np.isfinite(vola.get("atr", np.nan)) and np.isfinite(close_val) and close_val > 0) else float("nan")
+                # nếu natr hiện tại là None/NaN → thay bằng natr_val đã chuẩn hoá
+                if (vola.get("natr") is None) or (isinstance(vola.get("natr"), float) and vola["natr"] != vola["natr"]):
+                    vola["natr"] = float(natr_val)
+            except Exception:
+                # giữ nguyên nhưng đảm bảo key tồn tại & không phải None
+                if "atr" not in vola or vola["atr"] is None:
+                    vola["atr"] = float("nan")
+                if "natr" not in vola or vola["natr"] is None:
+                    vola["natr"] = float("nan")
             # VP zones per TF
             vp_cfg = TF_VP.get(tf, TF_VP["1D"])
             try:
