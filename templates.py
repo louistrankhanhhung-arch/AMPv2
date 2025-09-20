@@ -132,7 +132,8 @@ def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dic
     if not items:
         lines += ["Không có tín hiệu nào phù hợp.", ""]
     else:
-        icons = {"TP1": "🟢", "TP2": "🟢", "TP3": "🟢", "SL": "⛔"}
+        # Mở rộng icon cho 5TP
+        icons = {"TP1": "🟢", "TP2": "🟢", "TP3": "🟢", "TP4": "🟢", "TP5": "🟢", "SL": "⛔"}
         for it in items:
             status = str(it.get("status") or "")
             icon = icons.get(status, "⚪")
@@ -146,16 +147,33 @@ def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dic
 
     totals = (detail_24h.get("totals") or {}) if isinstance(detail_24h, dict) else {}
     n = int(totals.get("n", 0) or 0)
-    sumR = float(totals.get("sum_R", 0.0) or 0.0)
-    sum_pct = float(totals.get("sum_pct", 0.0) or 0.0)
-    eq1x = sum_pct
-    pnl_per_100 = sumR * 100.0
+    sumR_w = float(
+        totals.get("sum_R_weighted") or  # đề xuất back-end: tổng R đã nhân weight
+        totals.get("sum_R_w") or         # alias nếu bạn dùng tên khác
+        totals.get("sum_R", 0.0) or 0.0  # fallback cũ (có thể chưa weighted)
+    )
+    sum_pct_w = float(
+        totals.get("sum_pct_weighted") or
+        totals.get("sum_pct_w") or
+        totals.get("sum_pct", 0.0) or 0.0
+    )
+
+    # Lợi nhuận trước đòn bẩy (theo %), đã xét weight nếu có
+    eq1x = sum_pct_w
+    # PnL/$100 rủi ro: 1R = $100 rủi ro ⇒ tổng R (weighted) * 100
+    pnl_per_100 = sumR_w * 100.0
+
     tp_counts = (totals.get("tp_counts") or {})
-    c3 = int(tp_counts.get("TP3", 0) or 0); c2 = int(tp_counts.get("TP2", 0) or 0)
-    c1 = int(tp_counts.get("TP1", 0) or 0); cs = int(tp_counts.get("SL", 0) or 0)
-    # Win-rate theo yêu cầu:
-    #   (tổng số lệnh có TP1-3 đã ĐÓNG trong danh sách liệt kê) / (tổng lệnh đã đóng trong danh sách) * 100%
-    wins_tp = c1 + c2 + c3
+    # Lấy đủ 5TP với fallback 0
+    c5 = int(tp_counts.get("TP5", 0) or 0)
+    c4 = int(tp_counts.get("TP4", 0) or 0)
+    c3 = int(tp_counts.get("TP3", 0) or 0)
+    c2 = int(tp_counts.get("TP2", 0) or 0)
+    c1 = int(tp_counts.get("TP1", 0) or 0)
+    cs = int(tp_counts.get("SL", 0) or 0)
+
+    # Win-rate: số lệnh chạm bất kỳ TP (TP1..TP5) / tổng lệnh đã đóng trong danh sách
+    wins_tp = c1 + c2 + c3 + c4 + c5
     n_closed = n
     wr_pct = (wins_tp / n_closed * 100.0) if n_closed else 0.0
 
@@ -163,9 +181,10 @@ def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dic
         "📊 <b>Hiệu suất giao dịch:</b>",
         f"- Tổng lệnh đã đóng: {n}",
         f"- Tỉ lệ thắng: {wr_pct:.0f}%",
-        f"- Lợi nhuận trước đòn bẩy: {eq1x:+.2f}%",
-        f"- Tổng R: {sumR:+.1f}R",
+        f"- Lợi nhuận trước đòn bẩy: {eq1x:+.2f}%",   # đã ưu tiên số liệu weighted
+        f"- Tổng R (weighted): {sumR_w:+.1f}R",
         f"- PnL/$100 rủi ro: ${pnl_per_100:.0f}",
-        f"- TP theo số lệnh: TP3: {c3} - TP2: {c2} - TP1: {c1} - SL: {cs}",
+        f"- TP theo số lệnh: TP5: {c5} - TP4: {c4} - TP3: {c3} - TP2: {c2} - TP1: {c1} - SL: {cs}",
     ]
     return "\n".join(lines)
+
