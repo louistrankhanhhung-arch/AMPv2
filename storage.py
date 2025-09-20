@@ -258,20 +258,25 @@ class SignalPerfDB:
         sum_R = sum(float(i.get("R") or 0.0) for i in items)
         avg_R = (sum_R / n) if n else 0.0
 
-        return {
-            "items": items,
-            "totals": {
-                "n": n,
-                "wins": wins,
-                "losses": losses,
-                "win_rate": win_rate,
-                "sum_pct": sum_pct,
-                "avg_pct": avg_pct,
-                "sum_R": sum_R,
-                "avg_R": avg_R,
-                "tp_counts": tp_counts
-            }
+        totals = {
+            "n": n,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": win_rate,
+            "sum_pct": sum_pct,
+            "avg_pct": avg_pct,
+            "sum_R": sum_R,
+            "avg_R": avg_R,
+            "tp_counts": tp_counts,
         }
+        # NEW: weighted aliases (sum_R đã là weighted vì realized_R đã nhân weight 20% mỗi TP)
+        totals["sum_R_weighted"] = sum_R
+        totals["sum_R_w"] = sum_R
+        # Hiện chưa có % theo từng phần chốt → dùng alias = sum_pct để template tiêu thụ ổn định
+        totals["sum_pct_weighted"] = sum_pct
+        totals["sum_pct_w"] = sum_pct
+        return {"items": items, "totals": totals}
+
     # === KPI 24h: chỉ lấy các lệnh ĐÓNG nhưng CHƯA từng được báo cáo ===
     def kpis_24h_unreported(self) -> tuple[dict, list[str]]:
         def _pct_for_hit(t: dict, price_hit) -> float:
@@ -336,18 +341,24 @@ class SignalPerfDB:
         avg_R = (sum_R / n) if n else 0.0
         detail = {
             "items": items,
-            "totals": {
-                "n": n,
-                "wins": wins,
-                "losses": losses,
-                "win_rate": win_rate,
-                "sum_pct": sum_pct,
-                "avg_pct": avg_pct,
-                "sum_R": sum_R,
-                "avg_R": avg_R,
-                "tp_counts": tp_counts
-            }
+            totals = {
+            "n": n,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": win_rate,
+            "sum_pct": sum_pct,
+            "avg_pct": avg_pct,
+            "sum_R": sum_R,
+            "avg_R": avg_R,
+            "tp_counts": tp_counts,
         }
+        # NEW: weighted aliases (sum_R đã là weighted vì realized_R đã nhân weight)
+        totals["sum_R_weighted"] = sum_R
+        totals["sum_R_w"] = sum_R
+        # Alias % weighted (hiện dùng = sum_pct cho tương thích)
+        totals["sum_pct_weighted"] = sum_pct
+        totals["sum_pct_w"] = sum_pct
+        detail = {"items": items, "totals": totals}
         return detail, sids_to_mark
 
     def mark_kpi24_reported(self, sids: list[str]) -> None:
