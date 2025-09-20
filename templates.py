@@ -43,7 +43,7 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
     direction = plan.get("DIRECTION", "LONG")
     entry = fmt_price(plan.get("entry"))
     sl = fmt_price(plan.get("sl"))
-    tp1 = fmt_price(plan.get("tp1")); tp2 = fmt_price(plan.get("tp2")); tp3 = fmt_price(plan.get("tp3"))
+    tp1 = fmt_price(plan.get("tp1")); tp2 = fmt_price(plan.get("tp2")); tp3 = fmt_price(plan.get("tp3")); tp4 = fmt_price(plan.get("tp4")); tp5 = fmt_price(plan.get("tp5"))
     # leverage (gợi ý)
     risk = plan.get("risk_size_hint")
     if isinstance(risk, (int, float)):
@@ -62,6 +62,8 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
         f"<b>TP1:</b> {tp1}",
         f"<b>TP2:</b> {tp2}",
         f"<b>TP3:</b> {tp3}",
+        f"<b>TP4:</b> {tp4}",
+        f"<b>TP5:</b> {tp5}",
         "",  # dòng trống sau Entry/SL
     ]
     if don_bay_line:
