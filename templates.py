@@ -34,7 +34,8 @@ def render_teaser(plan: Dict[str, Any]) -> str:
     return (
         f"🧭 <b>{sym} | {direction}</b>\n"
         f"<b>Entry:</b> —    <b>SL:</b> —\n"
-        f"<b>TP:</b> — • — • —\n"
+        f"<b>TP:</b> — • — • — • — • —\n"
+        f"<b>Scale-out:</b> 20% mỗi mốc TP\n"
         f"<b>Chiến lược:</b> {strategy or state}"
     )
 
