@@ -482,6 +482,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     hits["TP1"] = int(__import__("time").time())
                     t["status"] = "TP1"
                     note = "🎯 TP1 hit — Nâng SL lên Entry để bảo toàn lợi nhuận."
+                    t["sl_dyn"] = float(entry)  # BE
                     extra = {"margin_pct": margin_pct(float(t["tp1"]))}
                     if tn2:
                         if msg_id:
@@ -494,7 +495,8 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     perf.set_hit(t["sid"], "TP2", (t.get("r_ladder",{}) or {}).get("tp2") or 0.0)
                     hits["TP2"] = int(__import__("time").time())
                     t["status"] = "TP2"
-                    note = "🎯 TP2 hit — Nâng SL lên Entry để bảo toàn lợi nhuận."
+                    note = "🎯 TP2 hit — Khóa SL về TP1."
+                    t["sl_dyn"] = float(t.get("tp1") or entry)
                     extra = {"margin_pct": margin_pct(float(t["tp2"]))}
                     if tn2:
                         if msg_id:
@@ -502,11 +504,12 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                         else:
                             tn2.send_channel(render_update(t, note, extra))
 
-                # TP3 => đóng lệnh
+                # TP3
                 if t.get("status") in ("OPEN","TP1","TP2") and t.get("tp3") and crossed(side, price_now, t["tp3"]):
                     perf.close(t["sid"], "TP3")
                     t["status"] = "TP3"
-                    note = "🎯 TP3 hit — Tất cả TP đều đạt — Đóng lệnh."
+                    note = "🎯 TP3 hit — Khóa SL về TP2."
+                    t["sl_dyn"] = float(t.get("tp2") or entry)
                     extra = {"margin_pct": margin_pct(float(t["tp3"]))}
                     if tn2:
                         if msg_id:
@@ -514,29 +517,75 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                         else:
                             tn2.send_channel(render_update(t, note, extra))
 
-                # NEW: Nếu đã đạt TP1/TP2 mà giá quay ngược về Entry -> ĐÓNG LỆNH,
+                 # TP4
+                if t.get("status") in ("OPEN","TP1","TP2","TP3") and t.get("tp4") and crossed(side, price_now, t["tp4"]):
+                    perf.set_hit(t["sid"], "TP4", (t.get("r_ladder",{}) or {}).get("tp4") or 0.0)
+                    hits["TP4"] = int(__import__("time").time())
+                    t["status"] = "TP4"
+                    note = "🎯 TP4 hit — Khóa SL về TP3."
+                    t["sl_dyn"] = float(t.get("tp3") or entry)
+                    extra = {"margin_pct": margin_pct(float(t["tp4"]))}
+                    if tn2:
+                        if msg_id:
+                            tn2.send_channel_update(int(msg_id), render_update(t, note, extra))
+                        else:
+                            tn2.send_channel(render_update(t, note, extra))
+                          
+                # TP5 (đóng lệnh)
+                if t.get("status") in ("OPEN","TP1","TP2","TP3","TP4") and t.get("tp5") and crossed(side, price_now, t["tp5"]):
+                    perf.set_hit(t["sid"], "TP5", (t.get("r_ladder",{}) or {}).get("tp5") or 0.0)
+                    hits["TP5"] = int(__import__("time").time())
+                    perf.close(t["sid"], "TP5")
+                    t["status"] = "CLOSE"
+                    note = "✨ TP5 hit — Đóng lệnh."
+                    extra = {"margin_pct": margin_pct(float(t["tp5"]))}
+                    if tn2:
+                        if msg_id:
+                            tn2.send_channel_update(int(msg_id), render_update(t, note, extra))
+                        else:
+                            tn2.send_channel(render_update(t, note, extra))
+
+                # NEW: Nếu đã đạt ≥TP1 và giá quay ngược về SL động -> ĐÓNG LỆNH,
                 # và hiển thị lợi nhuận theo TP cao nhất đã đạt.
-                if t.get("status") in ("TP1","TP2") and entry:
-                    retraced = (side == "LONG" and price_now <= entry) or (side == "SHORT" and price_now >= entry)
+                sl_dyn = t.get("sl_dyn")
+                if t.get("status") in ("TP1", "TP2", "TP3", "TP4") and sl_dyn is not None:
+                    try:
+                        _sld = float(sl_dyn)
+                    except Exception:
+                        _sld = None
+                
+                    retraced = (
+                        _sld is not None and (
+                            (side == "LONG" and price_now <= _sld) or
+                            (side == "SHORT" and price_now >= _sld)
+                        )
+                    )
+                
                     if retraced:
-                        # chọn TP cao nhất đã đạt để tính % lợi nhuận hiển thị
+                        # chọn TP cao nhất đã đạt để hiển thị
                         highest = None
                         hit_price = None
-                        if (t.get("status") == "TP2") or (hits.get("TP2")):
-                            highest = "TP2"
-                            hit_price = float(t.get("tp2") or entry)
+                        if hits.get("TP5"):
+                            highest, hit_price = "TP5", float(t.get("tp5") or t.get("tp4") or t.get("tp3") or t.get("tp2") or t.get("tp1") or entry)
+                        elif hits.get("TP4"):
+                            highest, hit_price = "TP4", float(t.get("tp4") or t.get("tp3") or t.get("tp2") or t.get("tp1") or entry)
+                        elif hits.get("TP3"):
+                            highest, hit_price = "TP3", float(t.get("tp3") or t.get("tp2") or t.get("tp1") or entry)
+                        elif hits.get("TP2") or t.get("status") == "TP2":
+                            highest, hit_price = "TP2", float(t.get("tp2") or t.get("tp1") or entry)
                         else:
-                            highest = "TP1"
-                            hit_price = float(t.get("tp1") or entry)
-                        perf.close(t["sid"], "ENTRY")
+                            highest, hit_price = "TP1", float(t.get("tp1") or entry)
+                
+                        perf.close(t["sid"], "TRAIL")   # khác biệt: đóng theo SL động
                         t["status"] = "CLOSE"
-                        note = f"📌 Đóng lệnh — Giá quay về Entry sau khi đã đạt {highest}."
+                        note = f"📌 Đóng lệnh — Giá quay về SL động sau khi đã đạt {highest}."
                         extra = {"margin_pct": margin_pct(hit_price)}
                         if tn2:
                             if msg_id:
                                 tn2.send_channel_update(int(msg_id), render_update(t, note, extra))
                             else:
                                 tn2.send_channel(render_update(t, note, extra))
+
 
                 # --- SL => đóng lệnh (CHỈ khi chưa từng chạm TP nào)
                 slv = t.get("sl")
