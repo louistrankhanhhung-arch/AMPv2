@@ -72,10 +72,10 @@ def _rsi_from_features_tf(features_by_tf: Dict[str, Any], tf: str = "1H") -> Opt
 
 def _guard_near_bb_low_4h_and_rsi1h_extreme(side: Optional[str], entry: Optional[float], feats: Dict[str, Any]) -> Dict[str, Any]:
     """
-    WAIT guard khi:
-      - entry đang 'ôm' BB-lower 4H (<= 0.30 * ATR_4H)
-      - VÀ RSI(1H) đang cực trị (<=20 hoặc >=80)
-    Áp dụng cả long/short. Tránh ENTER kể cả khi state=trend_break.
+    WAIT guard khi ở gần mép BB 4H và RSI(1H) cực trị ĐÚNG CHIỀU RỦI RO:
+      - Long: gần BB-lower (<= 0.30 * ATR_4H) & RSI1H <= 20  → dễ rơi tiếp
+      - Short: gần BB-upper (<= 0.30 * ATR_4H) & RSI1H >= 80 → dễ bật tiếp
+    Tránh ENTER kể cả khi state=trend_break.
     """
     try:
         if side not in ("long","short") or entry is None:
@@ -85,16 +85,19 @@ def _guard_near_bb_low_4h_and_rsi1h_extreme(side: Optional[str], entry: Optional
             return {"block": False, "why": ""}
         lv = _soft_levels_by_tf(feats, "4H")
         bb_l = lv.get("bb_lower")
-        if bb_l is None:
+        bb_u = lv.get("bb_upper")
+        if bb_l is None and bb_u is None:
             return {"block": False, "why": ""}
         rsi1 = _rsi_from_features_tf(feats, "1H")
         if rsi1 is None:
             return {"block": False, "why": ""}
         thr = 0.30 * atr4
-        near_bb_low = (entry >= bb_l) and (abs(entry - bb_l) <= thr)
-        rsi_extreme = (rsi1 <= 20.0) or (rsi1 >= 80.0)
-        if near_bb_low and rsi_extreme:
-            return {"block": True, "why": f"4H_bb_low±{thr:.4f} & RSI1H={rsi1:.1f}"}
+        near_bb_low = (bb_l is not None) and (entry >= bb_l) and (abs(entry - bb_l) <= thr)
+        near_bb_up  = (bb_u is not None) and (entry <= bb_u) and (abs(entry - bb_u) <= thr)
+        if side == "long" and near_bb_low and (rsi1 <= 20.0):
+            return {"block": True, "why": f"long@near_bb_lower±{thr:.4f} & RSI1H={rsi1:.1f}"}
+        if side == "short" and near_bb_up and (rsi1 >= 80.0):
+            return {"block": True, "why": f"short@near_bb_upper±{thr:.4f} & RSI1H={rsi1:.1f}"}
     except Exception:
         pass
     return {"block": False, "why": ""}
@@ -104,14 +107,21 @@ def _near_soft_level_guard_multi(
     entry: Optional[float],
     feats: Dict[str, Any],
     tfs: Iterable[str] = ("4H",),
+    *,
+    state: Optional[str] = None,
+    rr_ok: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Trả về {"block": bool, "why": str} nếu entry quá gần BB/EMA (1H/4H…) theo hướng giao dịch.
-    Quy tắc (mặc định):
-      - BB upper/lower: <= 0.30*ATR
-      - EMA20/EMA50/BB mid: <= 0.25*ATR
+    Nới cho crypto:
+      - Bỏ guard cho state RETEST (ôm mid/EMA là hợp lệ).
+      - Siết ngưỡng cấm: band 0.25*ATR, center 0.20*ATR.
+      - Không block nếu RR1 đã đủ (>= 1.0).
     """
     if side not in ("long","short") or entry is None:
+        return {"block": False, "why": ""}
+    # Skip proximity cho RETEST (pullback/throwback cần gần mid/EMA)
+    if state in ("retest_support", "retest_resistance"):
         return {"block": False, "why": ""}
     reasons: List[str] = []
     for tf in tfs:
@@ -123,8 +133,8 @@ def _near_soft_level_guard_multi(
             continue
         bb_u, bb_m, bb_l = lv.get("bb_upper"), lv.get("bb_mid"), lv.get("bb_lower")
         e20, e50 = lv.get("ema20"), lv.get("ema50")
-        thr_band   = 0.30 * atr
-        thr_center = 0.25 * atr
+        thr_band   = 0.25 * atr
+        thr_center = 0.20 * atr
         def _dist(a, b):
             try: return abs(float(a) - float(b))
             except Exception: return float("inf")
@@ -140,7 +150,8 @@ def _near_soft_level_guard_multi(
             for nm, lvl in (("EMA20", e20), ("EMA50", e50), ("BB_mid", bb_m)):
                 if lvl is not None and entry <= lvl and _dist(entry, lvl) <= thr_center:
                     reasons.append(f"{tf}:near_{nm}(<= {thr_center:.4f})")
-    if reasons:
+    # Nếu RR đủ gần (rr_ok) >= 1.0 thì không block dù gần soft-level
+    if reasons and not (isinstance(rr_ok, (int, float)) and rr_ok >= 1.0):
         return {"block": True, "why": ";".join(reasons)}
     return {"block": False, "why": ""}
 
@@ -212,7 +223,15 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     rr5 = _rr(dec.setup.entry, dec.setup.sl, tp5, dec.side) if tp5 is not None else None
 
     # -------- SOFT PROXIMITY GUARD (BB/EMA) --------
-    prox = _near_soft_level_guard_multi(dec.side, dec.setup.entry, features_by_tf)
+    # Truyền state & rr1 để nới hợp lý theo ngữ cảnh
+    # Với 5TP: rr1 là mid(entry,tp1-old); rr2 mới là TP1-old.
+    # Dùng rr_ok = max(rr1, rr2) để mềm hợp lý hơn.
+    _rr_ok_candidates = [x for x in (rr1, rr2) if isinstance(x,(int,float))]
+    rr_ok = max(_rr_ok_candidates) if _rr_ok_candidates else None
+    prox = _near_soft_level_guard_multi(
+        dec.side, dec.setup.entry, features_by_tf,
+        state=dec.state, rr_ok=rr_ok
+    )
     if prox.get("block"):
         # Ép về WAIT + thêm lý do "soft_proximity"
         dec.decision = "WAIT"
@@ -229,9 +248,19 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         reasons.append("guard:near_4h_bb_low_and_rsi1h_os")
         dec.reasons = reasons
 
-    # -------- RR2/RR3 floor check -> WAIT + entry2 hint --------
-    rr2_floor = float(os.getenv("RR2_FLOOR", "1.30"))
-    rr3_floor = float(os.getenv("RR3_FLOOR", "1.80"))
+    # -------- RR floors sau khi mở rộng 3TP -> 5TP --------
+    # Mapping:
+    #   - TP2 (cũ) => TP3 (mới)  → dùng "RR2_FLOOR"
+    #   - TP3 (cũ) => TP5 (mới)  → dùng "RR3_FLOOR"
+    rr2_base = float(os.getenv("RR2_FLOOR", "1.30"))  # floor cho TP2 (cũ) -> TP3 (mới)
+    rr3_base = float(os.getenv("RR3_FLOOR", "1.80"))  # floor cho TP3 (cũ) -> TP5 (mới)
+    regime = (dec.meta or {}).get("regime", "normal") if isinstance(dec.meta, dict) else "normal"
+    if regime == "high":
+        rr_tp3_floor, rr_tp5_floor = 1.10, 1.60
+    elif regime == "normal":
+        rr_tp3_floor, rr_tp5_floor = 1.20, 1.70
+    else:
+        rr_tp3_floor, rr_tp5_floor = rr2_base, rr3_base
 
     def _suggest_entry2_for_floor(side: str, sl: float, tp: float, floor: float, cur_entry: float) -> Optional[float]:
         try:
@@ -248,17 +277,26 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         return None
 
     rr_floor_hit = False
-    suggest_from = None  # ("TP2"/"TP3", tp_value, floor_value)
-    if tp2 is not None and rr2 is not None and rr2 < rr2_floor:
+    suggest_from = None  # ("TP3"/"TP5", tp_value, floor_value)
+    # Sau expand: TP3 (mới) = TP2 (cũ), TP5 (mới) = TP3 (cũ)
+    if tp3 is not None and rr3 is not None and rr3 < rr_tp3_floor:
         rr_floor_hit = True
-        suggest_from = ("TP2", tp2, rr2_floor)
-    if tp3 is not None and rr3 is not None and rr3 < rr3_floor:
+        suggest_from = ("TP3", tp3, rr_tp3_floor)
+    if tp5 is not None and rr5 is not None and rr5 < rr_tp5_floor:
         rr_floor_hit = True
-        # nếu cả 2 dưới sàn, ưu tiên ràng buộc nghiêm hơn (TP3)
-        suggest_from = ("TP3", tp3, rr3_floor)
+        # nếu cả 2 dưới sàn, ưu tiên ràng buộc nghiêm hơn (TP5 xa hơn)
+        suggest_from = ("TP5", tp5, rr_tp5_floor)
 
     if rr_floor_hit and dec.side in ("long","short") and dec.setup.entry is not None and dec.setup.sl is not None:
-        dec.decision = "WAIT"
+        # Soft rule sau expand:
+        #   Nếu RR1>=0.8 và (RR@TP3 < sàn) nhưng (RR@TP5 >= sàn) => vẫn ENTER, chỉ log cảnh báo
+        allow_soft = (
+            (rr1 is not None and rr1 >= 0.8) and
+            (tp3 is not None and rr3 is not None and rr3 < rr_tp3_floor) and
+            (tp5 is not None and rr5 is not None and rr5 >= rr_tp5_floor)
+        )
+        if not allow_soft:
+            dec.decision = "WAIT"
         reasons = list(dec.reasons or [])
         if "rr_floor" not in reasons:
             reasons.append("rr_floor")
@@ -268,6 +306,14 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         if e2 is not None:
             # long: entry2 thấp hơn; short: entry2 cao hơn
             dec.setup.entry2 = float(e2)
+        # Log chi tiết RR sau mapping mới (TP3/TP5)
+        try:
+            _rr1 = f"{rr1:.2f}" if rr1 is not None else "nan"
+            _rr3 = f"{rr3:.2f}" if rr3 is not None else "nan"  # TP3 (mới)
+            _rr5 = f"{rr5:.2f}" if rr5 is not None else "nan"  # TP5 (mới)
+            _gline = f"rr_floor_map(3/5TP): rr1={_rr1} rr@TP3={_rr3}/{rr_tp3_floor:.2f} rr@TP5={_rr5}/{rr_tp5_floor:.2f} allow_soft={allow_soft} regime={regime}"
+        except Exception:
+            pass
 
     # ---------- price formatting helpers ----------
     def _infer_dp(symbol: str, price: Optional[float], features_by_tf: Dict[str, Any], evidence_bundle: Dict[str, Any]) -> int:
