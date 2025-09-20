@@ -39,11 +39,11 @@ class SideCfg:
 
     # Tie handling
     tie_eps: float = 1e-6               # sai số tuyệt đối để coi như hoà
-    side_margin: float = 0.5         # yêu cầu chênh tối thiểu để chọn side
+    side_margin: float = 0.4         # yêu cầu chênh tối thiểu để chọn side
 
     # Retest score gates
-    retest_long_threshold: float = 0.75
-    retest_short_threshold: float = 0.75
+    retest_long_threshold: float = 0.6
+    retest_short_threshold: float = 0.6
 
     # TP ladder mặc định cho tính RR (fallback khi thiếu band)
     rr_targets: Tuple[float, float, float] = (1.2, 2.0, 3.0)
@@ -54,7 +54,7 @@ class SideCfg:
 
     # Proximity thresholds theo regime cho RETEST
     dist_atr_thr_low: float = 0.60
-    dist_atr_thr_normal: float = 0.75
+    dist_atr_thr_normal: float = 1.00
     dist_atr_thr_high: float = 1.00
 
     # --- SL regime adaptation ---
@@ -68,8 +68,8 @@ class SideCfg:
 
     # --- 4H confirm rules for breakout/continuation ---
     use_4h_confirm: bool = True
-    rsi_long_thr_4h: float = 55.0
-    rsi_short_thr_4h: float = 45.0
+    rsi_long_thr_4h: float = 52.0
+    rsi_short_thr_4h: float = 48.0
     # allow fast trigger without 4H when regime == 'high'
     skip_4h_when_high_vol: bool = True
 
