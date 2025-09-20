@@ -63,15 +63,14 @@ class SignalPerfDB:
             "tp1": plan.get("tp1") or plan.get("tp"),
             "tp2": plan.get("tp2"),
             "tp3": plan.get("tp3"),
+            "tp4": plan.get("tp4"),
+            "tp5": plan.get("tp5"),
             "posted_at": int(time.time()),
             "message_id": int(message_id) if message_id is not None else None,
             "status": "OPEN",
             "hits": {},
-            "r_ladder": {
-                "tp1": plan.get("rr1") or plan.get("rr"),
-                "tp2": plan.get("rr2"),
-                "tp3": plan.get("rr3"),
-            },
+            "r_ladder": {"tp1": plan.get("rr1"), "tp2": plan.get("rr2"), "tp3": plan.get("rr3"), "tp4": plan.get("rr4"), "tp5": plan.get("rr5")},
+            "weights": {"tp1": 0.2, "tp2": 0.2, "tp3": 0.2, "tp4": 0.2, "tp5": 0.2},
             "realized_R": 0.0,
             "close_reason": None,
             # NEW: đánh dấu đã được tính trong báo cáo KPI 24h hay chưa
@@ -102,7 +101,8 @@ class SignalPerfDB:
             return {}
         t["hits"][level] = int(time.time())
         t["status"] = level.upper()
-        t["realized_R"] = float(t.get("realized_R", 0.0) + (R or 0.0))
+        w = float((t.get("weights") or {}).get(level.lower(), 0.2))
+        t["realized_R"] = float(t.get("realized_R", 0.0) + w * (R or 0.0))
         data[sid] = t
         self._write(data)
         return t
@@ -213,7 +213,7 @@ class SignalPerfDB:
             return 0.0
 
         items = []
-        tp_counts = {"TP1": 0, "TP2": 0, "TP3": 0, "SL": 0}
+        tp_counts = {"TP1": 0, "TP2": 0, "TP3": 0, "TP4": 0, "TP5": 0, "SL": 0}
         for t in self._all().values():
             status = (t.get("status") or "OPEN").upper()
             hits = (t.get("hits") or {})
@@ -286,7 +286,9 @@ class SignalPerfDB:
                 return 0.0
         def _r_estimate(t: dict, status: str) -> float:
             rl = (t.get("r_ladder") or {})
-            if status == "TP3": return float(rl.get("tp3") or rl.get("TP3") or 3.0)
+            if status == "TP5": return float(rl.get("tp5") or rl.get("TP5") or 3.0)
+            if status == "TP4": return float(rl.get("tp4") or rl.get("TP4") or 2.5)
+            if status == "TP3": return float(rl.get("tp3") or rl.get("TP3") or 2.0)
             if status == "TP2": return float(rl.get("tp2") or rl.get("TP2") or 2.0)
             if status == "TP1": return float(rl.get("tp1") or rl.get("TP1") or 1.0)
             if status == "SL":  return -1.0
