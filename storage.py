@@ -113,9 +113,13 @@ class SignalPerfDB:
         if not t:
             return {}
         # Map reason → status
-        # TP3 => chốt lời cuối; ENTRY/REVERSAL => đóng trung tính; còn lại => SL
+        # TP5/TP4/TP3 => chốt lời; ENTRY/REVERSAL => đóng trung tính; còn lại => SL
         r = (reason or "").upper()
-        if r == "TP3":
+        if r == "TP5":
+            t["status"] = "TP5"
+        elif r == "TP4":
+            t["status"] = "TP4"
+        elif r == "TP3":
             t["status"] = "TP3"
         elif r in ("ENTRY", "REVERSAL"):
             t["status"] = "CLOSE"
@@ -299,18 +303,23 @@ class SignalPerfDB:
             if status == "SL":  return -1.0
             return 0.0
         items, sids_to_mark = [], []
-        tp_counts = {"TP1": 0, "TP2": 0, "TP3": 0, "SL": 0}
+        tp_counts = {"TP1": 0, "TP2": 0, "TP3": 0, "TP4": 0, "TP5": 0, "SL": 0}
         for t in self._all().values():
             status = (t.get("status") or "OPEN").upper()
             hits = (t.get("hits") or {})
-            if status not in ("TP3", "SL", "CLOSE"):
+            # Nhận các lệnh đã đóng: TP5/TP4/TP3/SL/CLOSE
+            if status not in ("TP5", "TP4", "TP3", "SL", "CLOSE"):
                 continue
-            if status == "CLOSE" and not any(k in hits for k in ("TP1", "TP2", "TP3")):
+            if status == "CLOSE" and not any(k in hits for k in ("TP1", "TP2", "TP3", "TP4", "TP5")):
                 continue
             if t.get("kpi24_reported_at"):
                 continue
             win = False; price_hit = None; show_status = status
-            if status == "TP3" or ("TP3" in hits):
+            if status == "TP5" or ("TP5" in hits):
+                price_hit = t.get("tp5"); win = True; show_status = "TP5"; tp_counts["TP5"] += 1
+            elif status == "TP4" or ("TP4" in hits):
+                price_hit = t.get("tp4"); win = True; show_status = "TP4"; tp_counts["TP4"] += 1
+            elif status == "TP3" or ("TP3" in hits):
                 price_hit = t.get("tp3"); win = True; show_status = "TP3"; tp_counts["TP3"] += 1
             elif "TP2" in hits:
                 price_hit = t.get("tp2"); win = True; show_status = "TP2"; tp_counts["TP2"] += 1
@@ -339,9 +348,7 @@ class SignalPerfDB:
         win_rate = (wins / n) if n else 0.0
         sum_R = sum(float(i.get("R") or 0.0) for i in items)
         avg_R = (sum_R / n) if n else 0.0
-        detail = {
-            "items": items,
-            totals = {
+        totals = {
             "n": n,
             "wins": wins,
             "losses": losses,
