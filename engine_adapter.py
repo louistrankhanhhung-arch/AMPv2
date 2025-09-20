@@ -188,9 +188,28 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     tp3 = tps[2] if len(tps) > 2 else None
 
     # RR calculations
+    # -------- Map original 3 TP -> 5 TP ladder --------
+    # Ensure we have 3 base TP levels; if only 2 provided, synthesize mid as TP2
+    def _mid(a,b):
+        try: return (float(a)+float(b))/2.0
+        except Exception: return None
+    if tp3 is None and (tp1 is not None) and (tp2 is not None):
+        _tp2_mid = _mid(tp1, tp2)
+        if _tp2_mid is not None:
+            tp3 = tp2
+            tp2 = _tp2_mid
+    # Expand to 5 levels: [mid(entry,tp1), tp1, tp2, mid(tp2,tp3), tp3]
+    new_tp1 = _mid(dec.setup.entry, tp1) if (dec.setup.entry is not None and tp1 is not None) else tp1
+    new_tp2 = tp1
+    new_tp3 = tp2
+    new_tp4 = _mid(tp2, tp3) if (tp2 is not None and tp3 is not None) else None
+    new_tp5 = tp3
+    tp1, tp2, tp3, tp4, tp5 = new_tp1, new_tp2, new_tp3, new_tp4, new_tp5
     rr1 = _rr(dec.setup.entry, dec.setup.sl, tp1, dec.side)
     rr2 = _rr(dec.setup.entry, dec.setup.sl, tp2, dec.side)
     rr3 = _rr(dec.setup.entry, dec.setup.sl, tp3, dec.side)
+    rr4 = _rr(dec.setup.entry, dec.setup.sl, tp4, dec.side) if tp4 is not None else None
+    rr5 = _rr(dec.setup.entry, dec.setup.sl, tp5, dec.side) if tp5 is not None else None
 
     # -------- SOFT PROXIMITY GUARD (BB/EMA) --------
     prox = _near_soft_level_guard_multi(dec.side, dec.setup.entry, features_by_tf)
@@ -307,9 +326,13 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         "tp1": tp1,
         "tp2": tp2,
         "tp3": tp3,
+        "tp4": tp4,
+        "tp5": tp5,
         "rr": rr1,                    # primary RR
         "rr2": rr2,
         "rr3": rr3,
+        "rr4": rr4,
+        "rr5": rr5,
         "risk_size_hint": size_hint,  # <— leverage đề xuất
     }
 
