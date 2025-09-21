@@ -79,6 +79,9 @@ def _guard_near_bb_low_4h_and_rsi1h_extreme(side: Optional[str], entry: Optional
     try:
         if side not in ("long","short") or entry is None:
             return {"block": False, "why": ""}
+        # C: Skip proximity cho BREAK (đã có breakout/early logic ở core)
+        if state == "trend_break":
+        return {"block": False, "why": ""}
         atr4 = _atr_from_features_tf(feats, "4H")
         if atr4 <= 0:
             return {"block": False, "why": ""}
@@ -132,8 +135,8 @@ def _near_soft_level_guard_multi(
             continue
         bb_u, bb_m, bb_l = lv.get("bb_upper"), lv.get("bb_mid"), lv.get("bb_lower")
         e20, e50 = lv.get("ema20"), lv.get("ema50")
-        thr_band   = 0.25 * atr
-        thr_center = 0.20 * atr
+        thr_band   = 0.35 * atr
+        thr_center = 0.30 * atr
         def _dist(a, b):
             try: return abs(float(a) - float(b))
             except Exception: return float("inf")
@@ -225,7 +228,8 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     # Truyền state & rr1 để nới hợp lý theo ngữ cảnh
     # Với 5TP: rr1 là mid(entry,tp1-old); rr2 mới là TP1-old.
     # Dùng rr_ok = max(rr1, rr2) để mềm hợp lý hơn.
-    _rr_ok_candidates = [x for x in (rr1, rr2) if isinstance(x,(int,float))]
+    # C: dùng rr2/rr3 (TP1/TP2 sau expand) để đại diện tốt hơn cho setup 5TP
+    _rr_ok_candidates = [x for x in (rr2, rr3) if isinstance(x,(int,float))]
     rr_ok = max(_rr_ok_candidates) if _rr_ok_candidates else None
     prox = _near_soft_level_guard_multi(
         dec.side, dec.setup.entry, features_by_tf,
