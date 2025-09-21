@@ -81,7 +81,7 @@ def _guard_near_bb_low_4h_and_rsi1h_extreme(side: Optional[str], entry: Optional
             return {"block": False, "why": ""}
         # C: Skip proximity cho BREAK (đã có breakout/early logic ở core)
         if state == "trend_break":
-        return {"block": False, "why": ""}
+            return {"block": False, "why": ""}
         atr4 = _atr_from_features_tf(feats, "4H")
         if atr4 <= 0:
             return {"block": False, "why": ""}
