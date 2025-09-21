@@ -39,7 +39,7 @@ class SideCfg:
 
     # Tie handling
     tie_eps: float = 1e-6               # sai số tuyệt đối để coi như hoà
-    side_margin: float = 0.4         # yêu cầu chênh tối thiểu để chọn side
+    side_margin: float = 0.3         # yêu cầu chênh tối thiểu để chọn side
 
     # Retest score gates
     retest_long_threshold: float = 0.6
@@ -291,11 +291,11 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     momo_strength = _momo_dir_from_features(f1)
     volume_tilt = _vol_dir_from_features(f1)
 
-    # Inside-bar dùng directly từ candles 4H
+    # Inside-bar flags theo TF (không ghi đè lẫn nhau)
     try:
-        inside_bar = bool((f4.get('candles', {}) or {}).get('inside_bar', False))
+        inside4 = bool((f4.get('candles', {}) or {}).get('inside_bar', False))
     except Exception:
-        inside_bar = False
+        inside4 = False
 
     # levels để dựng TP ladder/SL confluence
     levels1h = f1.get('levels', {}) or {}
@@ -381,7 +381,8 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     rsi4 = float(f4_momo.get('rsi') or 50.0)
     rsi_ok_long  = rsi4 >= cfg.rsi_long_thr_4h
     rsi_ok_short = rsi4 <= cfg.rsi_short_thr_4h
-    trend_not_side = f4_trend.get('state') in ('up','down')
+    # neutral thì cho qua; có trend rõ thì đòi RSI đúng hướng
+    trend_is_neutral = (f4_trend.get('state') == 'neutral')
 
     def _need_4h_confirm() -> bool:
         if not cfg.use_4h_confirm:
@@ -395,9 +396,9 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
         if not _need_4h_confirm():
             return True
         if side == 'long':
-            return (trend_ok_long and rsi_ok_long) or trend_not_side
+            return (trend_ok_long and rsi_ok_long) or trend_is_neutral
         if side == 'short':
-            return (trend_ok_short and rsi_ok_short) or trend_not_side
+            return (trend_ok_short and rsi_ok_short) or trend_is_neutral
         return False
 
     # Ghi vào meta để core sử dụng
@@ -428,11 +429,14 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.momo_strength = momo_strength
     si.volume_tilt = volume_tilt
     
-    # candle pattern flags
+    # candle pattern flags (tổng hợp 1H/4H)
     try:
-        si.inside_bar = bool((f4.get('candles', {}) or {}).get('inside_bar', False))
+        inside1 = bool((f1.get('candles', {}) or {}).get('inside_bar', False))
     except Exception:
-        si.inside_bar = False
+        inside1 = False
+    si.inside_bar_4h = inside4
+    si.inside_bar_1h = inside1
+    si.inside_bar = (inside4 or inside1)
     # mini-retest flags từ evidence
     try:
         si.mini_retest_long  = bool(ev_mini.get('long', False))
@@ -479,23 +483,24 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
 
     si.div_side = div_side
     si.rejection_side = rejection_side
-    # adaptive guards from evidence
-    si.is_slow = bool(ev_adapt.get('is_slow')) if isinstance(ev_adapt, dict) else False
-    si.liquidity_floor = float(ev_adapt.get('liquidity_floor', 0.0)) if isinstance(ev_adapt, dict) else 0.0
+    # adaptive guards from evidence (thiết lập 1 lần, không ghi đè kiểu)
+    if isinstance(ev_adapt, dict):
+        liq_val = float(ev_adapt.get('liquidity_floor', 0.0) or 0.0)
+        si.liq_score = liq_val
+        # flag dùng cho guards — có thể tinh chỉnh ngưỡng theo regime
+        si.liquidity_floor = (liq_val >= 0.6)
+        si.is_slow = bool(ev_adapt.get('is_slow', False))
+    else:
+        si.liq_score = 0.0
+        si.liquidity_floor = False
+        si.is_slow = False
 
     si.false_break_long = false_break_long
     si.false_break_short = false_break_short    
 
-    # inside-bar flag from candle features
-    try:
-        si.inside_bar = bool((f1.get('candles', {}) or {}).get('inside_bar', False))
-    except Exception:
-        si.inside_bar = False
+    # giữ regime đã thiết lập ở trên
+    si.regime = regime
 
-    # adaptive guards
-    si.is_slow = bool(ev_adapt.get('is_slow', False)) if isinstance(ev_adapt, dict) else False
-    si.liquidity_floor = bool(ev_adapt.get('liquidity_floor', False)) if isinstance(ev_adapt, dict) else False
-    si.regime = (ev_adapt.get('regime') if isinstance(ev_adapt, dict) else None) or 'normal'
     # HVN guard flag from evidence
     try:
         si.near_heavy_zone = bool(ev_liq.get('near_heavy_zone', False)) if isinstance(ev_liq, dict) else False
