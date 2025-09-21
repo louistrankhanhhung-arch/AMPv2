@@ -1,4 +1,4 @@
-
+9
 """
 engine_adapter.py
 - Thin wrapper so main.py can call decide(...) without decision_engine.py.
@@ -291,7 +291,7 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         # Soft rule sau expand:
         #   Nếu RR1>=0.8 và (RR@TP3 < sàn) nhưng (RR@TP5 >= sàn) => vẫn ENTER, chỉ log cảnh báo
         allow_soft = (
-            (rr1 is not None and rr1 >= 0.8) and
+            (rr1 is not None and rr1 >= 0.5) and
             (tp3 is not None and rr3 is not None and rr3 < rr_tp3_floor) and
             (tp5 is not None and rr5 is not None and rr5 >= rr_tp5_floor)
         )
