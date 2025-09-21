@@ -52,11 +52,6 @@ class SideCfg:
     tf_primary: str = "4H"
     tf_confirm: str = "4H"
 
-    # Proximity thresholds theo regime cho RETEST
-    dist_atr_thr_low: float = 0.60
-    dist_atr_thr_normal: float = 1.00
-    dist_atr_thr_high: float = 1.00
-
     # --- SL regime adaptation ---
     sl_min_atr_low: float = 0.60
     sl_min_atr_normal: float = 0.80
