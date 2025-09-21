@@ -39,11 +39,11 @@ class SideCfg:
 
     # Tie handling
     tie_eps: float = 1e-6               # sai số tuyệt đối để coi như hoà
-    side_margin: float = 0.3         # yêu cầu chênh tối thiểu để chọn side
+    side_margin: float = 0.4         # yêu cầu chênh tối thiểu để chọn side
 
     # Retest score gates
-    retest_long_threshold: float = 0.6
-    retest_short_threshold: float = 0.6
+    retest_long_threshold: float = 0.75
+    retest_short_threshold: float = 0.75
 
     # TP ladder mặc định cho tính RR (fallback khi thiếu band)
     rr_targets: Tuple[float, float, float] = (1.2, 2.0, 3.0)
