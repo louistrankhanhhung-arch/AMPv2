@@ -483,7 +483,11 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
         liq_val = float(ev_adapt.get('liquidity_floor', 0.0) or 0.0)
         si.liq_score = liq_val
         # flag dùng cho guards — có thể tinh chỉnh ngưỡng theo regime
-        si.liquidity_floor = (liq_val >= 0.6)
+         # Ví dụ: ngưỡng tùy regime (có thể chỉnh theo thực nghiệm)
+        reg = (ev_adapt.get("regime") or "normal")
+        thr_map = {"low": 0.70, "normal": 0.60, "high": 0.50}
+        thr = thr_map.get(reg, 0.60)
+        si.liquidity_floor = (liq_val >= thr)
         si.is_slow = bool(ev_adapt.get('is_slow', False))
     else:
         si.liq_score = 0.0
@@ -809,7 +813,7 @@ def decide_5_gates(state: str, side: Optional[str], setup: Setup, si: SI, cfg: S
         regime = (_safe_get(si, "regime") or "normal")
     except Exception:
         regime = "normal"
-    liq_thr_map = {"low": 0.7, "normal": 0.55, "high": 0.5}
+    liq_thr_map = {"low": 0.65, "normal": 0.55, "high": 0.5}
     dec.meta["regime"] = regime
     dec.meta["liq_thr"] = liq_thr_map.get(regime, 0.55)
     # Side votes (numeric strengths; may be -1..+1 or scaled)
