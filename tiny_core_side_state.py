@@ -835,9 +835,14 @@ def decide_5_gates(state: str, side: Optional[str], setup: Setup, si: SI, cfg: S
     if _safe_get(si, "is_slow", False):
         reasons.append("slow_market")
 
-    # HVN: near heavy volume profile zone blocks entries
-    if _safe_get(si, "near_heavy_zone", False) or (not _safe_get(si, "hvn_ok", True)):
-        reasons.append("near_heavy_zone")
+    # B: HVN — chỉ chặn BREAK có RR thấp; cho RETEST/hoặc RR tốt
+    is_break = (state == "trend_break")
+    near_hvn = bool(_safe_get(si, "near_heavy_zone", False)) or (not bool(_safe_get(si, "hvn_ok", True)))
+    if near_hvn:
+        if is_break:
+            if not (rr1 is not None and rr1 >= 1.2):
+                reasons.append("near_heavy_zone")
+        # RETEST không chặn mặc định (vẫn hiển thị tag trong logs["WAIT"]["reasons"] nếu cần)
 
     # Thiếu dữ liệu thiết yếu?
     price = _safe_get(si, "price")
