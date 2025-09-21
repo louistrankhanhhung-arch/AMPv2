@@ -1,4 +1,3 @@
-9
 """
 engine_adapter.py
 - Thin wrapper so main.py can call decide(...) without decision_engine.py.
