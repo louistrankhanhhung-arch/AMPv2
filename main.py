@@ -504,9 +504,10 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                         else:
                             tn2.send_channel(render_update(t, note, extra))
 
-                # TP3
+                # TP3 (fix): KHÔNG đóng lệnh tại TP3; chỉ đánh dấu hit và dời SL động về TP2
                 if t.get("status") in ("OPEN","TP1","TP2") and t.get("tp3") and crossed(side, price_now, t["tp3"]):
-                    perf.close(t["sid"], "TP3")
+                    perf.set_hit(t["sid"], "TP3", (t.get("r_ladder",{}) or {}).get("tp3") or 0.0)
+                    hits["TP3"] = int(__import__("time").time())
                     t["status"] = "TP3"
                     note = "🎯 TP3 hit — Khóa SL về TP2."
                     t["sl_dyn"] = float(t.get("tp2") or entry)
