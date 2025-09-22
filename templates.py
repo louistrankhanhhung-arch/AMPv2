@@ -182,9 +182,10 @@ def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dic
         "📊 <b>Hiệu suất giao dịch:</b>",
         f"- Tổng lệnh đã đóng: {n}",
         f"- Tỉ lệ thắng: {wr_pct:.0f}%",
-        f"- Lợi nhuận trước đòn bẩy: {eq1x:+.2f}%",   # đã ưu tiên số liệu weighted
+        f"- Lợi nhuận trước đòn bẩy (tổng): {eq1x:+.2f}%",
         f"- Tổng R (weighted): {sumR_w:+.1f}R",
-        f"- PnL/$100 rủi ro: ${pnl_per_100:.0f}",
+        f"- Lợi nhuận thực (risk $100/lệnh): ${pnl_per_100:.0f}",
+        f"- Lợi nhuận trung bình/lệnh: {sumR_w/n:.2f}R (~${(sumR_w/n*100):.0f})",
         f"- TP theo số lệnh: TP5: {c5} - TP4: {c4} - TP3: {c3} - TP2: {c2} - TP1: {c1} - SL: {cs}",
     ]
     return "\n".join(lines)
