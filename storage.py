@@ -89,10 +89,22 @@ class SignalPerfDB:
         return False
         
     def by_symbol(self, symbol: str) -> list:
-        return [
-            t for t in self._all().values()
-            if t.get("symbol") == symbol and t.get("status") in ("OPEN", "TP1", "TP2")
-        ]
+      # Theo dõi mọi lệnh chưa đóng (loại CLOSE/SL). Cho phép TP3/TP4 tiếp tục được track.
+      return [
+          t for t in self._all().values()
+          if t.get("symbol") == symbol and (t.get("status") or "").upper() not in ("CLOSE","SL")
+      ]
+
+  def update_fields(self, sid: str, **fields) -> dict:
+      """Cập nhật một số field tuỳ ý (vd: sl_dyn) và ghi lại."""
+      data = self._all()
+      t = data.get(sid, {})
+      if not t:
+          return {}
+      t.update({k: v for k, v in fields.items()})
+      data[sid] = t
+      self._write(data)
+      return t
 
     def set_hit(self, sid: str, level: str, R: float) -> dict:
         data = self._all()
