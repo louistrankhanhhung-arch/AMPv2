@@ -434,16 +434,6 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 if perf.cooldown_active(symbol, seconds=24*3600):
                     log.info(f"[{symbol}] skip ENTER due to cooldown (24h)")
                 else:
-                    # --- NEW: quota theo khung giờ VN (05:30–07:30, 17:30–19:30) — tối đa 1 tín hiệu ---
-                    now_local = datetime.now(TZ)
-                    win = _current_vn_window(now_local)
-                    if win is not None:
-                        start_ts, end_ts = win
-                        released = perf.count_released_between(start_ts, end_ts)
-                        if released >= 1:
-                            log.info(f"[{symbol}] skip ENTER due to window quota ({released}) at {now_local.strftime('%H:%M')}")
-                            # Chặn phát hành trong khung giờ nếu đã có 1 tín hiệu
-                            return
                     sid, msg_id = tn.post_teaser(plan_for_teaser)
                     perf.open(sid, plan_for_teaser, message_id=msg_id)
             except Exception as e:
