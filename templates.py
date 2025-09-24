@@ -190,3 +190,27 @@ def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dic
     ]
     return "\n".join(lines)
 
+# NEW: KPI tuần (8:16 thứ 7)
+def render_kpi_week(detail: dict, week_label: str, risk_per_trade_usd: float = 100.0) -> str:
+    totals = detail.get("totals") or {}
+    n   = int(totals.get("n") or 0)
+    wr  = float(totals.get("win_rate") or 0.0) * 100.0
+    sum_pct = float(totals.get("sum_pct") or 0.0)
+    sum_R   = float(totals.get("sum_R_weighted") or totals.get("sum_R") or 0.0)
+    pnl_real = sum_R * risk_per_trade_usd
+    avg_real = (pnl_real / n) if n else 0.0
+    tpc = totals.get("tp_counts") or {}
+    def _i(x): return int(tpc.get(x) or 0)
+    lines = [
+        f"<b>Kết quả giao dịch tuần qua - {week_label}</b>",
+        f"- Tổng lệnh đã đóng: {n}",
+        f"- Tỉ lệ thắng: {wr:.2f}%",
+        f"  - Lợi nhuận trước đòn bẩy (tổng): {sum_pct:.2f}%",
+        f"  - Tổng R (weighted): {sum_R:.2f}R",
+        f"  - Lợi nhuận thực (risk $100/lệnh): ${pnl_real:.0f}",
+        f"  - Lợi nhuận trung bình/lệnh: ${avg_real:.0f}",
+        f"  - TP theo số lệnh: TP5: {_i('TP5')} / TP4: {_i('TP4')} / TP3: {_i('TP3')} / TP2: {_i('TP2')} / TP1: {_i('TP1')} / SL: {_i('SL')}",
+    ]
+    return "\n".join(lines)
+
+
