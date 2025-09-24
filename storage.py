@@ -275,7 +275,7 @@ class SignalPerfDB:
             "to_ts": now,
         }
 
-# NEW: breakdown 24H theo % dựa trên TP cao nhất/SL đã đạt
+    # NEW: breakdown 24H theo % dựa trên TP cao nhất/SL đã đạt
     def kpis_24h_detail(self) -> dict:
         """
         Trả về danh sách và KPI dựa trên **các lệnh đã ĐÓNG và CÓ TP/SL** tại thời điểm quét,
@@ -476,7 +476,7 @@ class SignalPerfDB:
             t["kpi24_reported_at"] = now
         self._write(data)
 
-# NEW: breakdown theo period (hiện dùng 'day' cho khối hiệu suất)
+    # NEW: breakdown theo period (hiện dùng 'day' cho khối hiệu suất)
     def kpis_detail(self, period: str = "day") -> dict:
         """
         Trả về:
