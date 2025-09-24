@@ -119,6 +119,89 @@ class SignalPerfDB:
         self._write(data)
         return t
 
+    # === KPI tuần: các lệnh ĐÓNG trong [start_ts, end_ts) ===
+    def kpis_week_detail(self, start_ts: int, end_ts: int) -> dict:
+        def _pct_for_status(t: dict, status: str) -> float:
+            try:
+                e = float(t.get("entry") or 0.0)
+                if not e: return 0.0
+                side = (t.get("dir") or "").upper()
+                def px(name): 
+                    v = t.get(name)
+                    return float(v) if v is not None else None
+                # Ưu tiên mốc TP cao nhất đã có giá (fallback chuỗi xuống mốc dưới)
+                ladder = ["tp5","tp4","tp3","tp2","tp1"]
+                if status.startswith("TP"):
+                    idx = int(status[-1])
+                    pick = ladder[5-idx:]  # ví dụ TP3 -> ["tp3","tp2","tp1"]
+                    hit_p = None
+                    for nm in pick:
+                        val = px(nm)
+                        if val is not None:
+                            hit_p = val; break
+                    if hit_p is None: hit_p = px("tp1") or e
+                elif status == "SL":
+                    hit_p = px("sl") or e
+                else:
+                    # CLOSE theo trail: chọn TP cao nhất đã từng hit
+                    hits = t.get("hits") or {}
+                    if hits.get("TP5"): hit_p = px("tp5")
+                    elif hits.get("TP4"): hit_p = px("tp4")
+                    elif hits.get("TP3"): hit_p = px("tp3")
+                    elif hits.get("TP2"): hit_p = px("tp2")
+                    elif hits.get("TP1"): hit_p = px("tp1")
+                    else: hit_p = e
+                if hit_p is None: hit_p = e
+                if side == "LONG":
+                    return (hit_p - e) / e * 100.0
+                return (e - hit_p) / e * 100.0
+            except Exception:
+                return 0.0
+
+        items = []
+        tp_counts = {"TP1":0,"TP2":0,"TP3":0,"TP4":0,"TP5":0,"SL":0}
+        sum_pct = 0.0
+        sum_R   = 0.0
+        wins = 0; losses = 0
+        for t in self._all().values():
+            st = (t.get("status") or "OPEN").upper()
+            closed_at = int(t.get("closed_at") or 0)
+            if st not in ("TP5","TP4","TP3","SL","CLOSE"): 
+                continue
+            if not (start_ts <= closed_at < end_ts):
+                continue
+            # xác định nhãn kết quả để đếm TP/SL
+            label = "SL" if st == "SL" else (
+                "TP5" if (t.get("hits") or {}).get("TP5") else
+                "TP4" if (t.get("hits") or {}).get("TP4") else
+                "TP3" if (t.get("hits") or {}).get("TP3") else
+                "TP2" if (t.get("hits") or {}).get("TP2") else
+                "TP1" if (t.get("hits") or {}).get("TP1") else "CLOSE"
+            )
+            if label in tp_counts: tp_counts[label] += 1
+            # % lợi nhuận trước đòn bẩy
+            pct = _pct_for_status(t, label if label in ("TP1","TP2","TP3","TP4","TP5","SL") else st)
+            sum_pct += pct
+            # R weighted (đã cộng dồn trong realized_R)
+            r_w = float(t.get("realized_R") or 0.0)
+            sum_R += r_w
+            win = (label != "SL")
+            wins += int(win); losses += int(not win)
+            items.append({"sid": t.get("sid"), "symbol": t.get("symbol"), "status": label, "pct": pct, "R_w": r_w})
+        n = len(items)
+        win_rate = (wins / n) if n else 0.0
+        avg_pct = (sum_pct / n) if n else 0.0
+        avg_R   = (sum_R / n) if n else 0.0
+        totals = {
+            "n": n, "wins": wins, "losses": losses, "win_rate": win_rate,
+            "sum_pct": sum_pct, "avg_pct": avg_pct,
+            "sum_R": sum_R, "avg_R": avg_R,
+            "sum_R_weighted": sum_R, "sum_R_w": sum_R,
+            "sum_pct_weighted": sum_pct, "sum_pct_w": sum_pct,
+            "tp_counts": tp_counts,
+        }
+        return {"items": items, "totals": totals}
+
     def close(self, sid: str, reason: str) -> dict:
         data = self._all()
         t = data.get(sid, {})
@@ -138,6 +221,7 @@ class SignalPerfDB:
         else:
             t["status"] = "SL"
         t["close_reason"] = r
+        t["closed_at"] = int(time.time())
         data[sid] = t
         self._write(data)
         return t
