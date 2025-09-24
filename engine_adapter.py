@@ -69,7 +69,13 @@ def _rsi_from_features_tf(features_by_tf: Dict[str, Any], tf: str = "1H") -> Opt
         pass
     return None
 
-def _guard_near_bb_low_4h_and_rsi1h_extreme(side: Optional[str], entry: Optional[float], feats: Dict[str, Any]) -> Dict[str, Any]:
+def _guard_near_bb_low_4h_and_rsi1h_extreme(
+    side: Optional[str],
+    entry: Optional[float],
+    feats: Dict[str, Any],
+    *,
+    state: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     WAIT guard khi ở gần mép BB 4H và RSI(1H) cực trị ĐÚNG CHIỀU RỦI RO:
       - Long: gần BB-lower (<= 0.30 * ATR_4H) & RSI1H <= 20  → dễ rơi tiếp
@@ -224,6 +230,23 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     rr4 = _rr(dec.setup.entry, dec.setup.sl, tp4, dec.side) if tp4 is not None else None
     rr5 = _rr(dec.setup.entry, dec.setup.sl, tp5, dec.side) if tp5 is not None else None
 
+    # -------- SL risk guard (> 5% entry) --------
+    try:
+        thr = float(os.getenv("SL_MAX_RISK_PCT", "0.05"))
+    except Exception:
+        thr = 0.05
+    try:
+        if dec.setup.entry and dec.setup.sl and dec.side in ("long", "short"):
+            risk_pct = abs(float(dec.setup.entry) - float(dec.setup.sl)) / max(float(dec.setup.entry), 1e-9)
+            if risk_pct > thr:
+                dec.decision = "WAIT"
+                reasons = list(dec.reasons or [])
+                if f"sl_risk>{thr:.3f}" not in reasons:
+                    reasons.append(f"sl_risk>{thr:.3f}")
+                dec.reasons = reasons
+    except Exception:
+        pass
+
     # -------- SOFT PROXIMITY GUARD (BB/EMA) --------
     # Truyền state & rr1 để nới hợp lý theo ngữ cảnh
     # Với 5TP: rr1 là mid(entry,tp1-old); rr2 mới là TP1-old.
@@ -244,7 +267,9 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         # Không đổi setup; chỉ cấm vào kèo lúc này
 
     # -------- BB-low(4H) + RSI(1H) extreme guard --------
-    bb_rsi_guard = _guard_near_bb_low_4h_and_rsi1h_extreme(dec.side, dec.setup.entry, features_by_tf)
+    bb_rsi_guard = _guard_near_bb_low_4h_and_rsi1h_extreme(
+        dec.side, dec.setup.entry, features_by_tf, state=dec.state
+    )
     if bb_rsi_guard.get("block"):
         dec.decision = "WAIT"
         reasons = list(dec.reasons or [])
