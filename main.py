@@ -660,7 +660,8 @@ def loop_scheduler():
              "block4 at :15 & :45, block5 at :20 & :50, block6 at :25 & :55")
 
     last_tick = None
-    last_kpi_day = None  # NEW: để gửi KPI 1 lần/ngày
+    last_kpi_day = None   # NEW: KPI ngày 1 lần
+    last_kpi_week = None  # NEW: KPI tuần 1 lần/tuần
     while True:
         now = datetime.now(TZ)
         blk = which_block_for_minute(now.minute)
@@ -690,6 +691,34 @@ def loop_scheduler():
                         perf.mark_kpi24_reported(sids_to_mark)
                     except Exception:
                         pass
+
+            # NEW: KPI TUẦN — 08:16 sáng Thứ Bảy (Asia/Ho_Chi_Minh)
+            if now.weekday() == 5 and now.hour == 8 and now.minute == 16:
+                wk_key = (now.isocalendar().year, now.isocalendar().week)
+                if last_kpi_week != wk_key:
+                    last_kpi_week = wk_key
+                    from datetime import timedelta
+                    # cửa sổ tuần: từ 00:00 thứ Bảy tuần trước đến thời điểm chạy hiện tại
+                    today_00 = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                    week_start = today_00 - timedelta(days=7)
+                    start_ts = int(week_start.timestamp())
+                    end_ts   = int(now.timestamp())
+                    # label như ví dụ: 20-27/9/2025
+                    def _ds(d):
+                        dd = d.strftime("%d").lstrip("0")
+                        mm = d.strftime("%m").lstrip("0")
+                        yy = d.strftime("%Y")
+                        return dd, mm, yy
+                    d1, m1, y1 = _ds(week_start)
+                    d2, m2, y2 = _ds(now)
+                    week_label = f"{d1}-{d2}/{m2}/{y2}" if m1 == m2 and y1 == y2 else f"{d1}/{m1}-{d2}/{m2}/{y2}"
+                    perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR", "./data")))
+                    detail_week = perf.kpis_week_detail(start_ts, end_ts)
+                    from templates import render_kpi_week
+                    html = render_kpi_week(detail_week, week_label, risk_per_trade_usd=100.0)
+                    tn = _get_notifier()
+                    if tn:
+                        tn.send_kpi24(html)
         except Exception as e:
             log.warning(f"KPI-24H send failed: {e}")
         # sleep until next 5-minute boundary
