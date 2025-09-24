@@ -455,7 +455,16 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
         df_1h = dfs.get("1H")
         if df_1h is None or df_1h.empty:
             raise ValueError("missing 1H frame")
-        price_now = float(df_1h["close"].iloc[-1])
+        # Ưu tiên giá realtime: thử lấy từ 4H (giữ realtime trong fetch_batch), fallback 1H close
+        price_now = None
+        try:
+            df_4h = dfs.get("4H")
+            if df_4h is not None and not df_4h.empty:
+                price_now = float(df_4h["close"].iloc[-1])
+        except Exception:
+            pass
+        if price_now is None:
+            price_now = float(df_1h["close"].iloc[-1])
 
         perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
         open_trades = perf.by_symbol(symbol)
@@ -483,6 +492,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     t["status"] = "TP1"
                     note = "🎯 TP1 hit — Nâng SL lên Entry để bảo toàn lợi nhuận."
                     t["sl_dyn"] = float(entry)  # BE
+                    perf.update_fields(t["sid"], sl_dyn=float(entry))
                     extra = {"margin_pct": margin_pct(float(t["tp1"]))}
                     if tn2:
                         if msg_id:
@@ -497,6 +507,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     t["status"] = "TP2"
                     note = "🎯 TP2 hit — Khóa SL về TP1."
                     t["sl_dyn"] = float(t.get("tp1") or entry)
+                    perf.update_fields(t["sid"], sl_dyn=float(t.get("tp1") or entry))
                     extra = {"margin_pct": margin_pct(float(t["tp2"]))}
                     if tn2:
                         if msg_id:
@@ -511,6 +522,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     t["status"] = "TP3"
                     note = "🎯 TP3 hit — Khóa SL về TP2."
                     t["sl_dyn"] = float(t.get("tp2") or entry)
+                    perf.update_fields(t["sid"], sl_dyn=float(t.get("tp2") or entry))
                     extra = {"margin_pct": margin_pct(float(t["tp3"]))}
                     if tn2:
                         if msg_id:
@@ -525,6 +537,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     t["status"] = "TP4"
                     note = "🎯 TP4 hit — Khóa SL về TP3."
                     t["sl_dyn"] = float(t.get("tp3") or entry)
+                    perf.update_fields(t["sid"], sl_dyn=float(t.get("tp3") or entry))
                     extra = {"margin_pct": margin_pct(float(t["tp4"]))}
                     if tn2:
                         if msg_id:
