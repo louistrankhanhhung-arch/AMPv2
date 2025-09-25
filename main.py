@@ -662,9 +662,9 @@ def loop_scheduler():
         if blk is not None and tick_key != last_tick and now.second < 10:
             last_tick = tick_key
             run_block(blk, blocks[blk], cfg, limit, len(blocks), ex=shared_ex)
-        # NEW: Báo cáo lệnh mở lúc :57 mỗi giờ (VN)
+        # NEW: Báo cáo lệnh mở lúc 08:57 & 20:57 (giờ VN)
         try:
-            if now.minute == 57 and now.second < 10:
+            if now.minute == 57 and now.hour in (8, 20) and now.second < 10:
                 hour_key = (now.year, now.month, now.day, now.hour)
                 if last_status57_key != hour_key:
                     last_status57_key = hour_key
