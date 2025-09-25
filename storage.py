@@ -95,6 +95,24 @@ class SignalPerfDB:
             if t.get("symbol") == symbol and (t.get("status") or "").upper() not in ("CLOSE","SL")
         ]
 
+    # NEW: Liệt kê tất cả lệnh đang mở (OPEN/TP1..TP5) cho báo cáo :57
+    def list_open_status(self) -> list[dict]:
+        """
+        Trả về list các item có dạng:
+          {"sid": ..., "symbol": "BTCUSDT", "status": "OPEN"|"TP1"|...|"TP5"}
+        Chỉ bao gồm các lệnh chưa đóng (không lấy CLOSE/SL).
+        """
+        out: list[dict] = []
+        for t in self._all().values():
+            st = (t.get("status") or "OPEN").upper()
+            if st in ("CLOSE", "SL"):
+                continue
+            sym = (t.get("symbol") or "").replace("/", "").upper()
+            out.append({"sid": t.get("sid"), "symbol": sym, "status": st})
+        # sắp xếp cho dễ đọc: theo symbol, rồi theo status
+        out.sort(key=lambda x: (x["symbol"], x["status"]))
+        return out
+
     def update_fields(self, sid: str, **fields) -> dict:
         """Cập nhật một số field tuỳ ý (vd: sl_dyn) và ghi lại."""
         data = self._all()
