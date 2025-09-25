@@ -652,6 +652,7 @@ def loop_scheduler():
     last_tick = None
     last_kpi_day = None   # NEW: KPI ngày 1 lần
     last_kpi_week = None  # NEW: KPI tuần 1 lần/tuần
+    last_status57_key = None   # NEW: chống gửi trùng báo cáo :57
     while True:
         now = datetime.now(TZ)
         blk = which_block_for_minute(now.minute)
@@ -661,6 +662,29 @@ def loop_scheduler():
         if blk is not None and tick_key != last_tick and now.second < 10:
             last_tick = tick_key
             run_block(blk, blocks[blk], cfg, limit, len(blocks), ex=shared_ex)
+        # NEW: Báo cáo lệnh mở lúc :57 mỗi giờ (VN)
+        try:
+            if now.minute == 57 and now.second < 10:
+                hour_key = (now.year, now.month, now.day, now.hour)
+                if last_status57_key != hour_key:
+                    last_status57_key = hour_key
+                    perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR", "./data")))
+                    items = perf.list_open_status()
+                    if items:
+                        # Xây chuỗi báo cáo gọn: "Mã - Tình trạng"
+                        lines = [f"🕘 {now.strftime('%d/%m %H:%M')} — Tình trạng lệnh mở"]
+                        for it in items:
+                            lines.append(f"{it['symbol']} — {it['status']}")
+                        text = "\n".join(lines)
+                        log.info(text)
+                        tn = _get_notifier()
+                        if tn:
+                            tn.send_channel(text)
+                    else:
+                        log.info(f"🕘 {now.strftime('%d/%m %H:%M')} — Không có lệnh mở.")
+        except Exception as e:
+            log.warning("hourly :57 status log failed: %s", e)
+          
         # NEW: KPI lúc 18:18 local (VN) ~ 11:18 UTC
         try:
             if now.hour == 18 and now.minute == 18 and (last_kpi_day != (now.year, now.month, now.day)):
