@@ -13,8 +13,9 @@ Main worker for Crypto Signal (Railway ready)
   5) decide ENTER/WAIT/AVOID; optionally push Telegram
 """
 import os, sys, time, json, logging
+import threading
 from typing import Any, Dict, List, TYPE_CHECKING
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -246,6 +247,28 @@ def _get_notifier():
             TN = False
     return TN
 # --- end telegram notifier helper ---
+
+def _send_open_status(now):
+    try:
+        perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR", "./data")))
+        items = perf.list_open_status()
+        if items:
+            lines = [f"<b>🕘 {now.strftime('%d/%m %H:%M')} — Tình trạng lệnh mở</b>"]
+            for it in items:
+                lines.append(f"{it['symbol']} — {it['status']}")
+            html = "\n".join(lines)
+            log.info(html.replace("<b>","").replace("</b>",""))  # log plain
+            tn = _get_notifier()
+            if tn:
+                tn.send_channel(html)
+        else:
+            msg = f"🕘 {now.strftime('%d/%m %H:%M')} — Không có lệnh mở."
+            log.info(msg)
+            tn = _get_notifier()
+            if tn:
+                tn.send_channel(msg)
+    except Exception as e:
+        log.warning("send_open_status failed: %s", e)
 
 def split_into_6_blocks(symbols: List[str]) -> List[List[str]]:
     """Stable split into 6 blocks: [s[0], s[6], ...], [s[1], s[7], ...], ..."""
@@ -662,28 +685,21 @@ def loop_scheduler():
         if blk is not None and tick_key != last_tick and now.second < 10:
             last_tick = tick_key
             run_block(blk, blocks[blk], cfg, limit, len(blocks), ex=shared_ex)
-        # NEW: Báo cáo lệnh mở lúc 08:57 & 20:57 (giờ VN)
+        # NEW: Lên lịch gửi báo cáo lệnh mở vào 08:57 & 20:57 (giờ VN)
         try:
-            if now.minute == 57 and now.hour in (8, 20) and now.second < 10:
-                hour_key = (now.year, now.month, now.day, now.hour)
-                if last_status57_key != hour_key:
-                    last_status57_key = hour_key
-                    perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR", "./data")))
-                    items = perf.list_open_status()
-                    if items:
-                        # Xây chuỗi báo cáo gọn: "Mã - Tình trạng"
-                        lines = [f"🕘 {now.strftime('%d/%m %H:%M')} — Tình trạng lệnh mở"]
-                        for it in items:
-                            lines.append(f"{it['symbol']} — {it['status']}")
-                        text = "\n".join(lines)
-                        log.info(text)
-                        tn = _get_notifier()
-                        if tn:
-                            tn.send_channel(text)
-                    else:
-                        log.info(f"🕘 {now.strftime('%d/%m %H:%M')} — Không có lệnh mở.")
+            # Vòng lặp tick mỗi 5 phút, nên đặt lịch ở :55 rồi Timer 120s để bắn đúng :57
+            if now.minute == 55 and now.hour in (8, 20) and now.second < 10:
+                key = (now.year, now.month, now.day, now.hour)
+                if globals().get("_last_status57_timer_key") != key:
+                    globals()["_last_status57_timer_key"] = key
+                    delay = max(0, 120 - now.second)  # tới :57:00
+                    when = now + timedelta(seconds=delay)
+                    def _job(ts_when=when):
+                        _send_open_status(ts_when)
+                    threading.Timer(delay, _job).start()
+                    log.info(f"Scheduled open-status report for {when.strftime('%d/%m %H:%M')}")
         except Exception as e:
-            log.warning("hourly :57 status log failed: %s", e)
+            log.warning("schedule 08:57/20:57 failed: %s", e)
           
         # NEW: KPI lúc 18:18 local (VN) ~ 11:18 UTC
         try:
