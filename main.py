@@ -468,24 +468,31 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
         df_1h = dfs.get("1H")
         if df_1h is None or df_1h.empty:
             raise ValueError("missing 1H frame")
-        # Ưu tiên giá realtime: thử lấy từ 4H (giữ realtime trong fetch_batch), fallback 1H close
-        price_now = None
+        # Ưu tiên khung 4H; nếu thiếu dùng 1H. Dùng cả HIGH/LOW để bắt intrabar.
+        def _last_hl(df):
+            return float(df["high"].iloc[-1]), float(df["low"].iloc[-1]), float(df["close"].iloc[-1])
+        hi = lo = price_now = None
         try:
             df_4h = dfs.get("4H")
             if df_4h is not None and not df_4h.empty:
-                price_now = float(df_4h["close"].iloc[-1])
+                hi, lo, price_now = _last_hl(df_4h)
         except Exception:
             pass
         if price_now is None:
-            price_now = float(df_1h["close"].iloc[-1])
+            hi, lo, price_now = _last_hl(df_1h)
 
         perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
         open_trades = perf.by_symbol(symbol)
         if open_trades:
             tn2 = _get_notifier()
             for t in open_trades:
-                def crossed(side, price, level):
-                    return (side=="LONG" and price>=level) or (side=="SHORT" and price<=level)
+                # Cross theo intrabar: LONG dùng HIGH, SHORT dùng LOW
+                def crossed(side, level):
+                    if side == "LONG":
+                        return (hi is not None) and (hi >= float(level))
+                    if side == "SHORT":
+                        return (lo is not None) and (lo <= float(level))
+                    return False
                 side = (t.get("dir") or "").upper()
                 msg_id = t.get("message_id")
                 entry = float(t.get("entry") or 0.0)
@@ -499,7 +506,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     return ((hit_price - entry) / entry * 100.0) if side=="LONG" else ((entry - hit_price) / entry * 100.0)
 
                 # TP1
-                if t.get("status")=="OPEN" and not hits.get("TP1") and t.get("tp1") and crossed(side, price_now, t["tp1"]):
+                if t.get("status")=="OPEN" and not hits.get("TP1") and t.get("tp1") and crossed(side, t["tp1"]):
                     perf.set_hit(t["sid"], "TP1", (t.get("r_ladder",{}) or {}).get("tp1") or 0.0)
                     hits["TP1"] = int(__import__("time").time())
                     t["status"] = "TP1"
@@ -514,7 +521,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                             tn2.send_channel(render_update(t, note, extra))
                         
                 # TP2
-                if t.get("status") in ("OPEN","TP1") and not hits.get("TP2") and t.get("tp2") and crossed(side, price_now, t["tp2"]):
+                if t.get("status") in ("OPEN","TP1") and not hits.get("TP2") and t.get("tp2") and crossed(side, t["tp2"]):
                     perf.set_hit(t["sid"], "TP2", (t.get("r_ladder",{}) or {}).get("tp2") or 0.0)
                     hits["TP2"] = int(__import__("time").time())
                     t["status"] = "TP2"
@@ -529,7 +536,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                             tn2.send_channel(render_update(t, note, extra))
 
                 # TP3 (fix): KHÔNG đóng lệnh tại TP3; chỉ đánh dấu hit và dời SL động về TP2
-                if t.get("status") in ("OPEN","TP1","TP2") and t.get("tp3") and crossed(side, price_now, t["tp3"]):
+                if t.get("status") in ("OPEN","TP1","TP2") and not hits.get("TP3") and t.get("tp3") and crossed(side, t["tp3"]):
                     perf.set_hit(t["sid"], "TP3", (t.get("r_ladder",{}) or {}).get("tp3") or 0.0)
                     hits["TP3"] = int(__import__("time").time())
                     t["status"] = "TP3"
@@ -544,7 +551,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                             tn2.send_channel(render_update(t, note, extra))
 
                  # TP4
-                if t.get("status") in ("OPEN","TP1","TP2","TP3") and t.get("tp4") and crossed(side, price_now, t["tp4"]):
+                if t.get("status") in ("OPEN","TP1","TP2","TP3") and not hits.get("TP4") and t.get("tp4") and crossed(side, t["tp4"]):
                     perf.set_hit(t["sid"], "TP4", (t.get("r_ladder",{}) or {}).get("tp4") or 0.0)
                     hits["TP4"] = int(__import__("time").time())
                     t["status"] = "TP4"
@@ -559,7 +566,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                             tn2.send_channel(render_update(t, note, extra))
                           
                 # TP5 (đóng lệnh)
-                if t.get("status") in ("OPEN","TP1","TP2","TP3","TP4") and t.get("tp5") and crossed(side, price_now, t["tp5"]):
+                if t.get("status") in ("OPEN","TP1","TP2","TP3","TP4") and not hits.get("TP5") and t.get("tp5") and crossed(side, t["tp5"]):
                     perf.set_hit(t["sid"], "TP5", (t.get("r_ladder",{}) or {}).get("tp5") or 0.0)
                     hits["TP5"] = int(__import__("time").time())
                     perf.close(t["sid"], "TP5")
@@ -618,8 +625,8 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 slv = t.get("sl")
                 has_tp_hit = bool(hits.get("TP1") or hits.get("TP2") or hits.get("TP3"))
                 if t.get("status") == "OPEN" and not has_tp_hit and slv and (
-                    (side == "LONG"  and price_now <= slv) or
-                    (side == "SHORT" and price_now >= slv)
+                    (side == "LONG"  and lo is not None and lo <= slv) or
+                    (side == "SHORT" and hi is not None and hi >= slv)
                 ):
                     perf.close(t["sid"], "SL")
                     t["status"] = "SL"
