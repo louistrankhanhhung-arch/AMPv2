@@ -734,7 +734,6 @@ def loop_scheduler():
                 wk_key = (now.isocalendar().year, now.isocalendar().week)
                 if last_kpi_week != wk_key:
                     last_kpi_week = wk_key
-                    from datetime import timedelta
                     # cửa sổ tuần: từ 00:00 thứ Bảy tuần trước đến thời điểm chạy hiện tại
                     today_00 = now.replace(hour=0, minute=0, second=0, microsecond=0)
                     week_start = today_00 - timedelta(days=7)
