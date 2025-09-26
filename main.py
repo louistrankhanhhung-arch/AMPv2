@@ -253,7 +253,7 @@ def _send_open_status(now):
         perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR", "./data")))
         items = perf.list_open_status()
         if items:
-            lines = [f"<b>🕘 {now.strftime('%d/%m %H:%M')} — Tình trạng lệnh mở</b>"]
+            lines = [f"<b> 🧭 Các lệnh đang mở</b>"]
             for it in items:
                 lines.append(f"{it['symbol']} — {it['status']}")
             html = "\n".join(lines)
@@ -262,7 +262,7 @@ def _send_open_status(now):
             if tn:
                 tn.send_channel(html)
         else:
-            msg = f"🕘 {now.strftime('%d/%m %H:%M')} — Không có lệnh mở."
+            msg = f"🧭 Không có lệnh đang mở."
             log.info(msg)
             tn = _get_notifier()
             if tn:
