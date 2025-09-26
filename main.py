@@ -695,7 +695,7 @@ def loop_scheduler():
         # NEW: Lên lịch gửi báo cáo lệnh mở vào 08:57 & 20:57 (giờ VN)
         try:
             # Vòng lặp tick mỗi 5 phút, nên đặt lịch ở :55 rồi Timer 120s để bắn đúng :57
-            if now.minute == 55 and now.hour in (8, 20) and now.second < 10:
+            if now.minute == 55 and now.hour in (8,) and now.second < 10:
                 key = (now.year, now.month, now.day, now.hour)
                 if globals().get("_last_status57_timer_key") != key:
                     globals()["_last_status57_timer_key"] = key
