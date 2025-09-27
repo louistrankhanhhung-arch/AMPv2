@@ -39,22 +39,6 @@ log = logging.getLogger("worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
                     format="%(asctime)s %(levelname)s %(message)s")
 
-def _open_status_since_ts() -> int:
-    """
-    Trả về epoch seconds mốc lọc 'Các lệnh đang mở'.
-    - Ưu tiên biến môi trường OPEN_STATUS_SINCE='YYYY-MM-DD' (Asia/Ho_Chi_Minh)
-    - Mặc định: 2025-09-25 00:00 (VN)
-    """
-    env_val = os.getenv("OPEN_STATUS_SINCE", "").strip()
-    if env_val:
-        try:
-            dt = datetime.strptime(env_val, "%Y-%m-%d").replace(tzinfo=TZ, hour=0, minute=0, second=0, microsecond=0)
-            return int(dt.timestamp())
-        except Exception:
-            pass
-    default_dt = datetime(2025, 9, 25, 0, 0, 0, tzinfo=TZ)
-    return int(default_dt.timestamp())
-
 def _current_vn_window(now_local: datetime) -> tuple[int, int] | None:
     """
     Nếu now_local (Asia/Ho_Chi_Minh) đang nằm trong một trong hai khung:
@@ -263,48 +247,6 @@ def _get_notifier():
             TN = False
     return TN
 # --- end telegram notifier helper ---
-
-def _send_open_status(now):
-    try:
-        perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR", "./data")))
-        items = perf.list_open_status()
-        # --- Lọc theo mốc thời gian yêu cầu ---
-        since_ts = _open_status_since_ts()
-        def _extract_open_ts(it: dict) -> int:
-            """
-            Cố gắng lấy timestamp mở lệnh từ nhiều tên trường có thể có:
-            - 'opened_at', 'created_at', 'ts_open', 'created_ts', 'ts'
-            Nếu không có, trả 0 để bị loại bởi bộ lọc.
-            """
-            for k in ("opened_at", "created_at", "ts_open", "created_ts", "ts"):
-                v = it.get(k)
-                if v is None:
-                    continue
-                try:
-                    return int(float(v))
-                except Exception:
-                    continue
-            return 0
-        if items:
-            items = [it for it in items if _extract_open_ts(it) >= since_ts]
-
-        if items:
-            lines = [f"<b> 🧭 Các lệnh đang mở</b>"]
-            for it in items:
-                lines.append(f"{it['symbol']} — {it['status']}")
-            html = "\n".join(lines)
-            log.info(html.replace("<b>","").replace("</b>",""))  # log plain
-            tn = _get_notifier()
-            if tn:
-                tn.send_channel(html)
-        else:
-            msg = f"🧭 Không có lệnh đang mở."
-            log.info(msg)
-            tn = _get_notifier()
-            if tn:
-                tn.send_channel(msg)
-    except Exception as e:
-        log.warning("send_open_status failed: %s", e)
 
 def split_into_6_blocks(symbols: List[str]) -> List[List[str]]:
     """Stable split into 6 blocks: [s[0], s[6], ...], [s[1], s[7], ...], ..."""
