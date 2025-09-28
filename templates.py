@@ -149,11 +149,6 @@ def render_kpi_teaser_two_parts(detail_24h: dict,
         totals.get("sum_pct", 0.0) or 0.0
     )
 
-    # Lợi nhuận trước đòn bẩy (theo %), đã xét weight nếu có
-    eq1x = sum_pct_w
-    # PnL/$100 rủi ro: 1R = $100 rủi ro ⇒ tổng R (weighted) * 100
-    pnl_per_100 = sumR_w * 100.0
-
     tp_counts = (totals.get("tp_counts") or {})
     # Lấy đủ 5TP với fallback 0
     c5 = int(tp_counts.get("TP5", 0) or 0)
