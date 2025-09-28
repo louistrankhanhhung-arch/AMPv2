@@ -123,17 +123,28 @@ def render_kpi_teaser_two_parts(detail_24h: dict,
     if not items:
         lines += ["Không có tín hiệu nào phù hợp.", ""]
     else:
-        # Mở rộng icon cho 5TP
+        # Danh sách lệnh đã đóng (tận dụng lại code/biến sẵn có)
+        lines.append("<b>Danh sách lệnh đã đóng (24H):</b>")
         icons = {"TP1": "🟢", "TP2": "🟢", "TP3": "🟢", "TP4": "🟢", "TP5": "🟢", "SL": "⛔"}
         for it in items:
-            status = str(it.get("status") or "")
+            status = str(it.get("status") or it.get("closed_reason") or "").upper()
             icon = icons.get(status, "⚪")
+            # pct ưu tiên số đã weight; fallback số thô
             try:
-                pct = float(it.get("pct") or 0.0)
+                pct = float(it.get("pct_weighted") or it.get("pct") or 0.0)
             except Exception:
                 pct = 0.0
-            sym = it.get("symbol") or "?"
-            lines.append(f"{icon} {sym}: {pct:+.2f}%")
+            # R nếu có (ưu tiên R_weighted)
+            try:
+                Rv = float(it.get("R_weighted") or it.get("R") or 0.0)
+            except Exception:
+                Rv = 0.0
+            sym  = it.get("symbol") or "?"
+            diru = (it.get("dir") or it.get("direction") or "").upper()
+            lev  = _item_leverage(it)
+            lev_s = f" x{int(lev)}" if lev and lev > 0 else ""
+            dir_part = f" {diru}" if diru else ""
+            lines.append(f"{icon} {sym}{dir_part} • {status}: {pct:+.2f}% ({Rv:+.2f}R){lev_s}")
         lines.append("")
 
     totals = (detail_24h.get("totals") or {}) if isinstance(detail_24h, dict) else {}
