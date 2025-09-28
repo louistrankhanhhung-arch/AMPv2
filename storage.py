@@ -60,6 +60,7 @@ class SignalPerfDB:
             "dir": plan.get("DIRECTION"),
             "entry": plan.get("entry"),
             "sl": plan.get("sl"),
+            "risk_size_hint": plan.get("risk_size_hint") or plan.get("leverage") or plan.get("lev"),
             "tp1": plan.get("tp1") or plan.get("tp"),
             "tp2": plan.get("tp2"),
             "tp3": plan.get("tp3"),
@@ -200,7 +201,17 @@ class SignalPerfDB:
             sum_R += r_w
             win = (label != "SL")
             wins += int(win); losses += int(not win)
-            items.append({"sid": t.get("sid"), "symbol": t.get("symbol"), "status": label, "pct": pct, "R_w": r_w})
+            items.append({
+                "sid": t.get("sid"),
+                "symbol": t.get("symbol"),
+                "status": label,
+                "pct": pct,
+                # Chuẩn hóa: R đã scale-out 20% để template nhân leverage
+                "R_weighted": r_w,
+                "R": r_w,  # giữ tương thích ngược
+                # Đòn bẩy tư vấn per-signal để template đọc
+                "risk_size_hint": t.get("risk_size_hint"),
+            })
         n = len(items)
         win_rate = (wins / n) if n else 0.0
         avg_pct = (sum_pct / n) if n else 0.0
@@ -359,7 +370,11 @@ class SignalPerfDB:
                 "status": show_status,
                 "pct": float(pct),
                 "win": bool(win),
-                "R": float(R),
+                # Chuẩn hóa: R đã scale-out 20%
+                "R_weighted": float(R),
+                "R": float(R),  # giữ tương thích ngược
+                # Đòn bẩy tư vấn per-signal
+                "risk_size_hint": t.get("risk_size_hint"),
             })
 
         n = len(items)
@@ -446,7 +461,11 @@ class SignalPerfDB:
                 "status": show_status,
                 "pct": float(pct),
                 "win": bool(win),
-                "R": float(R),
+                # Chuẩn hóa: R đã scale-out 20%
+                "R_weighted": float(R),
+                "R": float(R),  # giữ tương thích ngược
+                # Đòn bẩy tư vấn per-signal
+                "risk_size_hint": t.get("risk_size_hint"),
             })
             sids_to_mark.append(t.get("sid"))
         n = len(items)
