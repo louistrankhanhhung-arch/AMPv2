@@ -61,7 +61,7 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
     risk = plan.get("risk_size_hint")
     if isinstance(risk, (int, float)):
         risk_disp = math.floor(float(risk))
-        don_bay_line = f"<b>Đòn bẩy:</b> x{risk_disp:.1f}"
+        don_bay_line = f"<b>Đòn bẩy:</b> x{int(risk_disp)}"
     else:
         don_bay_line = None
     lines = [
@@ -100,46 +100,13 @@ def render_summary(kpi: dict, scope: str="Daily") -> str:
       f"• Avg R: {kpi['avgR']:.2f}\n"
       f"• Total R: {kpi['sumR']:.2f}"
     )
-# NEW: KPI 24H chi tiết
-def render_kpi_24h(detail: dict, report_date_str: str, upgrade_url: str | None = None) -> str:
-    items = detail["items"]
-    totals = detail["totals"]
-    # 0) Header
-    lines = [f"<b>Kết quả giao dịch 24H qua — {report_date_str}</b>", ""]
-    # 1) Danh sách tín hiệu
-    if not items:
-        lines += ["Không có tín hiệu nào trong 24H qua.", ""]
-    else:
-        icons = {
-        "TP1": "🟢",
-        "TP2": "🟢",
-        "TP3": "🟢",
-        "SL": "⛔",
-    }
-    for it in detail["items"]:
-        status = it["status"]
-        icon = icons.get(status, "⚪")
-        line = f"{icon} {it['symbol']}: {it['pct']:.2f}%"
-        lines.append(line)
-    # 2) Đánh giá
-    lines += [
-        "<b>Đánh giá</b>:",
-        f"• Tổng lệnh đã đóng: {totals['n']}",
-        f"• Tổng lợi nhuận: {totals['sum_pct']:.2f}%",
-        f"• Lợi nhuận trung bình/lệnh: {totals['avg_pct']:.2f}%",
-        f"• Tỉ lệ thắng: {totals['win_rate']*100:.2f}%",
-        f"• Số lệnh thắng: {totals['wins']}",
-        f"• Số lệnh thua: {totals['losses']}",
-        ""
-    ]
-    # 3) Lời mời nâng cấp
-    if upgrade_url:
-        lines.append("🔒 <b>Nâng cấp Plus</b> để xem full tín hiệu & nhận thông báo sớm hơn.")
-        lines.append(f'<a href="{upgrade_url}">👉 Nâng cấp ngay</a>')
-    return "\n".join(lines)
 
 # NEW: Teaser 2 phần — Header + danh sách 24H, rồi khối hiệu suất NGÀY (today)
-def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dict, report_date_str: str) -> str:
+def render_kpi_teaser_two_parts(detail_24h: dict,
+                                kpi_day: dict,
+                                detail_day: dict,
+                                report_date_str: str,
+                                upgrade_url: str | None = None) -> str:
     lines = [f"🧭 <b>Kết quả giao dịch 24H qua — {report_date_str}</b>", ""]
     items = detail_24h.get("items", []) or []
     if not items:
@@ -192,32 +159,39 @@ def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dic
 
     # (KPI 24H) after-leverage calculations
     LEV = _report_leverage()
-    sum_pct_lev = sum_pct * LEV
-    sum_R_lev = sum_R * LEV
-    pnl_per_100_lev = (sum_R * 100.0) * LEV
-    avgR = (sum_R / max(1, n))
-    avg_usd_lev = (avgR * 100.0) * LEV
-    avgR_lev = avgR * LEV
+    sum_pct_lev     = sum_pct_w * LEV
+    sum_R_lev       = sumR_w   * LEV
+    pnl_per_100_lev = (sumR_w * 100.0) * LEV
+    avgR            = (sumR_w / max(1, n))
+    avg_usd_lev     = (avgR * 100.0) * LEV
+    avgR_lev        = avgR * LEV
 
     # Build lines (new format/order)
     lines = [
-        f"<b>Kết quả giao dịch 24h qua</b>",
+        "📊 <b>Hiệu suất giao dịch:</b>",
         f"- Tổng lệnh đã đóng: {n}",
-        f"- Tỉ lệ thắng: {wr:.2f}%",
+        f"- Tỉ lệ thắng: {wr_pct:.2f}%",
         f"- Lợi nhuận sau đòn bẩy: {sum_pct_lev:.2f}%",
         f"- Lợi nhuận thực (risk $100/lệnh): ${pnl_per_100_lev:.0f}",
         f"- Lợi nhuận trung bình/lệnh: {avgR_lev:.2f}R (~${avg_usd_lev:.0f})",
         f"- Tổng R: {sum_R_lev:.2f}R",
-        f"- TP theo số lệnh: TP5: {tp5} / TP4: {tp4} / TP3: {tp3} / TP2: {tp2} / TP1: {tp1} / SL: {sl}",
+        f"- TP theo số lệnh: TP5: {c5} / TP4: {c4} / TP3: {c3} / TP2: {c2} / TP1: {c1} / SL: {cs}",
     ]
+    # Lời mời nâng cấp
+    if upgrade_url:
+        lines.append("🔒 <b>Nâng cấp Plus</b> để xem full tín hiệu & nhận thông báo sớm hơn.")
+        lines.append(f'<a href="{upgrade_url}">👉 Nâng cấp ngay</a>')
     return "\n".join(lines)
 
 # NEW: KPI tuần (8:16 thứ 7)
-def render_kpi_week(detail: dict, week_label: str, risk_per_trade_usd: float = 100.0) -> str:
+def render_kpi_week(detail: dict,
+                    week_label: str,
+                    risk_per_trade_usd: float = 100.0,
+                    upgrade_url: str | None = None) -> str:
     totals = detail.get("totals") or {}
     n   = int(totals.get("n") or 0)
     wr  = float(totals.get("win_rate") or 0.0) * 100.0
-    sum_pct = float(totals.get("sum_pct") or 0.0)
+    sum_pct = float(totals.get("sum_pct_weighted") or totals.get("sum_pct_w") or totals.get("sum_pct") or 0.0)
     sum_R   = float(totals.get("sum_R_weighted") or totals.get("sum_R") or 0.0)
     pnl_real = sum_R * risk_per_trade_usd
     avg_real = (pnl_real / n) if n else 0.0
@@ -233,7 +207,7 @@ def render_kpi_week(detail: dict, week_label: str, risk_per_trade_usd: float = 1
 
     # Build lines (new format/order)
     lines = [
-        f"<b>Kết quả giao dịch tuần qua - {week_label}</b>",
+        f"<b>🧭 Kết quả giao dịch tuần qua - {week_label}</b>",
         f"- Tổng lệnh đã đóng: {n}",
         f"- Tỉ lệ thắng: {wr:.2f}%",
         f"- Lợi nhuận sau đòn bẩy: {sum_pct_lev:.2f}%",
@@ -242,6 +216,10 @@ def render_kpi_week(detail: dict, week_label: str, risk_per_trade_usd: float = 1
         f"- Tổng R: {sum_R_lev:.2f}R",
         f"- TP theo số lệnh: TP5: {_i('TP5')} / TP4: {_i('TP4')} / TP3: {_i('TP3')} / TP2: {_i('TP2')} / TP1: {_i('TP1')} / SL: {_i('SL')}",
     ]
+    # Lời mời nâng cấp
+    if upgrade_url:
+        lines.append("🔒 <b>Nâng cấp Plus</b> để xem full tín hiệu & nhận báo cáo sớm hơn.")
+        lines.append(f'<a href="{upgrade_url}">👉 Nâng cấp ngay</a>')
     return "\n".join(lines)
 
 
