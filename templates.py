@@ -1,7 +1,19 @@
 
 from datetime import datetime, timezone
 from typing import Dict, Any
-import math
+import math, os
+
+# --------- leverage helper for reports ----------
+def _report_leverage() -> float:
+    """
+    Hệ số đòn bẩy cho mục KPI 24H/tuần.
+    Lấy từ ENV REPORT_LEVERAGE (vd: 3 cho x3). Mặc định 1.0 nếu không set/không hợp lệ.
+    """
+    try:
+        lv = float(os.getenv("REPORT_LEVERAGE", "1"))
+        return lv if lv > 0 else 1.0
+    except Exception:
+        return 1.0
 
 def fmt_price(v):
     """
@@ -178,15 +190,25 @@ def render_kpi_teaser_two_parts(detail_24h: dict, kpi_day: dict, detail_day: dic
     n_closed = n
     wr_pct = (wins_tp / n_closed * 100.0) if n_closed else 0.0
 
-    lines += [
-        "📊 <b>Hiệu suất giao dịch:</b>",
+    # (KPI 24H) after-leverage calculations
+    LEV = _report_leverage()
+    sum_pct_lev = sum_pct * LEV
+    sum_R_lev = sum_R * LEV
+    pnl_per_100_lev = (sum_R * 100.0) * LEV
+    avgR = (sum_R / max(1, n))
+    avg_usd_lev = (avgR * 100.0) * LEV
+    avgR_lev = avgR * LEV
+
+    # Build lines (new format/order)
+    lines = [
+        f"<b>Kết quả giao dịch 24h qua</b>",
         f"- Tổng lệnh đã đóng: {n}",
-        f"- Tỉ lệ thắng: {wr_pct:.0f}%",
-        f"- Lợi nhuận trước đòn bẩy (tổng): {eq1x:+.2f}%",
-        f"- Tổng R (weighted): {sumR_w:+.1f}R",
-        f"- Lợi nhuận thực (risk $100/lệnh): ${pnl_per_100:.0f}",
-        f"- Lợi nhuận trung bình/lệnh: {sumR_w/n:.2f}R (~${(sumR_w/n*100):.0f})",
-        f"- TP theo số lệnh: TP5: {c5} / TP4: {c4} / TP3: {c3} / TP2: {c2} / TP1: {c1} / SL: {cs}",
+        f"- Tỉ lệ thắng: {wr:.2f}%",
+        f"- Lợi nhuận sau đòn bẩy: {sum_pct_lev:.2f}%",
+        f"- Lợi nhuận thực (risk $100/lệnh): ${pnl_per_100_lev:.0f}",
+        f"- Lợi nhuận trung bình/lệnh: {avgR_lev:.2f}R (~${avg_usd_lev:.0f})",
+        f"- Tổng R: {sum_R_lev:.2f}R",
+        f"- TP theo số lệnh: TP5: {tp5} / TP4: {tp4} / TP3: {tp3} / TP2: {tp2} / TP1: {tp1} / SL: {sl}",
     ]
     return "\n".join(lines)
 
@@ -201,15 +223,24 @@ def render_kpi_week(detail: dict, week_label: str, risk_per_trade_usd: float = 1
     avg_real = (pnl_real / n) if n else 0.0
     tpc = totals.get("tp_counts") or {}
     def _i(x): return int(tpc.get(x) or 0)
+    # (KPI TUẦN) after-leverage calculations
+    LEV = _report_leverage()
+    sum_pct_lev = sum_pct * LEV
+    sum_R_lev = sum_R * LEV
+    pnl_real_lev = (sum_R * 100.0) * LEV                 # risk $100/lệnh
+    avgR = (sum_R / max(1, n))
+    avg_real_lev = (avgR * 100.0) * LEV
+
+    # Build lines (new format/order)
     lines = [
         f"<b>Kết quả giao dịch tuần qua - {week_label}</b>",
         f"- Tổng lệnh đã đóng: {n}",
         f"- Tỉ lệ thắng: {wr:.2f}%",
-        f"  - Lợi nhuận trước đòn bẩy (tổng): {sum_pct:.2f}%",
-        f"  - Tổng R (weighted): {sum_R:.2f}R",
-        f"  - Lợi nhuận thực (risk $100/lệnh): ${pnl_real:.0f}",
-        f"  - Lợi nhuận trung bình/lệnh: ${avg_real:.0f}",
-        f"  - TP theo số lệnh: TP5: {_i('TP5')} / TP4: {_i('TP4')} / TP3: {_i('TP3')} / TP2: {_i('TP2')} / TP1: {_i('TP1')} / SL: {_i('SL')}",
+        f"- Lợi nhuận sau đòn bẩy: {sum_pct_lev:.2f}%",
+        f"- Lợi nhuận thực (risk $100/lệnh): ${pnl_real_lev:.0f}",
+        f"- Lợi nhuận trung bình/lệnh: {avgR*LEV:.2f}R (~${avg_real_lev:.0f})",
+        f"- Tổng R: {sum_R_lev:.2f}R",
+        f"- TP theo số lệnh: TP5: {_i('TP5')} / TP4: {_i('TP4')} / TP3: {_i('TP3')} / TP2: {_i('TP2')} / TP1: {_i('TP1')} / SL: {_i('SL')}",
     ]
     return "\n".join(lines)
 
