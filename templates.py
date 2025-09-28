@@ -15,6 +15,17 @@ def _report_leverage() -> float:
     except Exception:
         return 1.0
 
+# Lấy leverage tư vấn từ 1 item (signal/trade)
+def _item_leverage(it: dict) -> float:
+    for k in ("risk_size_hint", "leverage", "lev", "advice_leverage"):
+        try:
+            v = float(it.get(k)) if it and (k in it) else 0.0
+            if v and v > 0:
+                return v
+        except Exception:
+            continue
+    return 0.0  # 0 nghĩa là không có dữ liệu
+
 def fmt_price(v):
     """
     Auto-format cho CRYPTO:
@@ -157,14 +168,60 @@ def render_kpi_teaser_two_parts(detail_24h: dict,
     n_closed = n
     wr_pct = (wins_tp / n_closed * 100.0) if n_closed else 0.0
 
-    # (KPI 24H) after-leverage calculations
-    LEV = _report_leverage()
-    sum_pct_lev     = sum_pct_w * LEV
-    sum_R_lev       = sumR_w   * LEV
-    pnl_per_100_lev = (sumR_w * 100.0) * LEV
-    avgR            = (sumR_w / max(1, n))
-    avg_usd_lev     = (avgR * 100.0) * LEV
-    avgR_lev        = avgR * LEV
+    # (KPI 24H) after-leverage calculations — per-signal leverage
+    items_for_lev = detail_24h.get("items") or []
+    sum_R_items_lev = 0.0
+    sum_pct_items_lev = 0.0
+    have_item_level = False
+    lev_list = []
+    for it in items_for_lev:
+        lev_i = _item_leverage(it)
+        if lev_i > 0:
+            lev_list.append(lev_i)
+        # Nếu item có R thì dùng theo item; nếu không, sẽ fallback sau
+        try:
+            Rw_i = float(it.get("R_weighted") or it.get("R_w") or it.get("R") or 0.0)
+            if lev_i > 0 and Rw_i != 0.0:
+                sum_R_items_lev += Rw_i * lev_i
+                have_item_level = True
+        except Exception:
+            pass
+        # % theo item (nếu có)
+        try:
+            pctw_i = float(it.get("pct_weighted") or it.get("pct_w") or it.get("pct") or 0.0)
+            if lev_i > 0 and pctw_i != 0.0:
+                sum_pct_items_lev += pctw_i * lev_i
+        except Exception:
+            pass
+
+    if have_item_level:
+        sum_R_lev = sum_R_items_lev
+        # Nếu không gom được % theo item, fallback theo lev_avg
+        if sum_pct_items_lev != 0.0:
+            sum_pct_lev = sum_pct_items_lev
+        else:
+            lev_avg = (sum(lev_list) / len(lev_list)) if lev_list else 0.0
+            if lev_avg > 0:
+                sum_pct_lev = sum_pct_w * lev_avg
+            else:
+                # Không có lev per-item → fallback ENV
+                LEV = _report_leverage()
+                sum_pct_lev = sum_pct_w * LEV
+                sum_R_lev   = sumR_w   * LEV
+    else:
+        # Không có R per-item → dùng lev_avg nếu có, ngược lại ENV
+        lev_avg = (sum(lev_list) / len(lev_list)) if lev_list else 0.0
+        if lev_avg > 0:
+            sum_R_lev   = sumR_w   * lev_avg
+            sum_pct_lev = sum_pct_w * lev_avg
+        else:
+            LEV = _report_leverage()
+            sum_R_lev   = sumR_w   * LEV
+            sum_pct_lev = sum_pct_w * LEV
+
+    pnl_per_100_lev = sum_R_lev * 100.0
+    avgR_lev        = (sum_R_lev / max(1, n))
+    avg_usd_lev     = avgR_lev * 100.0
 
     # Build lines (new format/order)
     lines = [
@@ -197,13 +254,55 @@ def render_kpi_week(detail: dict,
     avg_real = (pnl_real / n) if n else 0.0
     tpc = totals.get("tp_counts") or {}
     def _i(x): return int(tpc.get(x) or 0)
-    # (KPI TUẦN) after-leverage calculations
-    LEV = _report_leverage()
-    sum_pct_lev = sum_pct * LEV
-    sum_R_lev = sum_R * LEV
-    pnl_real_lev = (sum_R * 100.0) * LEV                 # risk $100/lệnh
-    avgR = (sum_R / max(1, n))
-    avg_real_lev = (avgR * 100.0) * LEV
+    # (KPI TUẦN) after-leverage calculations — per-signal leverage
+    items_for_lev = detail.get("items") or []
+    sum_R_items_lev = 0.0
+    sum_pct_items_lev = 0.0
+    have_item_level = False
+    lev_list = []
+    for it in items_for_lev:
+        lev_i = _item_leverage(it)
+        if lev_i > 0:
+            lev_list.append(lev_i)
+        try:
+            Rw_i = float(it.get("R_weighted") or it.get("R_w") or it.get("R") or 0.0)
+            if lev_i > 0 and Rw_i != 0.0:
+                sum_R_items_lev += Rw_i * lev_i
+                have_item_level = True
+        except Exception:
+            pass
+        try:
+            pctw_i = float(it.get("pct_weighted") or it.get("pct_w") or it.get("pct") or 0.0)
+            if lev_i > 0 and pctw_i != 0.0:
+                sum_pct_items_lev += pctw_i * lev_i
+        except Exception:
+            pass
+
+    if have_item_level:
+        sum_R_lev = sum_R_items_lev
+        if sum_pct_items_lev != 0.0:
+            sum_pct_lev = sum_pct_items_lev
+        else:
+            lev_avg = (sum(lev_list) / len(lev_list)) if lev_list else 0.0
+            if lev_avg > 0:
+                sum_pct_lev = sum_pct * lev_avg
+            else:
+                LEV = _report_leverage()
+                sum_pct_lev = sum_pct * LEV
+                sum_R_lev   = sum_R   * LEV
+    else:
+        lev_avg = (sum(lev_list) / len(lev_list)) if lev_list else 0.0
+        if lev_avg > 0:
+            sum_R_lev   = sum_R   * lev_avg
+            sum_pct_lev = sum_pct * lev_avg
+        else:
+            LEV = _report_leverage()
+            sum_R_lev   = sum_R   * LEV
+            sum_pct_lev = sum_pct * LEV
+
+    pnl_real_lev  = sum_R_lev * 100.0           # risk $100/lệnh
+    avgR_lev      = (sum_R_lev / max(1, n))
+    avg_real_lev  = avgR_lev * 100.0
 
     # Build lines (new format/order)
     lines = [
@@ -212,7 +311,7 @@ def render_kpi_week(detail: dict,
         f"- Tỉ lệ thắng: {wr:.2f}%",
         f"- Lợi nhuận sau đòn bẩy: {sum_pct_lev:.2f}%",
         f"- Lợi nhuận thực (risk $100/lệnh): ${pnl_real_lev:.0f}",
-        f"- Lợi nhuận trung bình/lệnh: {avgR*LEV:.2f}R (~${avg_real_lev:.0f})",
+        f"- Lợi nhuận trung bình/lệnh: {avgR_lev:.2f}R (~${avg_real_lev:.0f})",
         f"- Tổng R: {sum_R_lev:.2f}R",
         f"- TP theo số lệnh: TP5: {_i('TP5')} / TP4: {_i('TP4')} / TP3: {_i('TP3')} / TP2: {_i('TP2')} / TP1: {_i('TP1')} / SL: {_i('SL')}",
     ]
