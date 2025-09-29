@@ -6,6 +6,7 @@ engine_adapter.py
 from typing import Dict, Any, List, Optional, Iterable
 from tiny_core_side_state import SideCfg, run_side_state_core
 import os
+from evidence_evaluators import _reversal_signal
 
 def _last_closed_bar(df):
     """
@@ -199,6 +200,19 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     eb = evidence_bundle.get("evidence") or evidence_bundle  # tolerate both shapes
     cfg = SideCfg()
     dec = run_side_state_core(features_by_tf, eb, cfg)
+
+    # -------- REVERSAL GUARD (filter before release) --------
+    try:
+        if dec.side in ("long", "short") and _reversal_signal(eb, dec.side.upper()):
+            dec.decision = "WAIT"
+            reasons = list(dec.reasons or [])
+            if "guard:reversal" not in reasons:
+                reasons.append("guard:reversal")
+            dec.reasons = reasons
+    except Exception as e:
+        # Không chặn nếu check reversal lỗi, chỉ log warning
+        import logging
+        logging.getLogger(__name__).warning(f"Reversal guard check failed for {symbol}: {e}")
 
     # Build plan (legacy fields)
     tps = dec.setup.tps or []
