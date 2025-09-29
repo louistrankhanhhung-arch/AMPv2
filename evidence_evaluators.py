@@ -67,13 +67,14 @@ def _rev_eval_from_df(side_up: str, df4: pd.DataFrame | None, df1: pd.DataFrame 
 
         if side_up == "LONG":
             # Yếu tố “mềm” (cần >=2)
-            if (e20 == e20) and (e50 == e50) and (c4 < e50) and (e20 < e50):
-                conds.append("ema20<ema50 & close<ema50(4H)")
-            if (bmid == bmid) and atr > 0 and (c4 < (bmid - 0.25*atr)):
-                conds.append("close < BBmid - 0.15*ATR(4H)")
+            if (e20 == e20) and (e50 == e50) and (c4 < (e50 - 0.10*atr)) and (e20 < e50):
+                conds.append("close<ema50-0.1ATR & ema20<ema50(4H)")
+            if (bmid == bmid) and atr > 0 and (c4 < (bmid - 0.35*atr)):
+                conds.append("close < BBmid - 0.35*ATR(4H)")
             if rsi1 is not None and rsi1 <= 35.0:
                 conds.append("RSI(1H)≤35")
-            if (rsi1 is not None) and (rsi1_prev is not None) and (rsi1_prev > 50.0) and (rsi1 < 45.0):
+            rsi_cross = (rsi1 is not None) and (rsi1_prev is not None) and (rsi1_prev > 50.0) and (rsi1 < 45.0)
+            if rsi_cross:
                 conds.append("RSI(1H) bear cross 50→45")
             # Mẫu nến mạnh (1 điều kiện đủ)
             if prev4 is not None:
@@ -84,13 +85,14 @@ def _rev_eval_from_df(side_up: str, df4: pd.DataFrame | None, df1: pd.DataFrame 
                 if (c4 < o4) and (o4 >= cp) and (c4 <= op):
                     strong.append("bearish_engulfing(4H)")
         else:  # SHORT
-            if (e20 == e20) and (e50 == e50) and (c4 > e50) and (e20 > e50):
-                conds.append("ema20>ema50 & close>ema50(4H)")
-            if (bmid == bmid) and atr > 0 and (c4 > (bmid + 0.25*atr)):
-                conds.append("close > BBmid + 0.15*ATR(4H)")
+            if (e20 == e20) and (e50 == e50) and (c4 > (e50 + 0.10*atr)) and (e20 > e50):
+                conds.append("close>ema50+0.1ATR & ema20>ema50(4H)")
+            if (bmid == bmid) and atr > 0 and (c4 > (bmid + 0.35*atr)):
+                conds.append("close > BBmid + 0.35*ATR(4H)")
             if rsi1 is not None and rsi1 >= 65.0:
                 conds.append("RSI(1H)≥65")
-            if (rsi1 is not None) and (rsi1_prev is not None) and (rsi1_prev < 50.0) and (rsi1 > 55.0):
+            rsi_cross = (rsi1 is not None) and (rsi1_prev is not None) and (rsi1_prev < 50.0) and (rsi1 > 55.0)
+            if rsi_cross:
                 conds.append("RSI(1H) bull cross 50→55")
             if prev4 is not None:
                 o4 = float(last4.get("open", last4["close"]))
@@ -100,10 +102,11 @@ def _rev_eval_from_df(side_up: str, df4: pd.DataFrame | None, df1: pd.DataFrame 
                 if (c4 > o4) and (o4 <= cp) and (c4 >= op):
                     strong.append("bullish_engulfing(4H)")
 
-        if strong:
-            return True, strong[0]
-        if len(conds) >= 3:
-            return True, " & ".join(conds[:2])
+        # Cần nến mạnh + ≥1 điều kiện mềm, hoặc ≥4 điều kiện mềm (và bắt buộc có RSI-cross)
+        if strong and conds:
+            return True, f"{strong[0]} + {conds[0]}"
+        if (len(conds) >= 4) and rsi_cross:
+            return True, " & ".join(conds[:3])
         return False, ""
     except Exception:
         return False, ""
