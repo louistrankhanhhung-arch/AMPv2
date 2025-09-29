@@ -59,7 +59,7 @@ class SideCfg:
 
     # EMA50 4H cushion for SL
     use_ema50_sl_cushion: bool = True
-    ema50_sl_cushion_atr_frac: float = 0.15  # 0.10–0.20 ATR recommended
+    ema50_sl_cushion_atr_frac: float = 0.30
 
     # --- 4H confirm rules for breakout/continuation ---
     use_4h_confirm: bool = True
@@ -181,7 +181,7 @@ def _apply_sl_upgrades(side_meta: Any, side: str, entry: float, sl: float, cfg: 
         if sl_new < sl_ceiling:
             sl_new = sl_ceiling
 
-    # 3) EMA50 4H cushion (optional)
+    # 3) EMA50 4H cushion (optional, regime-adaptive + NATR floor)
     if getattr(cfg, "use_ema50_sl_cushion", True):
         ema50 = _safe_get(side_meta, "ema50_4h", None)
         try:
@@ -189,7 +189,35 @@ def _apply_sl_upgrades(side_meta: Any, side: str, entry: float, sl: float, cfg: 
         except Exception:
             ema50 = None
         if isinstance(ema50, (int, float)) and (ema50 == ema50):  # not NaN
-            c = max(0.0, float(getattr(cfg, "ema50_sl_cushion_atr_frac", 0.15)) * atr)
+            # --- hệ số cushion theo regime (cho phép override bằng ENV) ---
+            try:
+                regime_cur = str(_safe_get(side_meta, "regime", "normal"))
+            except Exception:
+                regime_cur = "normal"
+            def _env_float(name: str, default: float) -> float:
+                try:
+                    import os
+                    v = float(os.getenv(name, str(default)))
+                    return v if v > 0 else default
+                except Exception:
+                    return default
+            k_low    = _env_float("EMA50_CUSHION_LOW",    0.20)
+            k_normal = _env_float("EMA50_CUSHION_NORMAL", 0.30)
+            k_high   = _env_float("EMA50_CUSHION_HIGH",   0.35)
+            k_cfg    = float(getattr(cfg, "ema50_sl_cushion_atr_frac", 0.30) or 0.30)  # fallback
+            k = k_high if regime_cur == "high" else (k_low if regime_cur == "low" else k_normal)
+            # nếu user cố tình set trong cfg, dùng k_cfg như mặc định của 'normal'
+            if regime_cur == "normal" and k_cfg != 0.30:
+                k = k_cfg
+            # --- tính cushion & áp floor NATR theo % giá ---
+            c = max(0.0, k * atr)
+            try:
+                px = float(_safe_get(side_meta, "price", float("nan")))
+            except Exception:
+                px = float("nan")
+            natr_floor = _env_float("EMA50_CUSHION_MIN_NATR", 0.004)  # 0.40% giá
+            if (px == px) and px > 0:
+                c = max(c, natr_floor * px)
             if side == "long":
                 sl_floor = float(ema50) - c
                 if sl_new > sl_floor:
