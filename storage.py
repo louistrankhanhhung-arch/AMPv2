@@ -371,8 +371,10 @@ class SignalPerfDB:
                 price_hit = t.get("sl"); win = False; show_status = "SL"; tp_counts["SL"] += 1
 
             if early_close_no_tp:
-                pct = 0.0
-                R = 0.0
+                # ưu tiên dùng số đã lưu tại thời điểm close
+                pct = float(t.get("close_pct") or 0.0)
+                R = float(t.get("realized_R") or 0.0)  # đã weighted 20% nếu theo patch main.py
+                show_status = "CLOSE"; win = False
             else:
                 pct = _pct_for_hit(t, price_hit)
                 R = float(t.get("realized_R", 0.0) or 0.0)
@@ -457,7 +459,8 @@ class SignalPerfDB:
             win = False; price_hit = None; show_status = status
             if early_close_no_tp:
                 show_status = "CLOSE"; win = False
-                pct = 0.0; R = 0.0
+                pct = float(t.get("close_pct") or 0.0)
+                R = float(t.get("realized_R") or 0.0)
             elif status == "TP5" or ("TP5" in hits):
                 price_hit = t.get("tp5"); win = True; show_status = "TP5"; tp_counts["TP5"] += 1
             elif status == "TP4" or ("TP4" in hits):
