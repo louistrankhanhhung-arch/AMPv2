@@ -345,7 +345,7 @@ class SignalPerfDB:
             hits = (t.get("hits") or {})
 
             # Chỉ nhận các lệnh đã ĐÓNG: TP3 / SL / CLOSE
-            if status not in ("TP3","SL","CLOSE"):
+            if status not in ("TP1","TP2","TP3","TP4","TP5","SL","CLOSE"):
                 continue
             # CLOSE sớm chưa có TP: ghi nhận với pct=0, R=0, win=False
             early_close_no_tp = (
@@ -488,6 +488,7 @@ class SignalPerfDB:
             items.append({
                 "sid": (t.get("sid") or ""),
                 "symbol": (t.get("symbol") or "").upper(),
+                "dir": (t.get("dir") or t.get("direction") or "").upper(),
                 "status": show_status,
                 "pct": float(pct),
                 "win": bool(win),
