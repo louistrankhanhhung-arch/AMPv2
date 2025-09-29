@@ -202,14 +202,20 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     dec = run_side_state_core(features_by_tf, eb, cfg)
 
     # -------- REVERSAL GUARD (filter before release) --------
+    # Dùng style (side, df4, df1) để chắc chắn dùng đúng DataFrame đã đóng nến.
     try:
-        bundle_for_rev = evidence_bundle if isinstance(evidence_bundle, dict) else {"features_by_tf": features_by_tf, "evidence": eb}
-        if dec.side in ("long", "short") and _reversal_signal(bundle_for_rev, dec.side.upper()):
-            dec.decision = "WAIT"
-            reasons = list(dec.reasons or [])
-            if "guard:reversal" not in reasons:
+        df4 = (features_by_tf or {}).get("4H", {}).get("df")
+        df1 = (features_by_tf or {}).get("1H", {}).get("df")
+        if dec.side in ("long", "short"):
+            is_rev, why_rev = _reversal_signal(dec.side.upper(), df4, df1)
+            if is_rev:
+                dec.decision = "WAIT"
+                reasons = list(dec.reasons or [])
+                # ghi rõ lý do để trace trên log
                 reasons.append("guard:reversal")
-            dec.reasons = reasons
+                if why_rev:
+                    reasons.append(f"rev:{why_rev}")
+                dec.reasons = reasons
     except Exception as e:
         # Không chặn nếu check reversal lỗi, chỉ log warning
         import logging
