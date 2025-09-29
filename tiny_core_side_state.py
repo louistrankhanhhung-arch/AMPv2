@@ -480,19 +480,23 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si.rejection_side = rejection_side
     # adaptive guards from evidence (thiết lập 1 lần, không ghi đè kiểu)
     if isinstance(ev_adapt, dict):
-        liq_val = float(ev_adapt.get('liquidity_floor', 0.0) or 0.0)
-        si.liq_score = liq_val
-        # flag dùng cho guards — có thể tinh chỉnh ngưỡng theo regime
-         # Ví dụ: ngưỡng tùy regime (có thể chỉnh theo thực nghiệm)
-        reg = (ev_adapt.get("regime") or "normal")
-        thr_map = {"low": 0.70, "normal": 0.60, "high": 0.50}
-        thr = thr_map.get(reg, 0.60)
-        si.liquidity_floor = (liq_val >= thr)
+        # Dùng trực tiếp liquidity_ratio làm điểm số chẩn đoán
+        liq_ratio = ev_adapt.get('liquidity_ratio', None)
+        try:
+            liq_ratio = float(liq_ratio)
+        except Exception:
+            liq_ratio = float("nan")
+        si.liq_score = (liq_ratio if (liq_ratio == liq_ratio) else 0.0)
+        # Giữ đúng nghĩa: liquidity_floor là cờ boolean từ evaluator
+        si.liquidity_floor = bool(ev_adapt.get('liquidity_floor', False))
         si.is_slow = bool(ev_adapt.get('is_slow', False))
+        # Lưu tham chiếu ngưỡng (debug)
+        si.liq_thr = float(ev_adapt.get('liq_thr', 0.0) or 0.0)
     else:
         si.liq_score = 0.0
         si.liquidity_floor = False
         si.is_slow = False
+        si.liq_thr = 0.0
 
     si.false_break_long = false_break_long
     si.false_break_short = false_break_short    
@@ -568,6 +572,15 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         cond_long  = aligned_long  and ((inside or mini_ok_long)  if need_candle else True)
         cond_short = aligned_short and ((inside or mini_ok_short) if need_candle else True)
         liq_block  = bool(_safe_get_local(si, "liquidity_floor", False)) or (not bool(_safe_get_local(si, "hvn_ok", True)))
+        # BYPASS continuation:
+        # Nếu trend & momentum align mạnh và volume tilt >= 0 nhưng thiếu inside/mini,
+        # vẫn cho qua tiếp (đánh dấu bypass) — bước guard phía sau sẽ yêu cầu RR>=1.2.
+        bypass_long  = (tr > 0 and momo > 0 and vdir >= 0) and need_candle and (not (inside or mini_ok_long))
+        bypass_short = (tr < 0 and momo < 0 and vdir >= 0) and need_candle and (not (inside or mini_ok_short))
+        if (not liq_block) and (bypass_long or bypass_short):
+            side_c = "long" if bypass_long else "short"
+            meta.update({"gate": "continuation", "bypass_continuation": True})
+            return "trend_break", side_c, meta
         if votes3 and (cond_long or cond_short) and (not liq_block):
             side_c = "long" if cond_long else "short"
             meta.update({"gate": "continuation"})
@@ -855,7 +868,10 @@ def decide_5_gates(state: str, side: Optional[str], setup: Setup, si: SI, cfg: S
         if is_break:
             if not (rr1 is not None and rr1 >= 1.2):
                 reasons.append("near_heavy_zone")
-        # RETEST không chặn mặc định (vẫn hiển thị tag trong logs["WAIT"]["reasons"] nếu cần)
+        # RETEST: không block — chỉ WARN trong metadata để trader lưu ý
+        if not is_break:
+            dec.meta.setdefault("warnings", [])
+            dec.meta["warnings"].append("near_heavy_zone")
 
     # Thiếu dữ liệu thiết yếu?
     price = _safe_get(si, "price")
@@ -891,7 +907,15 @@ def decide_5_gates(state: str, side: Optional[str], setup: Setup, si: SI, cfg: S
             # si.retest_ok đã gộp pullback/throwback validator từ evidences
             pb_ok = bool(getattr(si, "retest_ok", False))
             if not (inside_ok or mini_ok or pb_ok):
-                reasons.append("need_pullback_or_inside")
+                bypass = bool(dec.meta.get("bypass_continuation", False))
+                rr_ok = bool(rr1 is not None and rr1 >= 1.2)
+                # Cần alignment mạnh + volume tilt >= 0 để bypass hợp lệ
+                tr_v = float(dec.meta.get("trend", 0.0) or 0.0)
+                mo_v = float(dec.meta.get("momo", 0.0) or 0.0)
+                v_v  = float(dec.meta.get("v", 0.0) or 0.0)
+                align_ok = ((side=="long" and tr_v>0 and mo_v>0) or (side=="short" and tr_v<0 and mo_v<0))
+                if not (bypass and rr_ok and align_ok and v_v >= 0):
+                    reasons.append("need_pullback_or_inside")
     except Exception:
         pass
 
