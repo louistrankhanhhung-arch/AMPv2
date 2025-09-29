@@ -420,7 +420,7 @@ class SignalPerfDB:
         totals["sum_pct_w"] = sum_pct
         return {"items": items, "totals": totals}
 
-    # === KPI 24h: chỉ lấy các lệnh ĐÓNG nhưng CHƯA từng được báo cáo ===
+    # === KPI 24h: các lệnh ĐÓNG trong 24h qua và CHƯA từng được báo cáo ===
     def kpis_24h_unreported(self) -> tuple[dict, list[str]]:
         def _pct_for_hit(t: dict, price_hit) -> float:
             try:
@@ -441,6 +441,9 @@ class SignalPerfDB:
             if status == "TP1": return float(rl.get("tp1") or rl.get("TP1") or 1.0)
             if status == "SL":  return -1.0
             return 0.0
+        import time
+        now = int(time.time())
+        cutoff_ts = now - 24*3600
         items, sids_to_mark = [], []
         tp_counts = {"TP1": 0, "TP2": 0, "TP3": 0, "TP4": 0, "TP5": 0, "SL": 0}
         for t in self._all().values():
@@ -448,6 +451,10 @@ class SignalPerfDB:
             hits = (t.get("hits") or {})
             # Nhận các lệnh đã đóng: TP5/TP4/TP3/SL/CLOSE
             if status not in ("TP5", "TP4", "TP3", "SL", "CLOSE"):
+                continue
+            # Chỉ lấy lệnh đóng trong 24h qua
+            closed_at = int(t.get("closed_at") or 0)
+            if closed_at < cutoff_ts or closed_at > now:
                 continue
             early_close_no_tp = (
                 status == "CLOSE"
