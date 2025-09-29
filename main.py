@@ -26,7 +26,7 @@ from kucoin_api import fetch_batch, _exchange  # spot-only; 1H drop-partial
 from indicators import enrich_indicators, enrich_more
 from feature_primitives import compute_features_by_tf
 from engine_adapter import decide
-from evidence_evaluators import build_evidence_bundle, Config
+from evidence_evaluators import build_evidence_bundle, Config, _reversal_signal
 
 from notifier_telegram import TelegramNotifier
 from storage import SignalPerfDB, JsonStore, UserDB
@@ -46,76 +46,6 @@ def _last_closed_row(df: pd.DataFrame) -> pd.Series | None:
         return df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
     except Exception:
         return None
-
-def _reversal_signal(side_up: str,
-                     df4: pd.DataFrame | None,
-                     df1: pd.DataFrame | None) -> tuple[bool, str]:
-    """
-    Nhận diện đảo chiều sớm (4H chủ đạo, 1H làm confirm nhẹ).
-    Đủ điều kiện CLOSE khi thoả ít nhất 2 điều kiện “mềm”, hoặc 1 mẫu nến đảo chiều “mạnh”.
-    LONG -> tín hiệu giảm, SHORT -> tín hiệu tăng.
-    """
-    try:
-        last4 = _last_closed_row(df4) if df4 is not None else None
-        prev4 = df4.iloc[-3] if (df4 is not None and len(df4) >= 3) else None
-        last1 = _last_closed_row(df1) if df1 is not None else None
-        if last4 is None:
-            return False, ""
-
-        # Lấy các mức/indicator 4H
-        c4  = float(last4.get("close", last4["close"]))
-        e20 = float(last4["ema20"]) if "ema20" in last4 else float("nan")
-        e50 = float(last4["ema50"]) if "ema50" in last4 else float("nan")
-        bmid= float(last4["bb_mid"]) if "bb_mid" in last4 else float("nan")
-        atr = float(last4["atr14"])  if "atr14" in last4 else 0.0
-        # RSI xác nhận từ 1H (nếu có)
-        rsi1 = None
-        if last1 is not None:
-            for col in ("rsi14","rsi","RSI"):
-                if col in last1.index:
-                    rsi1 = float(last1[col]); break
-
-        conds: list[str] = []
-        strong: list[str] = []
-
-        if side_up == "LONG":
-            # Yếu tố “mềm” (cần >=2)
-            if (e20 == e20) and (e50 == e50) and (c4 < e50) and (e20 < e50):
-                conds.append("ema20<ema50 & close<ema50(4H)")
-            if (bmid == bmid) and atr > 0 and (c4 < (bmid - 0.15*atr)):
-                conds.append("close < BBmid - 0.15*ATR(4H)")
-            if rsi1 is not None and rsi1 <= 40.0:
-                conds.append("RSI(1H)≤40")
-            # Mẫu nến mạnh (1 điều kiện đủ)
-            if prev4 is not None:
-                o4 = float(last4.get("open", last4["close"]))
-                op = float(prev4.get("open", prev4["close"]))
-                cp = float(prev4.get("close", prev4["close"]))
-                # Bearish engulfing 4H
-                if (c4 < o4) and (o4 >= cp) and (c4 <= op):
-                    strong.append("bearish_engulfing(4H)")
-        else:  # SHORT
-            if (e20 == e20) and (e50 == e50) and (c4 > e50) and (e20 > e50):
-                conds.append("ema20>ema50 & close>ema50(4H)")
-            if (bmid == bmid) and atr > 0 and (c4 > (bmid + 0.15*atr)):
-                conds.append("close > BBmid + 0.15*ATR(4H)")
-            if rsi1 is not None and rsi1 >= 60.0:
-                conds.append("RSI(1H)≥60")
-            if prev4 is not None:
-                o4 = float(last4.get("open", last4["close"]))
-                op = float(prev4.get("open", prev4["close"]))
-                cp = float(prev4.get("close", prev4["close"]))
-                # Bullish engulfing 4H
-                if (c4 > o4) and (o4 <= cp) and (c4 >= op):
-                    strong.append("bullish_engulfing(4H)")
-
-        if strong:
-            return True, strong[0]
-        if len(conds) >= 2:
-            return True, " & ".join(conds[:2])
-        return False, ""
-    except Exception:
-        return False, ""
 
 def _current_vn_window(now_local: datetime) -> tuple[int, int] | None:
     """
