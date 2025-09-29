@@ -443,8 +443,20 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 if perf.cooldown_active(symbol, seconds=24*3600):
                     log.info(f"[{symbol}] skip ENTER due to cooldown (24h)")
                 else:
+                    # ẢNH CHỤP HL tại thời điểm post để chống “hit quá khứ”
+                    def _cur_hl(df):
+                        return (float(df["high"].iloc[-1]), float(df["low"].iloc[-1])) if df is not None and not df.empty else (None, None)
+                    hi4, lo4 = _cur_hl(dfs.get("4H"))
+                    hi1, lo1 = _cur_hl(dfs.get("1H"))
                     sid, msg_id = tn.post_teaser(plan_for_teaser)
-                    perf.open(sid, plan_for_teaser, message_id=msg_id)
+                    perf.open(
+                        sid,
+                        plan_for_teaser,
+                        message_id=msg_id,
+                        posted_at=int(time.time()),
+                        hl0_4h_hi=hi4, hl0_4h_lo=lo4,
+                        hl0_1h_hi=hi1, hl0_1h_lo=lo1,
+                    )
             except Exception as e:
                 log.warning(f"[{symbol}] teaser post failed: {e}")
                 
@@ -472,12 +484,23 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
         if open_trades:
             tn2 = _get_notifier()
             for t in open_trades:
-                # Cross theo intrabar: LONG dùng HIGH, SHORT dùng LOW
+                # Baseline HL lúc phát lệnh — dùng 4H trước, thiếu thì 1H
+                hi0 = t.get("hl0_4h_hi") or t.get("hl0_1h_hi") or None
+                lo0 = t.get("hl0_4h_lo") or t.get("hl0_1h_lo") or None
+                eps = max(1e-8, (price_now or 0) * 1e-6)
+                # Cross theo intrabar nhưng phải vượt baseline để không đếm “quá khứ trong cùng nến”
                 def crossed(side, level):
+                    lvl = float(level)
                     if side == "LONG":
-                        return (hi is not None) and (hi >= float(level))
+                        cond = (hi is not None) and (hi >= lvl)
+                        if hi0 is not None:
+                            cond = cond and (hi > float(hi0) + eps)
+                        return cond
                     if side == "SHORT":
-                        return (lo is not None) and (lo <= float(level))
+                        cond = (lo is not None) and (lo <= lvl)
+                        if lo0 is not None:
+                            cond = cond and (lo < float(lo0) - eps)
+                        return cond
                     return False
                 side = (t.get("dir") or "").upper()
                 msg_id = t.get("message_id")
@@ -662,19 +685,25 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 # --- SL => đóng lệnh (fallback, nếu chưa CLOSE bởi reversal)
                 slv = t.get("sl")
                 has_tp_hit = bool(hits.get("TP1") or hits.get("TP2") or hits.get("TP3"))
-                if t.get("status") == "OPEN" and not has_tp_hit and slv and (
-                    (side == "LONG"  and lo is not None and lo <= slv) or
-                    (side == "SHORT" and hi is not None and hi >= slv)
-                ):
-                    perf.close(t["sid"], "SL")
-                    t["status"] = "SL"
-                    note = "⚠️ SL hit — Đóng lệnh."
-                    extra = {"margin_pct": margin_pct(float(slv))}
-                    if tn2:
-                        if msg_id:
-                            tn2.send_channel_update(int(msg_id), render_update(t, note, extra))
-                        else:
-                            tn2.send_channel(render_update(t, note, extra))
+                if t.get("status") == "OPEN" and not has_tp_hit and slv:
+                    if side == "LONG":
+                        hit_sl = (lo is not None and lo <= slv)
+                        if lo0 is not None:
+                            hit_sl = hit_sl and (lo < float(lo0) - eps)
+                    else:  # SHORT
+                        hit_sl = (hi is not None and hi >= slv)
+                        if hi0 is not None:
+                            hit_sl = hit_sl and (hi > float(hi0) + eps)
+                    if hit_sl:
+                        perf.close(t["sid"], "SL")
+                        t["status"] = "SL"
+                        note = "⚠️ SL hit — Đóng lệnh."
+                        extra = {"margin_pct": margin_pct(float(slv))}
+                        if tn2:
+                            if msg_id:
+                                tn2.send_channel_update(int(msg_id), render_update(t, note, extra))
+                            else:
+                                tn2.send_channel(render_update(t, note, extra))
 
         # nếu không có open_trades -> không làm gì, không log warning
     except Exception as e:
