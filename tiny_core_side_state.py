@@ -728,15 +728,29 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         if (tr < 0 and momo < 0 and vdir < 0 and ib):
             major_short += 1
 
-        # Tie & margin policy:
+        # Tie & margin policy (regime-adaptive):
+        # side_margin: 0.2 for low/normal, 0.3 for high
+        # retest thresholds: 0.65 (high), 0.70 (normal), 0.75 (low)
+        try:
+            regime = (_safe_get(si, "regime") or "normal")
+        except Exception:
+            regime = "normal"
+        side_margin_eff = 0.3 if regime == "high" else 0.2
+        if regime == "high":
+            retest_thr_long = 0.65; retest_thr_short = 0.65
+        elif regime == "low":
+            retest_thr_long = 0.75; retest_thr_short = 0.75
+        else:
+            retest_thr_long = 0.70; retest_thr_short = 0.70
+        
         diff = long_score - short_score
-        if abs(diff) <= cfg.tie_eps or abs(diff) < cfg.side_margin:
+        if abs(diff) <= cfg.tie_eps or abs(diff) < side_margin_eff:
             return "none_state", None, meta
 
-        if diff > 0 and long_score >= cfg.retest_long_threshold and major_long >= 1:
+        if diff > 0 and long_score >= retest_thr_long and major_long >= 1:
             return "retest_support", "long", meta
 
-        if diff < 0 and short_score >= cfg.retest_short_threshold and major_short >= 1:
+        if diff < 0 and short_score >= retest_thr_short and major_short >= 1:
             return "retest_resistance", "short", meta
 
     # --- 3) None ---
