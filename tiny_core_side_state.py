@@ -778,9 +778,9 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
             regime = "normal"
         side_margin_eff = 0.35 if regime == "high" else (0.25 if regime == "low" else 0.30)
         if regime == "high":
-            retest_thr_long = 0.65; retest_thr_short = 0.65
-        elif regime == "low":
             retest_thr_long = 0.75; retest_thr_short = 0.75
+        elif regime == "low":
+            retest_thr_long = 0.65; retest_thr_short = 0.65
         else:
             retest_thr_long = 0.70; retest_thr_short = 0.70
         
