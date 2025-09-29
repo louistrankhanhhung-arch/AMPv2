@@ -742,13 +742,13 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
             major_short += 1
 
         # Tie & margin policy (regime-adaptive):
-        # side_margin: 0.25 for low/normal, 0.3 for high
+        # side_margin: 0.25 (low), 0.30 (normal), 0.35 (high)
         # retest thresholds: 0.65 (high), 0.70 (normal), 0.75 (low)
         try:
             regime = (_safe_get(si, "regime") or "normal")
         except Exception:
             regime = "normal"
-        side_margin_eff = 0.3 if regime == "high" else 0.25
+        side_margin_eff = 0.35 if regime == "high" else (0.25 if regime == "low" else 0.30)
         if regime == "high":
             retest_thr_long = 0.65; retest_thr_short = 0.65
         elif regime == "low":
