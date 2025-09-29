@@ -49,6 +49,18 @@ def _rev_eval_from_df(side_up: str, df4: pd.DataFrame | None, df1: pd.DataFrame 
             for col in ("rsi14","rsi","RSI"):
                 if col in last1.index:
                     rsi1 = float(last1[col]); break
+            # Lấy RSI 1H của bar trước để kiểm tra tín hiệu cross
+            prev1 = None
+            try:
+                if df1 is not None and len(df1) >= 3:
+                    prev1 = df1.iloc[-3]
+            except Exception:
+                prev1 = None
+            rsi1_prev = None
+            if prev1 is not None:
+                for col in ("rsi14","rsi","RSI"):
+                    if col in prev1.index:
+                        rsi1_prev = float(prev1[col]); break
 
         conds: list[str] = []
         strong: list[str] = []
@@ -57,10 +69,12 @@ def _rev_eval_from_df(side_up: str, df4: pd.DataFrame | None, df1: pd.DataFrame 
             # Yếu tố “mềm” (cần >=2)
             if (e20 == e20) and (e50 == e50) and (c4 < e50) and (e20 < e50):
                 conds.append("ema20<ema50 & close<ema50(4H)")
-            if (bmid == bmid) and atr > 0 and (c4 < (bmid - 0.15*atr)):
+            if (bmid == bmid) and atr > 0 and (c4 < (bmid - 0.25*atr)):
                 conds.append("close < BBmid - 0.15*ATR(4H)")
-            if rsi1 is not None and rsi1 <= 40.0:
-                conds.append("RSI(1H)≤40")
+            if rsi1 is not None and rsi1 <= 35.0:
+                conds.append("RSI(1H)≤35")
+            if (rsi1 is not None) and (rsi1_prev is not None) and (rsi1_prev > 50.0) and (rsi1 < 45.0):
+                conds.append("RSI(1H) bear cross 50→45")
             # Mẫu nến mạnh (1 điều kiện đủ)
             if prev4 is not None:
                 o4 = float(last4.get("open", last4["close"]))
@@ -72,10 +86,12 @@ def _rev_eval_from_df(side_up: str, df4: pd.DataFrame | None, df1: pd.DataFrame 
         else:  # SHORT
             if (e20 == e20) and (e50 == e50) and (c4 > e50) and (e20 > e50):
                 conds.append("ema20>ema50 & close>ema50(4H)")
-            if (bmid == bmid) and atr > 0 and (c4 > (bmid + 0.15*atr)):
+            if (bmid == bmid) and atr > 0 and (c4 > (bmid + 0.25*atr)):
                 conds.append("close > BBmid + 0.15*ATR(4H)")
-            if rsi1 is not None and rsi1 >= 60.0:
-                conds.append("RSI(1H)≥60")
+            if rsi1 is not None and rsi1 >= 65.0:
+                conds.append("RSI(1H)≥65")
+            if (rsi1 is not None) and (rsi1_prev is not None) and (rsi1_prev < 50.0) and (rsi1 > 55.0):
+                conds.append("RSI(1H) bull cross 50→55")
             if prev4 is not None:
                 o4 = float(last4.get("open", last4["close"]))
                 op = float(prev4.get("open", prev4["close"]))
@@ -86,7 +102,7 @@ def _rev_eval_from_df(side_up: str, df4: pd.DataFrame | None, df1: pd.DataFrame 
 
         if strong:
             return True, strong[0]
-        if len(conds) >= 2:
+        if len(conds) >= 3:
             return True, " & ".join(conds[:2])
         return False, ""
     except Exception:
