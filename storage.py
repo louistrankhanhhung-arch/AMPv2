@@ -199,7 +199,9 @@ class SignalPerfDB:
             # R weighted (đã cộng dồn trong realized_R)
             r_w = float(t.get("realized_R") or 0.0)
             sum_R += r_w
-            win = (label != "SL")
+            # CLOSE chưa có TP (đảo chiều/entry) không tính win
+            has_tp = any((t.get("hits") or {}).get(k) for k in ("TP1","TP2","TP3","TP4","TP5"))
+            win = (label != "SL") and not (label == "CLOSE" and not has_tp)
             wins += int(win); losses += int(not win)
             items.append({
                 "sid": t.get("sid"),
@@ -342,17 +344,24 @@ class SignalPerfDB:
             status = (t.get("status") or "OPEN").upper()
             hits = (t.get("hits") or {})
 
-            # Chỉ nhận các lệnh đã ĐÓNG: TP3 / SL / CLOSE (CLOSE phải có TP trong hits)
+            # Chỉ nhận các lệnh đã ĐÓNG: TP3 / SL / CLOSE
             if status not in ("TP3","SL","CLOSE"):
                 continue
-            if status == "CLOSE" and not any(k in hits for k in ("TP1","TP2","TP3")):
-                continue
+            # CLOSE sớm chưa có TP: ghi nhận với pct=0, R=0, win=False
+            early_close_no_tp = (
+                status == "CLOSE"
+                and not any(k in hits for k in ("TP1","TP2","TP3","TP4","TP5"))
+                and str(t.get("close_reason") or "").upper() in ("REVERSAL","ENTRY")
+            )
 
             win = False
             price_hit = None
             show_status = status
 
-            if status == "TP3" or ("TP3" in hits):
+            if early_close_no_tp:
+                # Giữ show_status = "CLOSE", pct/R xử lý phía dưới
+                win = False
+            elif status == "TP3" or ("TP3" in hits):
                 price_hit = t.get("tp3"); win = True; show_status = "TP3"; tp_counts["TP3"] += 1
             elif ("TP2" in hits):
                 price_hit = t.get("tp2"); win = True; show_status = "TP2"; tp_counts["TP2"] += 1
@@ -361,8 +370,12 @@ class SignalPerfDB:
             else:
                 price_hit = t.get("sl"); win = False; show_status = "SL"; tp_counts["SL"] += 1
 
-            pct = _pct_for_hit(t, price_hit)
-            R = float(t.get("realized_R", 0.0) or 0.0)
+            if early_close_no_tp:
+                pct = 0.0
+                R = 0.0
+            else:
+                pct = _pct_for_hit(t, price_hit)
+                R = float(t.get("realized_R", 0.0) or 0.0)
             if R == 0.0:
                 R = _r_estimate(t, show_status)
             items.append({
@@ -434,12 +447,18 @@ class SignalPerfDB:
             # Nhận các lệnh đã đóng: TP5/TP4/TP3/SL/CLOSE
             if status not in ("TP5", "TP4", "TP3", "SL", "CLOSE"):
                 continue
-            if status == "CLOSE" and not any(k in hits for k in ("TP1", "TP2", "TP3", "TP4", "TP5")):
-                continue
+            early_close_no_tp = (
+                status == "CLOSE"
+                and not any(k in hits for k in ("TP1","TP2","TP3","TP4","TP5"))
+                and str(t.get("close_reason") or "").upper() in ("REVERSAL","ENTRY")
+            )
             if t.get("kpi24_reported_at"):
                 continue
             win = False; price_hit = None; show_status = status
-            if status == "TP5" or ("TP5" in hits):
+            if early_close_no_tp:
+                show_status = "CLOSE"; win = False
+                pct = 0.0; R = 0.0
+            elif status == "TP5" or ("TP5" in hits):
                 price_hit = t.get("tp5"); win = True; show_status = "TP5"; tp_counts["TP5"] += 1
             elif status == "TP4" or ("TP4" in hits):
                 price_hit = t.get("tp4"); win = True; show_status = "TP4"; tp_counts["TP4"] += 1
@@ -451,10 +470,11 @@ class SignalPerfDB:
                 price_hit = t.get("tp1"); win = True; show_status = "TP1"; tp_counts["TP1"] += 1
             else:
                 price_hit = t.get("sl");  win = False; show_status = "SL";  tp_counts["SL"]  += 1
-            pct = _pct_for_hit(t, price_hit)
-            R = float(t.get("realized_R", 0.0) or 0.0)
-            if R == 0.0:
-                R = _r_estimate(t, show_status)
+            if not early_close_no_tp:
+                pct = _pct_for_hit(t, price_hit)
+                R = float(t.get("realized_R", 0.0) or 0.0)
+                if R == 0.0:
+                    R = _r_estimate(t, show_status)
             items.append({
                 "sid": (t.get("sid") or ""),
                 "symbol": (t.get("symbol") or "").upper(),
