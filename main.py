@@ -521,7 +521,22 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     df_4h = dfs.get("4H")
                     df_1h = dfs.get("1H")
                     is_rev, why = _reversal_signal(side, df_4h, df_1h)
-                    if is_rev:
+                    # --- Anti-whipsaw buffers ---
+                    ok_buffers = True
+                    try:
+                        # 1) lockout thời gian sau khi post: ≥90 phút hoặc ≥2 nến 1H đóng
+                        posted_at = int(t.get("posted_at") or 0)
+                        mins_since = (int(time.time()) - posted_at) / 60.0 if posted_at else 999
+                        bars1h = len(df_1h) if df_1h is not None else 0
+                        lock_time_ok = mins_since >= 90 or bars1h >= 2
+                        # 2) adverse move vs entry phải ≥ 0.35*ATR(4H)
+                        atr4 = float(df_4h["atr14"].iloc[-2]) if (df_4h is not None and "atr14" in df_4h.columns and len(df_4h)>=2) else 0.0
+                        adverse = abs(price_now - entry)
+                        adverse_ok = (atr4 > 0) and (adverse >= 0.35 * atr4)
+                        ok_buffers = bool(lock_time_ok and adverse_ok)
+                    except Exception:
+                        ok_buffers = False
+                    if is_rev and ok_buffers:
                         # --- TÍNH PCT & R TẠI THỜI ĐIỂM CLOSE ---
                         # dùng giá 'price_now' đã lấy ở trên (HL/close của 4H hoặc 1H)
                         try:
