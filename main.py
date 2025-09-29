@@ -569,10 +569,44 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     df_1h = dfs.get("1H")
                     is_rev, why = _reversal_signal(side, df_4h, df_1h)
                     if is_rev:
-                        perf.close(t["sid"], "REVERSAL")   # map -> CLOSE
+                        # --- TÍNH PCT & R TẠI THỜI ĐIỂM CLOSE ---
+                        # dùng giá 'price_now' đã lấy ở trên (HL/close của 4H hoặc 1H)
+                        try:
+                            close_px = float(price_now)
+                        except Exception:
+                            close_px = float(t.get("entry") or 0.0)
+                        try:
+                            entry = float(t.get("entry") or 0.0)
+                        except Exception:
+                            entry = 0.0
+                        try:
+                            sl = float(t.get("sl") or 0.0)
+                        except Exception:
+                            sl = 0.0
+                        def _pct(entry_px: float, px: float, _side: str) -> float:
+                            if not entry_px or not px:
+                                return 0.0
+                            return ((px - entry_px) / entry_px * 100.0) if _side == "LONG" else ((entry_px - px) / entry_px * 100.0)
+                        def _risk_pct(entry_px: float, sl_px: float, _side: str) -> float:
+                            if not entry_px or not sl_px:
+                                return 0.0
+                            return ((entry_px - sl_px) / entry_px * 100.0) if _side == "LONG" else ((sl_px - entry_px) / entry_px * 100.0)
+                        close_pct = float(_pct(entry, close_px, side))
+                        risk_pct  = float(_risk_pct(entry, sl, side))
+                        R = float(close_pct / risk_pct) if risk_pct > 0 else 0.0
+                        R_weighted = 0.2 * R   # theo convention scale-out 20%
+
+                        # ĐÓNG & LƯU SỐ LIỆU ĐỂ KPI ĐỌC
+                        perf.close(t["sid"], "REVERSAL")   # map -> status="CLOSE"
                         t["status"] = "CLOSE"
-                        note = f"📌 Đóng lệnh sớm do có tín hiệu đảo chiều ({why})."
-                        extra = {"margin_pct": margin_pct(float(price_now))}
+                        perf.update_fields(
+                            t["sid"],
+                            close_px=close_px,
+                            close_pct=close_pct,
+                            realized_R=R_weighted  # đã weighted 20%
+                        )
+                        note = f"📌 Đóng lệnh sớm do có tín hiệu đảo chiều."
+                        extra = {"margin_pct": close_pct}
                         if tn2:
                             if msg_id:
                                 tn2.send_channel_update(int(msg_id), render_update(t, note, extra))
