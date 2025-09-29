@@ -13,6 +13,48 @@ import pandas as pd
 import os, json, logging
 import math
 
+# ===============================================
+# Reversal signal evaluator (moved from main.py)
+# ===============================================
+def _reversal_signal(bundle: Dict[str, Any], side: str) -> bool:
+    """
+    Check if reversal signal appears against given side.
+    Conditions:
+      - For SHORT: bullish strong candle or >=2 bullish conditions
+      - For LONG: bearish strong candle or >=2 bearish conditions
+    """
+    try:
+        candles = bundle.get("candles", {})
+        feats = bundle.get("features_by_tf", {})
+        c4h = candles.get("4h", {})
+        f1h = feats.get("1h", {})
+        f4h = feats.get("4h", {})
+
+        if side == "SHORT":
+            conds = [
+                c4h.get("bullish_strong", False),
+                (c4h.get("close", 0) > c4h.get("bb_mid", 0) + 0.15 * c4h.get("atr", 1)),
+                (f1h.get("rsi", 0) >= 60),
+                (f4h.get("ema50", 0) and c4h.get("close", 0) > f4h["ema50"]),
+            ]
+            if conds[0] or sum(bool(x) for x in conds[1:]) >= 2:
+                return True
+
+        if side == "LONG":
+            conds = [
+                c4h.get("bearish_strong", False),
+                (c4h.get("close", 0) < c4h.get("bb_mid", 0) - 0.15 * c4h.get("atr", 1)),
+                (f1h.get("rsi", 100) <= 40),
+                (f4h.get("ema50", 0) and c4h.get("close", 0) < f4h["ema50"]),
+            ]
+            if conds[0] or sum(bool(x) for x in conds[1:]) >= 2:
+                return True
+
+    except Exception:
+        return False
+
+    return False
+
 # --------------------------
 # MINI RE-TEST (4H, self-contained)
 # --------------------------
