@@ -203,7 +203,8 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
 
     # -------- REVERSAL GUARD (filter before release) --------
     try:
-        if dec.side in ("long", "short") and _reversal_signal(eb, dec.side.upper()):
+        bundle_for_rev = evidence_bundle if isinstance(evidence_bundle, dict) else {"features_by_tf": features_by_tf, "evidence": eb}
+        if dec.side in ("long", "short") and _reversal_signal(bundle_for_rev, dec.side.upper()):
             dec.decision = "WAIT"
             reasons = list(dec.reasons or [])
             if "guard:reversal" not in reasons:
