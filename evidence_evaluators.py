@@ -14,45 +14,108 @@ import os, json, logging
 import math
 
 # ===============================================
-# Reversal signal evaluator (moved from main.py)
+# Reversal signal evaluator (supports 2 signatures)
 # ===============================================
-def _reversal_signal(bundle: Dict[str, Any], side: str) -> bool:
+def _last_closed_row(df: pd.DataFrame | None) -> pd.Series | None:
+    try:
+        if df is None or len(df) == 0:
+            return None
+        return df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
+    except Exception:
+        return None
+
+def _rev_eval_from_df(side_up: str, df4: pd.DataFrame | None, df1: pd.DataFrame | None) -> tuple[bool, str]:
     """
-    Check if reversal signal appears against given side.
-    Conditions:
-      - For SHORT: bullish strong candle or >=2 bullish conditions
-      - For LONG: bearish strong candle or >=2 bearish conditions
+    Core reversal logic moved from main.py.
+    Returns (is_reversal, why).
+    side_up ∈ {'LONG','SHORT'}
     """
     try:
-        candles = bundle.get("candles", {})
-        feats = bundle.get("features_by_tf", {})
-        c4h = candles.get("4h", {})
-        f1h = feats.get("1h", {})
-        f4h = feats.get("4h", {})
+        last4 = _last_closed_row(df4) if df4 is not None else None
+        prev4 = df4.iloc[-3] if (df4 is not None and len(df4) >= 3) else None
+        last1 = _last_closed_row(df1) if df1 is not None else None
+        if last4 is None:
+            return False, ""
 
-        if side == "SHORT":
-            conds = [
-                c4h.get("bullish_strong", False),
-                (c4h.get("close", 0) > c4h.get("bb_mid", 0) + 0.15 * c4h.get("atr", 1)),
-                (f1h.get("rsi", 0) >= 60),
-                (f4h.get("ema50", 0) and c4h.get("close", 0) > f4h["ema50"]),
-            ]
-            if conds[0] or sum(bool(x) for x in conds[1:]) >= 2:
-                return True
+        # Lấy các mức/indicator 4H
+        c4  = float(last4.get("close", last4["close"]))
+        e20 = float(last4["ema20"]) if "ema20" in last4 else float("nan")
+        e50 = float(last4["ema50"]) if "ema50" in last4 else float("nan")
+        bmid= float(last4["bb_mid"]) if "bb_mid" in last4 else float("nan")
+        atr = float(last4["atr14"])  if "atr14" in last4 else 0.0
+        # RSI xác nhận từ 1H (nếu có)
+        rsi1 = None
+        if last1 is not None:
+            for col in ("rsi14","rsi","RSI"):
+                if col in last1.index:
+                    rsi1 = float(last1[col]); break
 
-        if side == "LONG":
-            conds = [
-                c4h.get("bearish_strong", False),
-                (c4h.get("close", 0) < c4h.get("bb_mid", 0) - 0.15 * c4h.get("atr", 1)),
-                (f1h.get("rsi", 100) <= 40),
-                (f4h.get("ema50", 0) and c4h.get("close", 0) < f4h["ema50"]),
-            ]
-            if conds[0] or sum(bool(x) for x in conds[1:]) >= 2:
-                return True
+        conds: list[str] = []
+        strong: list[str] = []
 
+        if side_up == "LONG":
+            # Yếu tố “mềm” (cần >=2)
+            if (e20 == e20) and (e50 == e50) and (c4 < e50) and (e20 < e50):
+                conds.append("ema20<ema50 & close<ema50(4H)")
+            if (bmid == bmid) and atr > 0 and (c4 < (bmid - 0.15*atr)):
+                conds.append("close < BBmid - 0.15*ATR(4H)")
+            if rsi1 is not None and rsi1 <= 40.0:
+                conds.append("RSI(1H)≤40")
+            # Mẫu nến mạnh (1 điều kiện đủ)
+            if prev4 is not None:
+                o4 = float(last4.get("open", last4["close"]))
+                op = float(prev4.get("open", prev4["close"]))
+                cp = float(prev4.get("close", prev4["close"]))
+                # Bearish engulfing 4H
+                if (c4 < o4) and (o4 >= cp) and (c4 <= op):
+                    strong.append("bearish_engulfing(4H)")
+        else:  # SHORT
+            if (e20 == e20) and (e50 == e50) and (c4 > e50) and (e20 > e50):
+                conds.append("ema20>ema50 & close>ema50(4H)")
+            if (bmid == bmid) and atr > 0 and (c4 > (bmid + 0.15*atr)):
+                conds.append("close > BBmid + 0.15*ATR(4H)")
+            if rsi1 is not None and rsi1 >= 60.0:
+                conds.append("RSI(1H)≥60")
+            if prev4 is not None:
+                o4 = float(last4.get("open", last4["close"]))
+                op = float(prev4.get("open", prev4["close"]))
+                cp = float(prev4.get("close", prev4["close"]))
+                # Bullish engulfing 4H
+                if (c4 > o4) and (o4 <= cp) and (c4 >= op):
+                    strong.append("bullish_engulfing(4H)")
+
+        if strong:
+            return True, strong[0]
+        if len(conds) >= 2:
+            return True, " & ".join(conds[:2])
+        return False, ""
     except Exception:
-        return False
+        return False, ""
 
+def _reversal_signal(*args):
+    """
+    Two-call styles:
+      1) For engine guard (bool):        _reversal_signal(bundle: dict, side: str) -> bool
+      2) For progress-close (tuple):     _reversal_signal(side: str, df4, df1) -> (bool, str)
+    """
+    # Style 1: (bundle, side) -> bool
+    if len(args) == 2 and isinstance(args[0], dict):
+        bundle, side = args
+        side_up = str(side).upper()
+        # Try to extract df from bundle if present; if unavailable, be safe (no close)
+        try:
+            fbtf = (bundle.get("features_by_tf") or {})
+            df4 = ((fbtf.get("4H") or {}).get("df")) or None
+            df1 = ((fbtf.get("1H") or {}).get("df")) or None
+        except Exception:
+            df4 = df1 = None
+        ok, _ = _rev_eval_from_df(side_up, df4, df1)
+        return bool(ok)
+    # Style 2: (side, df4, df1) -> (bool, str)
+    if len(args) == 3:
+        side_up, df4, df1 = args
+        return _rev_eval_from_df(str(side_up).upper(), df4, df1)
+    # Fallback
     return False
 
 # --------------------------
