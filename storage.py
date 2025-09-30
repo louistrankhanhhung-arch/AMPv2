@@ -81,8 +81,8 @@ class SignalPerfDB:
 
     def cooldown_active(self, symbol: str, seconds: int = 4*3600) -> bool:
         """
-        Chặn lệnh mới nếu cùng symbol còn OPEN hoặc TP1..TP5 trong <seconds>.
-        Cho phép re-entry ngay khi lệnh đã SL hoặc CLOSE/REVERSAL.
+        Có lệnh đang sống (OPEN hoặc TP1..TP5) trong <seconds> gần nhất không?
+        Nếu đã SL hoặc CLOSE/REVERSAL thì cho phép re-entry.
         """
         def _norm(s: str) -> str:
             return "".join(ch for ch in (s or "").upper() if ch.isalnum())
