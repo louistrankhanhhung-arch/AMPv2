@@ -582,28 +582,58 @@ class SignalPerfDB:
         for t in self._all().values():
             if int(t.get("posted_at", 0)) < start_ts:
                 continue
-            status = (t.get("status") or "OPEN").upper()
-            price_hit = None
-            win = False
+            status0 = (t.get("status") or "OPEN").upper()
             hits = (t.get("hits") or {})
-            # Chỉ tính các lệnh đã hit SL hoặc TP (TP3 > TP2 > TP1).
-            if not (status in ("SL", "TP1", "TP2", "TP3")
-                    or ("TP1" in hits) or ("TP2" in hits) or ("TP3" in hits)):
-                continue
-            if status == "TP3" or ("TP3" in hits):
-                price_hit = t.get("tp3"); win = True; status = "TP3"
-            elif status == "TP2" or ("TP2" in hits):
-                price_hit = t.get("tp2"); win = True; status = "TP2"
-            elif status == "TP1" or ("TP1" in hits):
-                price_hit = t.get("tp1"); win = True; status = "TP1"
+
+            show_status = None
+            pct = 0.0
+            R = 0.0
+            win = False
+
+            # Ưu tiên liệt kê: TP5..TP1, SL, và CLOSE (đóng sớm do REVERSAL/ENTRY)
+            if status0 in ("TP5","TP4","TP3","TP2","TP1") or any(k in hits for k in ("TP5","TP4","TP3","TP2","TP1")):
+                if status0 == "TP5" or ("TP5" in hits):
+                    price_hit = t.get("tp5"); show_status = "TP5"; win = True
+                elif status0 == "TP4" or ("TP4" in hits):
+                    price_hit = t.get("tp4"); show_status = "TP4"; win = True
+                elif status0 == "TP3" or ("TP3" in hits):
+                    price_hit = t.get("tp3"); show_status = "TP3"; win = True
+                elif status0 == "TP2" or ("TP2" in hits):
+                    price_hit = t.get("tp2"); show_status = "TP2"; win = True
+                else:
+                    price_hit = t.get("tp1"); show_status = "TP1"; win = True
+                pct = float(_pct_for_hit(t, price_hit))
+                # R đã có convention scale-out 20% ở pipeline hiện hành
+                R = float(t.get("realized_R", 0.0) or 0.0) or float(_r_estimate(t, show_status))
+            elif status0 == "SL":
+                price_hit = t.get("sl"); show_status = "SL"; win = False
+                pct = float(_pct_for_hit(t, price_hit))
+                R = float(t.get("realized_R", 0.0) or 0.0) or float(_r_estimate(t, show_status))
+            elif status0 == "CLOSE":
+                # Đóng sớm do REVERSAL/ENTRY – đưa vào danh sách 24H
+                show_status = "CLOSE"
+                pct = float(t.get("close_pct") or 0.0)
+                R = float(t.get("realized_R") or 0.0)
+                try:
+                    win = (float(pct) > 0)
+                except Exception:
+                    win = False
             else:
-                price_hit = t.get("sl");  win = False; status = "SL"
-            items.append({
+                # OPEN/khác — bỏ qua
+                continue
+
+            item = {
+                "sid": (t.get("sid") or ""),
                 "symbol": (t.get("symbol") or "").upper(),
-                "status": status,
-                "pct": _pct(t, price_hit),
+                "dir": (t.get("dir") or t.get("direction") or "").upper(),
+                "status": show_status,
+                "pct": float(pct),
                 "win": bool(win),
-            })
+                "R_weighted": float(R),
+                "R": float(R),
+                "risk_size_hint": t.get("risk_size_hint"),
+            }
+            items.append(item)
 
         # Totals (today)
         n = len(items)
@@ -617,17 +647,22 @@ class SignalPerfDB:
         for i in items:
             eq_mult *= (1.0 + float(i["pct"])/100.0)
         equity_change_pct = (eq_mult - 1.0) * 100.0
-        # TP counts
-        tp_counts = {"TP3": 0, "TP2": 0, "TP1": 0, "SL": 0}
+        # TP counts (không gom CLOSE vào WR để giữ logic win-rate theo TP)
+        tp_counts = {"TP5": 0, "TP4": 0, "TP3": 0, "TP2": 0, "TP1": 0, "SL": 0}
         for i in items:
-            s = i["status"]
-            if s in tp_counts: tp_counts[s] += 1
+            s = (i.get("status") or "").upper()
+            if s in tp_counts:
+                tp_counts[s] += 1
 
         return {
             "items": items,
             "totals": {
-                "n": n, "wins": wins, "losses": losses,
-                "win_rate": win_rate, "sum_pct": sum_pct, "avg_pct": avg_pct,
+                "n": n,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": win_rate,
+                "sum_pct": sum_pct,
+                "avg_pct": avg_pct,
                 "equity_change_pct": equity_change_pct,
                 "tp_counts": tp_counts
             }
