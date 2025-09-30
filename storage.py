@@ -80,13 +80,19 @@ class SignalPerfDB:
         self._write(data)
 
     def cooldown_active(self, symbol: str, seconds: int = 4*3600) -> bool:
-        """Có lệnh đang mở/TP1/TP2/TP3/TP4 trong <seconds> gần nhất không?"""
+        """
+        Có lệnh đang mở (OPEN hoặc TP1..TP5) trong <seconds> gần nhất không?
+        Nếu đã SL hoặc CLOSE/REVERSAL thì cho phép re-entry.
+        """
         now = int(time.time())
         for t in self._all().values():
-            if t.get("symbol") != symbol: 
+            if (t.get("symbol") or "").upper() != symbol.upper():
                 continue
-            if t.get("status") in ("OPEN", "TP1", "TP2", "TP3", "TP4") and now - int(t.get("posted_at", 0)) < seconds:
-                return True
+            st = (t.get("status") or "").upper()
+            if st in ("OPEN", "TP1", "TP2", "TP3", "TP4", "TP5"):
+                posted = int(t.get("posted_at") or 0)
+                if posted and (now - posted) < seconds:
+                    return True
         return False
         
     def by_symbol(self, symbol: str) -> list:
