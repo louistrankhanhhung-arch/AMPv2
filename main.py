@@ -30,7 +30,8 @@ from evidence_evaluators import build_evidence_bundle, Config, _reversal_signal
 
 from notifier_telegram import TelegramNotifier
 from storage import SignalPerfDB, JsonStore, UserDB
-from templates import render_update
+from templates import render_update, render_teaser
+from fb_notifier import FBNotifier
 
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 TIMEFRAMES = ("1H", "4H", "1D")
@@ -256,6 +257,19 @@ def _get_notifier():
     return TN
 # --- end telegram notifier helper ---
 
+# --- Facebook Fanpage Notifier (init-once, lazy) ---
+FB = None
+def _get_fb_notifier():
+    global FB
+    if FB is None:
+        try:
+            FB = FBNotifier()
+        except Exception as e:
+            log.warning(f"FBNotifier init failed; disabled. reason={e}")
+            FB = False
+    return FB
+# --- end fb notifier helper ---
+
 def split_into_6_blocks(symbols: List[str]) -> List[List[str]]:
     """Stable split into 6 blocks: [s[0], s[6], ...], [s[1], s[7], ...], ..."""
     return [symbols[i::6] for i in range(6)]
@@ -429,6 +443,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     # --- post teaser to Telegram Channel when ENTER ---
     if dec == "ENTER":
         tn = _get_notifier()
+        fb = _get_fb_notifier()
         if tn:
             try:
                 plan_for_teaser = dict(plan or {})
@@ -457,6 +472,13 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                         hl0_4h_hi=hi4, hl0_4h_lo=lo4,
                         hl0_1h_hi=hi1, hl0_1h_lo=lo1,
                     )
+                    # Đăng teaser lên Fanpage IMP
+                    try:
+                        if fb:
+                            html_teaser = render_teaser(plan_for_teaser)
+                            fb.post_teaser(html_teaser)
+                    except Exception as e:
+                        log.warning(f"[{symbol}] fanpage teaser failed: {e}")
             except Exception as e:
                 log.warning(f"[{symbol}] teaser post failed: {e}")
                 
@@ -800,9 +822,11 @@ def loop_scheduler():
                 kpi_day = perf.kpis("day")           # sumR, wr, ...
                 detail_day = perf.kpis_detail("day") # equity 1x + tp_counts
                 report_date_str = now.strftime("%d/%m/%Y")
-                from templates import render_kpi_teaser_two_parts
+          
                 tn = _get_notifier()
+                fb = _get_fb_notifier()
                 if tn:
+                    from templates import render_kpi_teaser_two_parts
                     html = render_kpi_teaser_two_parts(detail_24h, kpi_day, detail_day, report_date_str)
                     tn.send_kpi24(html)
                     # đánh dấu đã báo cáo KPI 24h
@@ -810,6 +834,12 @@ def loop_scheduler():
                         perf.mark_kpi24_reported(sids_to_mark)
                     except Exception:
                         pass
+                    # post fanpage
+                    try:
+                        if fb:
+                            fb.post_kpi_24h(html)
+                    except Exception as e:
+                        log.warning(f"KPI-24H fanpage failed: {e}")
 
             # NEW: KPI TUẦN — 08:16 sáng Thứ Bảy (Asia/Ho_Chi_Minh)
             if now.weekday() == 5 and now.hour == 8 and now.minute == 16:
@@ -835,8 +865,15 @@ def loop_scheduler():
                     from templates import render_kpi_week
                     html = render_kpi_week(detail_week, week_label, risk_per_trade_usd=100.0)
                     tn = _get_notifier()
+                    fb = _get_fb_notifier()
                     if tn:
                         tn.send_kpi24(html)
+                    # post fanpage
+                    try:
+                        if fb:
+                            fb.post_kpi_week(html)
+                    except Exception as e:
+                        log.warning(f"KPI-week fanpage failed: {e}")
         except Exception as e:
             log.warning(f"KPI-24H send failed: {e}")
         # sleep until next 5-minute boundary
