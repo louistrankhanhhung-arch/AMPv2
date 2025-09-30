@@ -12,7 +12,7 @@ Main worker for Crypto Signal (Railway ready)
   4) build evidence bundle (STRUCT JSON)
   5) decide ENTER/WAIT/AVOID; optionally push Telegram
 """
-import os, sys, time, json, logging
+import os, sys, time, json, logging, uuid
 import threading
 from typing import Any, Dict, List, TYPE_CHECKING
 from datetime import datetime, timedelta
@@ -444,43 +444,62 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     if dec == "ENTER":
         tn = _get_notifier()
         fb = _get_fb_notifier()
-        if tn:
-            try:
-                plan_for_teaser = dict(plan or {})
-                plan_for_teaser.update({
-                    "symbol": symbol,
-                    "DIRECTION": (plan.get("direction") or plan.get("dir") or "-").upper() if isinstance(plan, dict) else "-",
-                    "STATE": state,
-                    "notes": out.get("notes", []),
-                })
-                perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
-                # Check cooldown 24h trước khi post
-                if perf.cooldown_active(symbol, seconds=24*3600):
-                    log.info(f"[{symbol}] skip ENTER due to cooldown (24h)")
-                else:
-                    def _cur_hl(df):
-                        return (float(df["high"].iloc[-1]), float(df["low"].iloc[-1])) if df is not None and not df.empty else (None, None)
-                    hi4, lo4 = _cur_hl(dfs.get("4H"))
-                    hi1, lo1 = _cur_hl(dfs.get("1H"))
-                    sid, msg_id = tn.post_teaser(plan_for_teaser)
-                    # Ghi ngay trade vào DB để block trùng
-                    perf.open(
-                        sid,
-                        plan_for_teaser,
-                        message_id=msg_id,
-                        posted_at=int(time.time()),
-                        hl0_4h_hi=hi4, hl0_4h_lo=lo4,
-                        hl0_1h_hi=hi1, hl0_1h_lo=lo1,
-                    )
-                    # Đăng teaser lên Fanpage IMP
+        try:
+            plan_for_teaser = dict(plan or {})
+            plan_for_teaser.update({
+                "symbol": symbol,
+                "DIRECTION": (plan.get("direction") or plan.get("dir") or "-").upper() if isinstance(plan, dict) else "-",
+                "STATE": state,
+                "notes": out.get("notes", []),
+            })
+            perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
+            # 1) Check cooldown 24h trước khi post
+            if perf.cooldown_active(symbol, seconds=24*3600):
+                log.info(f"[{symbol}] skip ENTER due to cooldown (24h)")
+            else:
+                # 2) HL baseline để theo dõi TP/SL intrabar
+                def _cur_hl(df):
+                    return (float(df["high"].iloc[-1]), float(df["low"].iloc[-1])) if df is not None and not df.empty else (None, None)
+                hi4, lo4 = _cur_hl(dfs.get("4H"))
+                hi1, lo1 = _cur_hl(dfs.get("1H"))
+                # 3) Gửi Telegram nếu có; nếu không, tự sinh sid
+                sid = None
+                msg_id = None
+                if tn:
                     try:
-                        if fb:
-                            html_teaser = render_teaser(plan_for_teaser)
-                            fb.post_teaser(html_teaser)
+                        sid, msg_id = tn.post_teaser(plan_for_teaser)
                     except Exception as e:
-                        log.warning(f"[{symbol}] fanpage teaser failed: {e}")
-            except Exception as e:
-                log.warning(f"[{symbol}] teaser post failed: {e}")
+                        log.warning(f"[{symbol}] teaser post failed: {e}")
+                if not sid:
+                    try:
+                        import uuid as _uuid
+                        sid = str(_uuid.uuid4())[:8]
+                    except Exception:
+                        sid = f"{symbol}-{int(time.time())}"
+                # 4) Ghi DB NGAY để kích hoạt cooldown, không phụ thuộc Telegram
+                perf.open(
+                    sid,
+                    plan_for_teaser,
+                    message_id=msg_id,
+                    posted_at=int(time.time()),
+                    hl0_4h_hi=hi4, hl0_4h_lo=lo4,
+                    hl0_1h_hi=hi1, hl0_1h_lo=lo1,
+                )
+                # 5) Đăng lên Fanpage (độc lập với Telegram)
+                try:
+                    if fb:
+                        html_teaser = render_teaser(plan_for_teaser)
+                        origin_url = None
+                        try:
+                            if msg_id and hasattr(tn, "_build_origin_link"):
+                                origin_url = tn._build_origin_link(int(msg_id))
+                        except Exception:
+                            origin_url = None
+                        fb.post_teaser(html_teaser, origin_url=origin_url)
+                except Exception as e:
+                    log.warning(f"[{symbol}] fanpage teaser failed: {e}")
+        except Exception as e:
+            log.warning(f"[{symbol}] ENTER flow failed: {e}")
                 
     # --- end teaser post ---
     # --- progress check: update TP/SL hits for existing OPEN trades ---
