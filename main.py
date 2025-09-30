@@ -439,16 +439,16 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     "notes": out.get("notes", []),
                 })
                 perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
-                # 24h cooldown
+                # Check cooldown 24h trước khi post
                 if perf.cooldown_active(symbol, seconds=24*3600):
                     log.info(f"[{symbol}] skip ENTER due to cooldown (24h)")
                 else:
-                    # ẢNH CHỤP HL tại thời điểm post để chống “hit quá khứ”
                     def _cur_hl(df):
                         return (float(df["high"].iloc[-1]), float(df["low"].iloc[-1])) if df is not None and not df.empty else (None, None)
                     hi4, lo4 = _cur_hl(dfs.get("4H"))
                     hi1, lo1 = _cur_hl(dfs.get("1H"))
                     sid, msg_id = tn.post_teaser(plan_for_teaser)
+                    # Ghi ngay trade vào DB để block trùng
                     perf.open(
                         sid,
                         plan_for_teaser,
