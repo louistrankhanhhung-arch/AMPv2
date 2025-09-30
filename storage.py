@@ -81,15 +81,19 @@ class SignalPerfDB:
 
     def cooldown_active(self, symbol: str, seconds: int = 4*3600) -> bool:
         """
-        Có lệnh đang mở (OPEN hoặc TP1..TP5) trong <seconds> gần nhất không?
-        Nếu đã SL hoặc CLOSE/REVERSAL thì cho phép re-entry.
+        Chặn lệnh mới nếu cùng symbol còn OPEN hoặc TP1..TP5 trong <seconds>.
+        Cho phép re-entry ngay khi lệnh đã SL hoặc CLOSE/REVERSAL.
         """
+        def _norm(s: str) -> str:
+            return "".join(ch for ch in (s or "").upper() if ch.isalnum())
+
         now = int(time.time())
+        symN = _norm(symbol)
         for t in self._all().values():
-            if (t.get("symbol") or "").upper() != symbol.upper():
+            if _norm(t.get("symbol") or "") != symN:
                 continue
             st = (t.get("status") or "").upper()
-            if st in ("OPEN", "TP1", "TP2", "TP3", "TP4", "TP5"):
+            if st in ("OPEN","TP1","TP2","TP3","TP4","TP5"):
                 posted = int(t.get("posted_at") or 0)
                 if posted and (now - posted) < seconds:
                     return True
