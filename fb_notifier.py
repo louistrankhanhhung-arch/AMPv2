@@ -65,11 +65,13 @@ class FBNotifier:
             log.warning("FB post exception: %s", e)
             return False
 
-    def post_text(self, text: str) -> bool:
+    def post_text(self, text: str, origin_url: str | None = None) -> bool:
         """Đăng bài text (tự strip HTML)."""
         if not text:
             return False
         msg = _strip_html(text)
+        if origin_url:
+            msg = f"{msg}\n\nXem bản gốc trên kênh: {origin_url}"
         msg = _append_cta(msg)
         if not msg:
             return False
@@ -84,8 +86,8 @@ class FBNotifier:
         return self._post("photos", {"url": image_url, "caption": cap})
 
     # Helpers cho app
-    def post_teaser(self, teaser_html: str) -> bool:
-        return self.post_text(teaser_html)
+    def post_teaser(self, teaser_html: str, origin_url: str | None = None) -> bool:
+        return self.post_text(teaser_html, origin_url=origin_url)
 
     def post_kpi_24h(self, kpi_html: str) -> bool:
         return self.post_text(kpi_html)
