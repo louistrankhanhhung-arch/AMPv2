@@ -844,23 +844,23 @@ def loop_scheduler():
           
                 tn = _get_notifier()
                 fb = _get_fb_notifier()
+                from templates import render_kpi_teaser_two_parts
+                html = render_kpi_teaser_two_parts(detail_24h, kpi_day, detail_day, report_date_str)
+                # Telegram (nếu bật)
                 if tn:
-                    from templates import render_kpi_teaser_two_parts
-                    html = render_kpi_teaser_two_parts(detail_24h, kpi_day, detail_day, report_date_str)
                     tn.send_kpi24(html)
-                    # đánh dấu đã báo cáo KPI 24h
+                # Fanpage (độc lập)
+                if fb:
                     try:
-                        perf.mark_kpi24_reported(sids_to_mark)
-                    except Exception:
-                        pass
-                    # post fanpage
-                    try:
-                        if fb:
-                            fb.post_kpi_24h(html)
+                        fb.post_kpi_24h(html)
                     except Exception as e:
                         log.warning(f"KPI-24H fanpage failed: {e}")
-
-            # NEW: KPI TUẦN — 08:16 sáng Thứ Bảy (Asia/Ho_Chi_Minh)
+                # Đánh dấu đã report (không phụ thuộc TN)
+                try:
+                    perf.mark_kpi24_reported(sids_to_mark)
+                except Exception:
+                    pass
+            # NEW: KPI TUẦN — 08:16 sáng Thứ Bảy (Asia/Ho_Chi_Minh) — Telegram & Fanpage độc lập
             if now.weekday() == 5 and now.hour == 8 and now.minute == 16:
                 wk_key = (now.isocalendar().year, now.isocalendar().week)
                 if last_kpi_week != wk_key:
@@ -870,6 +870,23 @@ def loop_scheduler():
                     week_start = today_00 - timedelta(days=7)
                     start_ts = int(week_start.timestamp())
                     end_ts   = int(now.timestamp())
+                    perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR", "./data")))
+                    detail_week = perf.kpis_between(start_ts, end_ts)  # hàm đã có trong storage hoặc kpis("week") fallback
+                    week_label = f"{week_start.strftime('%d/%m')}–{now.strftime('%d/%m')}"
+                    from templates import render_kpi_week
+                    html_w = render_kpi_week(detail_week, week_label)
+                    tn = _get_notifier()
+                    fb = _get_fb_notifier()
+                    if tn:
+                        try:
+                            tn.send_kpi24(html_w)  # tái dùng sender (hoặc tạo send_kpi_week nếu bạn muốn tách)
+                        except Exception as e:
+                            log.warning(f"KPI-week telegram failed: {e}")
+                    if fb:
+                        try:
+                            fb.post_kpi_week(html_w)
+                        except Exception as e:
+                            log.warning(f"KPI-week fanpage failed: {e}")
                     # label như ví dụ: 20-27/9/2025
                     def _ds(d):
                         dd = d.strftime("%d").lstrip("0")
