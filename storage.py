@@ -52,9 +52,12 @@ class SignalPerfDB:
     def _write(self, data: dict) -> None:
         self.store.write("trades", data)
 
-    def open(self, sid: str, plan: dict, message_id: int | None = None) -> None:
+    def open(self, sid: str, plan: dict, message_id: int | None = None, **extra) -> None:
         data = self._all()
-        data[sid] = {
+        # Cho phép override posted_at và bổ sung các trường baseline (hl0_*, v.v.)
+        _now = int(time.time())
+        posted_at = int(extra.pop("posted_at", _now) or _now)
+        rec = {
             "sid": sid,
             "symbol": plan.get("symbol"),
             "dir": plan.get("DIRECTION"),
@@ -66,7 +69,7 @@ class SignalPerfDB:
             "tp3": plan.get("tp3"),
             "tp4": plan.get("tp4"),
             "tp5": plan.get("tp5"),
-            "posted_at": int(time.time()),
+            "posted_at": posted_at,
             "message_id": int(message_id) if message_id is not None else None,
             "status": "OPEN",
             "hits": {},
@@ -77,6 +80,13 @@ class SignalPerfDB:
             # NEW: đánh dấu đã được tính trong báo cáo KPI 24h hay chưa
             "kpi24_reported_at": None,
         }
+        # Merge các field bổ sung (vd: hl0_4h_hi/lo, hl0_1h_hi/lo, close_px, close_pct…)
+        try:
+            for k, v in (extra or {}).items():
+                rec[k] = v
+        except Exception:
+            pass
+        data[sid] = rec
         self._write(data)
 
     def cooldown_active(self, symbol: str, seconds: int = 4*3600) -> bool:
