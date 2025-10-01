@@ -62,6 +62,7 @@ DD_60M_CAP = _env_float("DD_60M_CAP", -1.5)                   # R
 LOSING_STREAK_N = _env_int("LOSING_STREAK_N", 3)              # 3 SL liên tiếp
 COOLDOWN_2H = 2 * 3600
 COOLDOWN_3H = 3 * 3600
+MAX_PER_TRADE_R = _env_float("MAX_PER_TRADE_R", 2.0)          # trần R mỗi lệnh để chống dữ liệu lỗi
 
 # Cụm beta cao (đơn giản, có thể tinh chỉnh sau). So khớp theo BASE (trước "/USDT")
 _CLUSTERS = [
@@ -108,18 +109,41 @@ def _cluster_of(base: str):
             return c["name"]
     return None
 
+def _has_any_tp_hit(it: dict) -> bool:
+    """Phát hiện lệnh đã từng chạm bất kỳ TP nào (TP1–TP5) theo nhiều schema khác nhau."""
+    keys_true = ("hit_tp", "tp_hit", "tp_filled", "scale_out", "TP_HIT", "HIT_TP")
+    for k in keys_true:
+        if str(it.get(k)).lower() in ("true","1"):
+            return True
+    # Cờ riêng từng mức TP
+    for k in ("hit_tp1","tp1_hit","HIT_TP1","hit_tp2","tp2_hit","HIT_TP2",
+              "hit_tp3","tp3_hit","HIT_TP3","hit_tp4","tp4_hit","HIT_TP4",
+              "hit_tp5","tp5_hit","HIT_TP5"):
+        if str(it.get(k)).lower() in ("true","1"):
+            return True
+    # Đếm số TP đã khớp
+    try:
+        cnt = float(it.get("tp_hit_count") or it.get("TP_HIT_COUNT") or 0)
+        if cnt and cnt > 0:
+            return True
+    except Exception:
+        pass
+    return False
+
 def _count_open_by_side(perf: "SignalPerfDB") -> dict:
-    """Đếm số lệnh OPEN theo side, KHÔNG tính lệnh đã chạm TP1 (coi là an toàn)."""
+    """Đếm số lệnh đang OPEN theo side, **chỉ** tính lệnh CHƯA có TP nào."""
     res = {"LONG":0, "SHORT":0}
     try:
         opens = perf.list_open_status()  # kỳ vọng trả về list dict
         for it in opens or []:
+            # chỉ tính lệnh OPEN và chưa TP
+            st = (it.get("status") or it.get("STATUS") or "").upper()
+            if st != "OPEN":
+                continue
+            if _has_any_tp_hit(it):
+                continue
             side = (it.get("side") or it.get("DIRECTION") or "").upper()
             if side not in res: 
-                continue
-            # Nếu đã chạm TP1 thì không tính vào hạn mức
-            hit_tp1 = bool(it.get("hit_tp1") or it.get("tp1_hit") or it.get("HIT_TP1"))
-            if hit_tp1:
                 continue
             res[side] += 1
     except Exception as e:
@@ -127,19 +151,49 @@ def _count_open_by_side(perf: "SignalPerfDB") -> dict:
     return res
 
 def _total_risk_exposure_R(perf: "SignalPerfDB") -> float:
-    """Tổng R đang treo của các lệnh OPEN (có thể ước lượng nếu thiếu trường)."""
+    """
+    Tổng R đang treo **chỉ** của các lệnh đang OPEN và **chưa từng chạm TP**.
+    - Chỉ tính status == OPEN
+    - Loại trừ mọi lệnh đã có TP (TP1–TP5)
+    - Chặn trần mỗi lệnh = MAX_PER_TRADE_R (ENV) để chống dữ liệu ghi sai
+    - Log top contributors khi vượt ngưỡng để tiện debug
+    """
     total = 0.0
+    contrib = []  # [(symbol, side, r_each)]
     try:
         opens = perf.list_open_status()
         for it in opens or []:
-            # Ưu tiên trường chuẩn
-            r_left = it.get("risk_R_remaining") or it.get("risk_R") or it.get("R") or 1.0
+            st = (it.get("status") or it.get("STATUS") or "").upper()
+            if st != "OPEN":
+                continue
+            if _has_any_tp_hit(it):
+                continue
+            r_left = it.get("risk_R_remaining")
+            if r_left is None:
+                r_left = it.get("risk_R")
+            if r_left is None:
+                r_left = it.get("R")
             try:
-                total += float(r_left)
+                r_left = float(r_left)
             except Exception:
-                total += 1.0
+                r_left = 1.0
+            if not (r_left == r_left) or r_left <= 0:  # NaN hoặc âm
+                continue
+            r_each = min(float(r_left), float(MAX_PER_TRADE_R))
+            total += r_each
+            if len(contrib) < 20:
+                sym = it.get("symbol") or it.get("SYMBOL") or "?"
+                side = (it.get("side") or it.get("DIRECTION") or "").upper()
+                contrib.append((str(sym), side, r_each))
     except Exception as e:
         log.warning(f"risk_exposure_R fallback due to {e}")
+    try:
+        if total >= MAX_RISK_EXPOSURE_R:
+            contrib_sorted = sorted(contrib, key=lambda x: x[2], reverse=True)[:5]
+            dbg = ", ".join([f"{s}/{sd}:{r:.2f}R" for s,sd,r in contrib_sorted])
+            log.info(f"[ExposureR] total={total:.2f}R (top: {dbg})")
+    except Exception:
+        pass
     return float(total)
 
 def _recent_losing_streak(perf: "SignalPerfDB", side: str, n: int) -> bool:
@@ -311,7 +365,7 @@ def run_market_guards(exchange) -> _MarketState:
     if _fast_flip_down_1h(btc1h, eth1h):
         ms.disable_side_until("LONG", now + 3*3600)
         if tn:
-            try: tn.post_text("⛔ Phòng hộ: Ngưng phát lệnh LONG do BTC/ETH dốc lên.")
+            try: tn.post_text("⛔ Phòng hộ: Ngưng phát lệnh LONG do BTC/ETH dốc xuống.")
             except Exception: pass
     return ms
 
