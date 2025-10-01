@@ -1,6 +1,38 @@
 import os, json, time, threading
 from typing import Optional, Dict, Any, List
 
+# ---- pct helper used by KPI calculations ------------------------------------
+# Try to reuse the implementation from templates.py (keeps logic consistent),
+# and fallback to a local equivalent if that import isn't available.
+try:
+    from templates import _pct_for_hit as _tmpl_pct_for_hit  # reuse if present
+except Exception:
+    _tmpl_pct_for_hit = None
+
+def _pct_for_hit(t: dict, price_hit: float) -> float:
+    """
+    % thay đổi so với entry theo side (LONG dương khi giá tăng; SHORT dương khi giá giảm).
+    Trả về đơn vị % (ví dụ 1.23 nghĩa là +1.23%).
+    """
+    # Use the templates implementation when import succeeded.
+    if _tmpl_pct_for_hit is not None:
+        try:
+            return float(_tmpl_pct_for_hit(t, price_hit))
+        except Exception:
+            pass
+    # Fallback local logic (mirrors templates._pct_for_hit)
+    try:
+        e = float(t.get("entry") or 0.0)
+        if not e or not price_hit:
+            return 0.0
+        pct = (float(price_hit) - e) / e * 100.0
+        side = (t.get("dir") or t.get("DIRECTION") or "").upper()
+        if side == "SHORT":
+            pct = -pct
+        return float(pct)
+    except Exception:
+        return 0.0
+
 # -------------------------------
 # Json store (atomic-ish writes)
 # -------------------------------
@@ -576,17 +608,6 @@ class SignalPerfDB:
             start_ts = int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, lt.tm_wday, lt.tm_yday, lt.tm_isdst)))
         else:
             start_ts = now - 24*3600
-
-        def _pct(t, price_hit):
-            try:
-                e = float(t.get("entry") or 0.0)
-                if not e: return 0.0
-                if (t.get("dir") or "").upper() == "LONG":
-                    return (float(price_hit) - e) / e * 100.0
-                else:
-                    return (e - float(price_hit)) / e * 100.0
-            except Exception:
-                return 0.0
 
         items = []
         for t in self._all().values():
