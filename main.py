@@ -40,6 +40,148 @@ log = logging.getLogger("worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
                     format="%(asctime)s %(levelname)s %(message)s")
 
+# ============================================================
+# Portfolio Risk Governance (Pre-entry + Rolling Drawdown)
+# ============================================================
+# ENV overrides (giá trị mặc định theo yêu cầu)
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+MAX_OPEN_PER_SIDE = _env_int("MAX_OPEN_PER_SIDE", 4)         # không tính lệnh đã TP1
+MAX_RISK_EXPOSURE_R = _env_float("MAX_RISK_EXPOSURE_R", 4.0) # tổng R đang treo
+DD_60M_CAP = _env_float("DD_60M_CAP", -1.5)                   # R
+LOSING_STREAK_N = _env_int("LOSING_STREAK_N", 3)              # 3 SL liên tiếp
+COOLDOWN_2H = 2 * 3600
+COOLDOWN_3H = 3 * 3600
+
+# Cụm beta cao (đơn giản, có thể tinh chỉnh sau). So khớp theo BASE (trước "/USDT")
+_CLUSTERS = [
+    {"name": "SOL-AVAX-NEAR", "members": {"SOL","AVAX","NEAR"}},
+    {"name": "ARB-OP-SUI",     "members": {"ARB","OP","SUI"}},
+    {"name": "BNB-LINK",       "members": {"BNB","LINK"}},
+    {"name": "PENDLE",         "members": {"PENDLE"}},
+]
+_HIGH_BETA = {"SOL","AVAX","NEAR","ARB","SUI"}  # dùng cho rule “không mở 2 lệnh beta cao cùng cụm”
+
+class PortfolioStore:
+    """Quản lý state phụ trợ cho các rule danh mục (cluster timestamps…)."""
+    def __init__(self, store: JsonStore):
+        self.store = store
+        self.name = "portfolio_policy"
+    def _read(self) -> dict:
+        return self.store.read(self.name) or {}
+    def _write(self, data: dict) -> None:
+        self.store.write(self.name, data)
+    def update_cluster_open(self, cluster_name: str, side: str) -> None:
+        d = self._read()
+        t = int(time.time())
+        clusters = d.get("cluster_open_ts", {})
+        key = f"{cluster_name}:{side.upper()}"
+        clusters[key] = t
+        d["cluster_open_ts"] = clusters
+        self._write(d)
+    def last_cluster_open_within(self, cluster_name: str, side: str, seconds: int) -> bool:
+        d = self._read()
+        clusters = d.get("cluster_open_ts", {})
+        key = f"{cluster_name}:{side.upper()}"
+        ts = int(clusters.get(key) or 0)
+        return bool(ts and (int(time.time()) - ts) <= seconds)
+
+def _base_from_symbol(sym: str) -> str:
+    try:
+        return str(sym.split("/")[0]).upper()
+    except Exception:
+        return str(sym).upper()
+
+def _cluster_of(base: str):
+    for c in _CLUSTERS:
+        if base in c["members"]:
+            return c["name"]
+    return None
+
+def _count_open_by_side(perf: "SignalPerfDB") -> dict:
+    """Đếm số lệnh OPEN theo side, KHÔNG tính lệnh đã chạm TP1 (coi là an toàn)."""
+    res = {"LONG":0, "SHORT":0}
+    try:
+        opens = perf.list_open_status()  # kỳ vọng trả về list dict
+        for it in opens or []:
+            side = (it.get("side") or it.get("DIRECTION") or "").upper()
+            if side not in res: 
+                continue
+            # Nếu đã chạm TP1 thì không tính vào hạn mức
+            hit_tp1 = bool(it.get("hit_tp1") or it.get("tp1_hit") or it.get("HIT_TP1"))
+            if hit_tp1:
+                continue
+            res[side] += 1
+    except Exception as e:
+        log.warning(f"count_open_by_side fallback due to {e}")
+    return res
+
+def _total_risk_exposure_R(perf: "SignalPerfDB") -> float:
+    """Tổng R đang treo của các lệnh OPEN (có thể ước lượng nếu thiếu trường)."""
+    total = 0.0
+    try:
+        opens = perf.list_open_status()
+        for it in opens or []:
+            # Ưu tiên trường chuẩn
+            r_left = it.get("risk_R_remaining") or it.get("risk_R") or it.get("R") or 1.0
+            try:
+                total += float(r_left)
+            except Exception:
+                total += 1.0
+    except Exception as e:
+        log.warning(f"risk_exposure_R fallback due to {e}")
+    return float(total)
+
+def _recent_losing_streak(perf: "SignalPerfDB", side: str, n: int) -> bool:
+    """Kiểm tra có n lệnh liên tiếp SL cùng side gần nhất không."""
+    try:
+        hist = perf.list_recent_history(limit=50)  # kỳ vọng có; nếu không sẽ except
+        streak = 0
+        for it in reversed(hist or []):  # mới nhất ở cuối → đảo để đi từ mới → cũ
+            s = (it.get("side") or it.get("DIRECTION") or "").upper()
+            if s and s != side.upper():
+                continue
+            status = (it.get("status") or it.get("final_status") or "").upper()
+            if status in ("SL","STOP","STOP_LOSS","CLOSE_SL"):
+                streak += 1
+                if streak >= n:
+                    return True
+            elif status:
+                # reset streak khi gặp kết quả khác SL (TP/BE/CLOSE sớm…)
+                streak = 0
+        return False
+    except Exception:
+        return False
+
+def _pnl_rolling_60m_R(perf: "SignalPerfDB") -> float:
+    """Tổng PnL dạng R trong 60 phút gần nhất (ưu tiên realized; nếu thiếu, ước lượng =0)."""
+    cutoff = int(time.time()) - 3600
+    acc = 0.0
+    try:
+        # Ưu tiên bản ghi đã đóng (realized)
+        closed = perf.list_closed_since(ts=cutoff)
+        for it in closed or []:
+            r = it.get("realized_R")
+            if r is None:
+                r = it.get("R_realized") or it.get("R") or 0.0
+            try:
+                acc += float(r)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return float(acc)
+
 # =========================
 # Market Flip Guards (BTC+ETH) — portfolio level
 # =========================
@@ -64,6 +206,11 @@ class _MarketState:
         ds = (self._read().get("disable_side") or {})
         ts = int(ds.get(side) or 0)
         return bool(ts and now < ts)
+    def cooldown_side(self, side: str, seconds: int, reason: str = ""):
+        until_ts = int(time.time()) + int(seconds)
+        self.disable_side_until(side, until_ts)
+        if reason:
+            log.info(f"cooldown side {side} for {seconds//3600}h due to {reason}")
 
 def _hold_above(df: pd.DataFrame, ema_len: int, bars: int) -> bool:
     try:
@@ -167,6 +314,26 @@ def run_market_guards(exchange) -> _MarketState:
             try: tn.post_text("⛔ Phòng hộ: Ngưng phát lệnh LONG do BTC/ETH dốc lên.")
             except Exception: pass
     return ms
+
+def run_portfolio_caps(perf: "SignalPerfDB", ms: _MarketState) -> None:
+    """Kiểm tra rolling drawdown & losing streak để bật cooldown side tự động."""
+    # 1) Rolling drawdown 60 phút (hai chiều)
+    try:
+        pnl60 = _pnl_rolling_60m_R(perf)
+        if pnl60 <= DD_60M_CAP:
+            # nếu đã âm mạnh trong giờ qua — cooldown cả hai side 2h, hoặc có thể tinh chỉnh theo side
+            ms.cooldown_side("LONG", COOLDOWN_2H, reason="DD_60M_CAP")
+            ms.cooldown_side("SHORT", COOLDOWN_2H, reason="DD_60M_CAP")
+    except Exception as e:
+        log.warning(f"run_portfolio_caps dd60 failed: {e}")
+    # 2) Losing streak theo side
+    try:
+        if _recent_losing_streak(perf, "LONG", LOSING_STREAK_N):
+            ms.cooldown_side("LONG", COOLDOWN_3H, reason="LOSING_STREAK")
+        if _recent_losing_streak(perf, "SHORT", LOSING_STREAK_N):
+            ms.cooldown_side("SHORT", COOLDOWN_3H, reason="LOSING_STREAK")
+    except Exception as e:
+        log.warning(f"run_portfolio_caps streak failed: {e}")
 
 def _last_closed_row(df: pd.DataFrame) -> pd.Series | None:
     try:
@@ -886,6 +1053,31 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     return
             except Exception:
                 pass
+            # 0.1) Pre-entry guards — đếm lệnh/ R đang treo / tương quan-beta
+            try:
+                counts = _count_open_by_side(perf)
+                side_up = (plan_for_teaser.get("DIRECTION") or "").upper()
+                if side_up in ("LONG","SHORT"):
+                    if counts.get(side_up, 0) >= MAX_OPEN_PER_SIDE:
+                        log.info(f"[{symbol}] skip ENTER: MAX_OPEN_PER_SIDE reached for {side_up}")
+                        return
+                # Giới hạn tổng R đang treo
+                exposureR = _total_risk_exposure_R(perf)
+                if exposureR >= MAX_RISK_EXPOSURE_R:
+                    log.info(f"[{symbol}] skip ENTER: exposureR {exposureR:.2f} ≥ {MAX_RISK_EXPOSURE_R}")
+                    return
+                # Lọc tương quan/beta theo cụm trong 60 phút
+                base = _base_from_symbol(symbol)
+                cluster = _cluster_of(base)
+                if cluster and base in _HIGH_BETA:
+                    pstore = PortfolioStore(JsonStore(os.getenv("DATA_DIR","./data")))
+                    if pstore.last_cluster_open_within(cluster, side_up, 60*60):
+                        log.info(f"[{symbol}] skip ENTER: cluster '{cluster}' {side_up} within 60m (beta-high)")
+                        return
+                    # nếu mở mới hợp lệ, cập nhật timestamp cụm
+                    pstore.update_cluster_open(cluster, side_up)
+            except Exception as e:
+                log.warning(f"pre-entry guards skipped due to {e}")
             # 1) Check cooldown 24h trước khi post
             if perf.cooldown_active(symbol, seconds=24*3600):
                 log.info(f"[{symbol}] skip ENTER due to cooldown (24h)")
