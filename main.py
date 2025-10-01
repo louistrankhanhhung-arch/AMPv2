@@ -40,6 +40,134 @@ log = logging.getLogger("worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
                     format="%(asctime)s %(levelname)s %(message)s")
 
+# =========================
+# Market Flip Guards (BTC+ETH) — portfolio level
+# =========================
+class _MarketState:
+    """Persist on-disk to coordinate side cooldown across runs."""
+    def __init__(self, store: JsonStore):
+        self.store = store
+    def _read(self) -> dict:
+        return self.store.read("market_state") or {}
+    def _write(self, data: dict) -> None:
+        self.store.write("market_state", data)
+    def disable_side_until(self, side: str, until_ts: int) -> None:
+        side = (side or "").upper()
+        data = self._read()
+        ds = data.get("disable_side", {})
+        ds[side] = int(until_ts)
+        data["disable_side"] = ds
+        self._write(data)
+    def is_side_disabled(self, side: str) -> bool:
+        side = (side or "").upper()
+        now = int(time.time())
+        ds = (self._read().get("disable_side") or {})
+        ts = int(ds.get(side) or 0)
+        return bool(ts and now < ts)
+
+def _hold_above(df: pd.DataFrame, ema_len: int, bars: int) -> bool:
+    try:
+        if df is None or df.empty: return False
+        ema = df[f"ema{ema_len}"].iloc[-bars:]
+        cls = df["close"].iloc[-bars:]
+        return bool((cls > ema).all())
+    except Exception:
+        return False
+
+def _rsi_trough_ok(df: pd.DataFrame, thr: float) -> bool:
+    try:
+        if df is None or len(df) < 5: return False
+        r = df["rsi14"].iloc[-5:]
+        return float(r.min()) > float(thr)
+    except Exception:
+        return False
+
+def _swing_high(df: pd.DataFrame) -> float | None:
+    try:
+        return float(df["high"].iloc[-5:-1].max())
+    except Exception:
+        return None
+
+def _swing_low(df: pd.DataFrame) -> float | None:
+    try:
+        return float(df["low"].iloc[-5:-1].min())
+    except Exception:
+        return None
+
+def _vol_ratio(df: pd.DataFrame) -> float:
+    try:
+        v = float(df["volume"].iloc[-2])
+        ma20 = float(df["vol_sma20"].iloc[-2] if "vol_sma20" in df.columns else df["volume"].rolling(20).mean().iloc[-2])
+        return v/ma20 if ma20>0 else 0.0
+    except Exception:
+        return 0.0
+
+def _fast_flip_up_1h(btc1h: pd.DataFrame, eth1h: pd.DataFrame) -> bool:
+    ok = 0
+    try:
+        if _hold_above(btc1h, 50, 3): ok += 1
+        if float(btc1h["rsi14"].iloc[-2]) > 55 and _rsi_trough_ok(btc1h, 45): ok += 1
+        sw = _swing_high(btc1h); atr = float(btc1h["atr14"].iloc[-2])
+        if sw is not None and float(btc1h["close"].iloc[-2]) > sw + 0.7*atr: ok += 1
+        if _vol_ratio(btc1h) >= 1.5: ok += 1
+    except Exception:
+        pass
+    eth_ok = False
+    try:
+        eth_ok = sum([
+            int(float(eth1h["close"].iloc[-2]) > float(eth1h["ema50"].iloc[-2])),
+            int(float(eth1h["rsi14"].iloc[-2]) > 55),
+            int((_swing_high(eth1h) or 0) and float(eth1h["close"].iloc[-2]) > _swing_high(eth1h) + 0.7*float(eth1h["atr14"].iloc[-2])),
+        ]) >= 2
+    except Exception:
+        eth_ok = False
+    return (ok >= 3) or (ok >= 2 and eth_ok)
+
+def _fast_flip_down_1h(btc1h: pd.DataFrame, eth1h: pd.DataFrame) -> bool:
+    ok = 0
+    try:
+        if (btc1h["close"].iloc[-3:] < btc1h["ema50"].iloc[-3:]).all(): ok += 1
+        if float(btc1h["rsi14"].iloc[-2]) < 45 and (btc1h["rsi14"].iloc[-5:-1].max() < 55): ok += 1
+        sw = _swing_low(btc1h); atr = float(btc1h["atr14"].iloc[-2])
+        if sw is not None and float(btc1h["close"].iloc[-2]) < sw - 0.7*atr: ok += 1
+        if _vol_ratio(btc1h) >= 1.5: ok += 1
+    except Exception:
+        pass
+    eth_ok = False
+    try:
+        eth_ok = sum([
+            int((eth1h["close"].iloc[-3:] < eth1h["ema50"].iloc[-3:]).all()),
+            int(float(eth1h["rsi14"].iloc[-2]) < 45),
+            int((_swing_low(eth1h) or 0) and float(eth1h["close"].iloc[-2]) < _swing_low(eth1h) - 0.7*float(eth1h["atr14"].iloc[-2])),
+        ]) >= 2
+    except Exception:
+        eth_ok = False
+    return (ok >= 3) or (ok >= 2 and eth_ok)
+
+def run_market_guards(exchange) -> _MarketState:
+    """Fetch BTC/ETH 1H quickly and toggle side cooldowns if flip detected."""
+    try:
+        limit = int(os.getenv("BATCH_LIMIT", "200"))
+    except Exception:
+        limit = 200
+    dfs_btc = fetch_batch("BTC/USDT", timeframes=["1H"], limit=limit, drop_partial=True, ex=exchange)
+    dfs_eth = fetch_batch("ETH/USDT", timeframes=["1H"], limit=limit, drop_partial=True, ex=exchange)
+    btc1h = (dfs_btc or {}).get("1H"); eth1h = (dfs_eth or {}).get("1H")
+    ms = _MarketState(JsonStore(os.getenv("DATA_DIR","./data")))
+    tn = _get_notifier()
+    now = int(time.time())
+    if _fast_flip_up_1h(btc1h, eth1h):
+        ms.disable_side_until("SHORT", now + 3*3600)
+        if tn:
+            try: tn.post_text("⛔ Phòng hộ: Ngưng phát lệnh SHORT do BTC/ETH dốc lên.")
+            except Exception: pass
+    if _fast_flip_down_1h(btc1h, eth1h):
+        ms.disable_side_until("LONG", now + 3*3600)
+        if tn:
+            try: tn.post_text("⛔ Phòng hộ: Ngưng phát lệnh LONG do BTC/ETH dốc lên.")
+            except Exception: pass
+    return ms
+
 def _last_closed_row(df: pd.DataFrame) -> pd.Series | None:
     try:
         if df is None or df.empty:
@@ -749,6 +877,16 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 "notes": out.get("notes", []),
             })
             perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
+            # 0) Block by market-side cooldown (Early Flip Guard)
+            try:
+                _ms = _MarketState(JsonStore(os.getenv("DATA_DIR","./data")))
+                _side = (plan_for_teaser.get("DIRECTION") or "-").upper()
+                if _side in ("LONG","SHORT") and _ms.is_side_disabled(_side):
+                    log.info(f"[{symbol}] skip ENTER due to market guard side-block: {_side}")
+                    pass
+                    return
+            except Exception:
+                pass
             # 1) Check cooldown 24h trước khi post
             if perf.cooldown_active(symbol, seconds=24*3600):
                 log.info(f"[{symbol}] skip ENTER due to cooldown (24h)")
@@ -1106,6 +1244,8 @@ def loop_scheduler():
         kucoin_secret=os.getenv("KUCOIN_API_SECRET"),
         kucoin_passphrase=os.getenv("KUCOIN_API_PASSPHRASE"),
     )
+    # --- Early Flip Guard: evaluate BTC/ETH and toggle side cooldowns ---
+    market_state = run_market_guards(shared_ex)
 
     if os.getenv("RUN_ONCE") == "1":
         # Run all blocks immediately (useful for CI/test)
