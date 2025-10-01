@@ -3,6 +3,14 @@ from datetime import datetime, timezone
 from typing import Dict, Any
 import math, os
 
+# Module exports (giúp static import/IDE & đảm bảo namespace đầy đủ)
+__all__ = [
+    "_side_of", "_entry_of", "_pct_for_hit",
+    "_report_leverage", "_item_leverage", "fmt_price",
+    "render_teaser", "render_full", "render_update",
+    "render_summary", "render_kpi_teaser_two_parts", "render_kpi_week",
+]
+
 # ---------- helpers for KPI % calculation ----------
 def _side_of(t: Dict[str, Any]) -> str:
     """
@@ -42,6 +50,15 @@ def _pct_for_hit(t: Dict[str, Any], price_hit: float) -> float:
 
 
 # --------- leverage helper for reports ----------
+# (Compat aliases — để nơi khác gọi theo tên không dấu gạch dưới)
+pct_for_hit = _pct_for_hit
+entry_of = _entry_of
+side_of = _side_of
+# Defensive: đảm bảo helpers luôn có trong globals khi module được import
+globals().setdefault("_pct_for_hit", _pct_for_hit)
+globals().setdefault("_entry_of", _entry_of)
+globals().setdefault("_side_of", _side_of)
+
 def _report_leverage() -> float:
     """
     Hệ số đòn bẩy cho mục KPI 24H/tuần.
