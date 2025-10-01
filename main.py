@@ -12,9 +12,9 @@ Main worker for Crypto Signal (Railway ready)
   4) build evidence bundle (STRUCT JSON)
   5) decide ENTER/WAIT/AVOID; optionally push Telegram
 """
-import os, sys, time, json, logging, uuid
+import math, os, sys, time, json, logging, uuid
 import threading
-from typing import Any, Dict, List, TYPE_CHECKING
+from typing import Any, Dict, List, TYPE_CHECKING, Tuple
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -47,6 +47,302 @@ def _last_closed_row(df: pd.DataFrame) -> pd.Series | None:
         return df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
     except Exception:
         return None
+
+def _regime_from_bundle(bundle: dict) -> str:
+    """
+    Lấy regime ('low' | 'normal' | 'high') từ evidence.adaptive (nếu có),
+    mặc định 'normal' khi không có dữ liệu.
+    """
+    try:
+        ev = bundle.get("evidence", {}) if isinstance(bundle, dict) else {}
+        ad = ev.get("adaptive") or {}
+        reg = str(ad.get("regime") or "normal").lower()
+        return reg if reg in ("low","normal","high") else "normal"
+    except Exception:
+        return "normal"
+
+def _unrealized_R(trade: dict, px: float) -> float:
+    """
+    Tính R tức thời tại giá px.
+    R = (P/L) / |entry - sl|
+    """
+    try:
+        side  = (trade.get("dir") or trade.get("DIRECTION") or "").upper()
+        entry = float(trade.get("entry"))
+        sl    = float(trade.get("sl"))
+        risk  = abs(entry - sl)
+        if not px or not entry or not sl or risk <= 0:
+            return 0.0
+        if side == "LONG":
+            return (px - entry) / risk
+        elif side == "SHORT":
+            return (entry - px) / risk
+        return 0.0
+    except Exception:
+        return 0.0
+
+def _mfe_R_since_open(df4: pd.DataFrame, trade: dict) -> float:
+    """
+    MFE tính theo 4H kể từ nến *đóng* gần thời điểm post lệnh.
+    - Lấy posted_at (epoch) → tìm các nến 4H đóng sau thời điểm này
+    - Với LONG: MFE dùng 'high'; SHORT: dùng 'low'
+    - Quy đổi sang R: (extreme - entry)/risk (hoặc (entry - extreme)/risk cho SHORT)
+    """
+    try:
+        if df4 is None or df4.empty:
+            return 0.0
+        side  = (trade.get("dir") or trade.get("DIRECTION") or "").upper()
+        entry = float(trade.get("entry"))
+        sl    = float(trade.get("sl"))
+        risk  = abs(entry - sl)
+        if risk <= 0 or side not in ("LONG","SHORT"):
+            return 0.0
+        posted_at = int(trade.get("posted_at") or 0)
+        if not posted_at:
+            return 0.0
+        # Lọc các nến 4H đóng sau thời điểm post
+        dff = df4.copy()
+        # giả định index là epoch (sec) hoặc pandas timestamp → chuyển về epoch
+        try:
+            idx_epoch = dff.index.view('int64') // 10**9
+        except Exception:
+            try:
+                idx_epoch = dff.index.astype('int64') // 10**9
+            except Exception:
+                idx_epoch = None
+        if idx_epoch is None:
+            return 0.0
+        dff = dff[(idx_epoch >= posted_at)]
+        if len(dff) == 0:
+            return 0.0
+        if side == "LONG":
+            extreme = float(dff["high"].max())
+            return (extreme - entry) / risk
+        else:
+            extreme = float(dff["low"].min())
+            return (entry - extreme) / risk
+    except Exception:
+        return 0.0
+
+def _bars_4h_since_ts(df4: pd.DataFrame, since_ts: int) -> int:
+    """Đếm số nến 4H *đã đóng* kể từ epoch `since_ts`."""
+    try:
+        if df4 is None or df4.empty or not since_ts:
+            return 0
+        try:
+            idx_epoch = df4.index.view('int64') // 10**9
+        except Exception:
+            try:
+                idx_epoch = df4.index.astype('int64') // 10**9
+            except Exception:
+                idx_epoch = None
+        if idx_epoch is None:
+            return 0
+        return int((idx_epoch >= int(since_ts)).sum())
+    except Exception:
+        return 0
+
+def _mfe_R_since_ts(df4: pd.DataFrame, trade: dict, since_ts: int) -> float:
+    """
+    MFE quy đổi R kể từ nến 4H *đóng* sau thời điểm since_ts.
+    Dùng high cho LONG, low cho SHORT. R = (extreme-entry)/risk (hoặc đảo dấu cho SHORT).
+    """
+    try:
+        if df4 is None or df4.empty or not since_ts:
+            return 0.0
+        side  = (trade.get("dir") or trade.get("DIRECTION") or "").upper()
+        entry = float(trade.get("entry"))
+        sl    = float(trade.get("sl"))
+        risk  = abs(entry - sl)
+        if risk <= 0 or side not in ("LONG","SHORT"):
+            return 0.0
+        dff = df4.copy()
+        try:
+            idx_epoch = dff.index.view('int64') // 10**9
+        except Exception:
+            try:
+                idx_epoch = dff.index.astype('int64') // 10**9
+            except Exception:
+                idx_epoch = None
+        if idx_epoch is None:
+            return 0.0
+        dff = dff[(idx_epoch >= int(since_ts))]
+        if len(dff) == 0:
+            return 0.0
+        if side == "LONG":
+            extreme = float(dff["high"].max())
+            return (extreme - entry) / risk
+        else:
+            extreme = float(dff["low"].min())
+            return (entry - extreme) / risk
+    except Exception:
+        return 0.0
+
+def _bars_4h_since_open(df4: pd.DataFrame, trade: dict) -> int:
+    """Đếm số nến 4H *đã đóng* kể từ khi post lệnh."""
+    try:
+        if df4 is None or df4.empty:
+            return 0
+        posted_at = int(trade.get("posted_at") or 0)
+        if not posted_at:
+            return 0
+        try:
+            idx_epoch = df4.index.view('int64') // 10**9
+        except Exception:
+            try:
+                idx_epoch = df4.index.astype('int64') // 10**9
+            except Exception:
+                idx_epoch = None
+        if idx_epoch is None:
+            return 0
+        return int((idx_epoch >= posted_at).sum())
+    except Exception:
+        return 0
+
+def _time_exit_and_breakeven_checks(symbol: str,
+                                    df4: pd.DataFrame,
+                                    price_now: float,
+                                    bundle: dict,
+                                    perfdb) -> None:
+    """
+    Thực thi 2 cơ chế:
+    1) Time-based exit khi LOW/NORMAL:
+       - Sau >=3 nến 4H kể từ open mà MFE_R < +0.3R ⇒ CLOSE sớm (cap −0.2R).
+    2) Breakeven turbo khi LOW/NORMAL:
+       - Chưa TP1; nếu R_now ≥ 0.6R (low) hoặc 0.8R (normal) ⇒ dời SL về Entry (sl_dyn=entry).
+    Gửi thông báo qua Telegram bằng format chung.
+    """
+    try:
+        reg = _regime_from_bundle(bundle)  # 'low'|'normal'|'high'
+        if reg not in ("low", "normal"):
+            return
+        tn = _get_notifier()
+        if not tn:
+            pass
+        # Duyệt tất cả lệnh đang sống của symbol
+        open_trades = perfdb.by_symbol(symbol)
+        for t in open_trades:
+            status = (t.get("status") or "OPEN").upper()
+            # -------- Breakeven Turbo (áp dụng khi chưa TP1) --------
+            if status == "OPEN":
+                R_now = _unrealized_R(t, price_now)
+                thr = 0.6 if reg == "low" else 0.8
+                be_flag = bool(t.get("breakeven_turbo"))
+                # chống trùng lặp: đã từng gửi thông báo BE cho lệnh này?
+                be_notified = bool(t.get("be_notify_ts"))
+                if (R_now >= thr) and (not be_flag) and (not be_notified):
+                    # dời SL động về Entry, đánh dấu đã kích hoạt BE và lưu mốc trigger để theo dõi stall-fail
+                    now_ts = int(time.time())
+                    upd = perfdb.update_fields(
+                        t["sid"],
+                        sl_dyn=float(t.get("entry")),
+                        breakeven_turbo=True,
+                        be_notify_ts=now_ts,           # chống trùng lặp thông báo BE
+                        be_trigger_ts=now_ts,          # mốc kích hoạt 0.6R/0.8R
+                        be_peak_R=float(R_now)         # peak R kể từ trigger
+                    )
+                    # notify (một lần duy nhất)
+                    mid = int(upd.get("message_id") or 0)
+                    if tn and mid:
+                        html = render_update(
+                            {"symbol": t.get("symbol"), "DIRECTION": t.get("dir")},
+                            event="Dời SL về Entry.",
+                            extra=None
+                        )
+                        tn.send_channel_update(mid, html)
+
+                # -------- Stall-&-Fail sau trigger (LOW/NORMAL) --------
+                # Chỉ xét khi đã kích hoạt BE, chưa TP1, còn OPEN
+                hits = t.get("hits") or {}
+                has_tp1 = bool(hits.get("TP1"))
+                trig_ts = int(t.get("be_trigger_ts") or 0)
+                if (status == "OPEN") and (trig_ts > 0) and (not has_tp1):
+                    # Cửa sổ quan sát: LOW=2 nến 4H, NORMAL=3 nến 4H
+                    window_n = 2 if reg == "low" else 3
+                    bars = _bars_4h_since_ts(df4, trig_ts)
+                    if bars >= window_n:
+                        # A) Progress test: MFE kể từ trigger không tăng đủ
+                        #    progress = MFE_since_trigger - threshold_at_trigger
+                        thr_prog = 0.15 if reg == "low" else 0.20
+                        mfe_trig = _mfe_R_since_ts(df4, t, trig_ts)
+                        progress = max(0.0, float(mfe_trig - thr))
+                        # Khoảng cách còn lại tới TP1 tính theo R (nếu có TP1)
+                        try:
+                            entry = float(t.get("entry") or 0.0)
+                            sl    = float(t.get("sl") or 0.0)
+                            risk  = abs(entry - sl) if entry and sl else 0.0
+                            tp1_px = float(t.get("tp1")) if t.get("tp1") else None
+                            if risk > 0 and tp1_px:
+                                tp1_R = ((tp1_px - entry) / risk) if (t.get("dir","").upper()=="LONG") else ((entry - tp1_px) / risk)
+                                dist_tp1 = float(tp1_R - R_now)
+                                dist_ok = (dist_tp1 >= 0.15)
+                            else:
+                                dist_ok = True  # không có TP1 => không chặn bởi dist
+                        except Exception:
+                            dist_ok = True
+                        progress_ok = (progress < thr_prog) and dist_ok
+
+                        # Cập nhật peak_R kể từ trigger
+                        try:
+                            prev_peak = float(t.get("be_peak_R") or thr)
+                        except Exception:
+                            prev_peak = thr
+                        peak_R = max(prev_peak, float(mfe_trig))
+                        if peak_R > prev_peak:
+                            perfdb.update_fields(t["sid"], be_peak_R=peak_R)
+
+                        # B) Give-back test: peak_R - R_now đủ sâu
+                        give_thr = 0.35 if reg == "low" else 0.30
+                        give_back = float(max(0.0, peak_R - R_now))
+                        give_ok = (give_back >= give_thr)
+
+                        # REVERSAL (đã có sẵn) — thay thế momentum flip
+                        try:
+                            df_4h = df4
+                            df_1h = None  # có thể truyền 1H nếu muốn chặt hơn
+                            is_rev, _why = _reversal_signal((t.get("dir") or "").upper(), df_4h, df_1h)
+                        except Exception:
+                            is_rev = False
+
+                        # QUY TẮC: CLOSE nếu A & (B hoặc REVERSAL)
+                        if progress_ok and (give_ok or is_rev):
+                            # Tính R_now và ghi KPI weighted 20%
+                            R_cap = R_now  # không cap cứng trong stall-fail
+                            new_R = float(t.get("realized_R") or 0.0) + 0.2 * R_cap
+                            perfdb.update_fields(t["sid"], realized_R=new_R)
+                            perfdb.close(t["sid"], reason="STALL_FAIL_AFTER_TRIGGER")
+                            # notify
+                            mid = int((t.get("message_id") or 0))
+                            msg = "Đóng lệnh sớm - Giá chững lại, có dấu hiệu suy yếu/đảo chiều."
+                            html = render_update({"symbol": t.get("symbol"),
+                                                  "DIRECTION": t.get("dir")},
+                                                  event=msg,
+                                                  extra={"margin_pct": None})
+                            if tn and mid:
+                                tn.send_channel_update(mid, html)
+
+            # -------- Time-based exit 3 x 4H (< +0.3R) --------
+            bars = _bars_4h_since_open(df4, t)
+            if bars >= 3:
+                mfeR = _mfe_R_since_open(df4, t)
+                if mfeR < 0.3:
+                    # Tính R ở giá hiện tại và cap −0.2R (weighted 20%)
+                    R_now = _unrealized_R(t, price_now)
+                    R_cap = max(R_now, -0.2)
+                    new_R = float(t.get("realized_R") or 0.0) + 0.2 * R_cap
+                    perfdb.update_fields(t["sid"], realized_R=new_R)
+                    perfdb.close(t["sid"], reason="TIME_EXIT")
+                    # notify
+                    mid = int((t.get("message_id") or 0))
+                    msg = "Đóng lệnh sớm - Giá không có tiến triển."
+                    html = render_update({"symbol": t.get("symbol"),
+                                          "DIRECTION": t.get("dir")},
+                                          event=msg,
+                                          extra={"margin_pct": None})
+                    if tn and mid:
+                        tn.send_channel_update(mid, html)
+    except Exception as e:
+        log.warning(f"time-exit/breakeven checks failed for {symbol}: {e}")
 
 def _current_vn_window(now_local: datetime) -> tuple[int, int] | None:
     """
@@ -502,6 +798,20 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
             log.warning(f"[{symbol}] ENTER flow failed: {e}")
                 
     # --- end teaser post ---
+
+    # Sau khi có dữ liệu df4 và price hiện tại, chạy các check thoát sớm/BE
+    try:
+        price_now = None
+        if df4 is not None and len(df4):
+            price_now = float(df4["close"].iloc[-1])
+        elif df1 is not None and len(df1):
+            price_now = float(df1["close"].iloc[-1])
+        if price_now:
+            eb_bundle = build_evidence_bundle(symbol, dfs, cfg)
+            _time_exit_and_breakeven_checks(symbol, dfs.get("4H"), price_now, eb_bundle, SignalPerfDB(JsonStore(DATA_DIR)))
+    except Exception as e:
+        log.warning(f"[{symbol}] post-scan checks failed: {e}")
+      
     # --- progress check: update TP/SL hits for existing OPEN trades ---
     try:
         df_1h = dfs.get("1H")
