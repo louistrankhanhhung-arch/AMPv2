@@ -3,6 +3,44 @@ from datetime import datetime, timezone
 from typing import Dict, Any
 import math, os
 
+# ---------- helpers for KPI % calculation ----------
+def _side_of(t: Dict[str, Any]) -> str:
+    """
+    Lấy side của lệnh theo các khóa phổ biến.
+    """
+    return str(t.get("side") or t.get("DIRECTION") or "").upper()
+
+def _entry_of(t: Dict[str, Any]) -> float:
+    """
+    Lấy giá entry theo các khóa phổ biến. Thiếu thì trả 0 để tránh ZeroDivisionError.
+    """
+    for k in ("entry", "ENTRY", "entry_price", "price_entry"):
+        try:
+            v = float(t.get(k))
+            if v and v > 0:
+                return v
+        except Exception:
+            continue
+    return 0.0
+
+def _pct_for_hit(t: Dict[str, Any], price_hit: float) -> float:
+    """
+    % thay đổi so với entry theo side (LONG dương khi giá tăng; SHORT dương khi giá giảm).
+    Trả về đơn vị % (ví dụ 1.23 nghĩa là +1.23%).
+    An toàn với dữ liệu thiếu: nếu không đủ entry/price thì trả 0.0.
+    """
+    try:
+        entry = _entry_of(t)
+        if not entry or not price_hit:
+            return 0.0
+        pct = (float(price_hit) - float(entry)) / float(entry) * 100.0
+        if _side_of(t) == "SHORT":
+            pct = -pct
+        return float(pct)
+    except Exception:
+        return 0.0
+
+
 # --------- leverage helper for reports ----------
 def _report_leverage() -> float:
     """
