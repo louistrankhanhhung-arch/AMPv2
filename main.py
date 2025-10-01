@@ -1534,7 +1534,7 @@ def loop_scheduler():
           
         # NEW: KPI lúc 18:18 local (VN) ~ 11:18 UTC
         try:
-            if now.hour == 20 and now.minute == 55 and (last_kpi_day != (now.year, now.month, now.day)):
+            if now.hour == 21 and now.minute == 15 and (last_kpi_day != (now.year, now.month, now.day)):
                 last_kpi_day = (now.year, now.month, now.day)
                 # Teaser KPI: list 24H (chỉ lệnh ĐÓNG-chưa-báo-cáo) + hiệu suất NGÀY
                 perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR", "./data")))
