@@ -1532,9 +1532,9 @@ def loop_scheduler():
         except Exception as e:
             log.warning("schedule 08:57/20:57 failed: %s", e)
           
-        # NEW: KPI lúc 21:50 local (VN)
+        # NEW: KPI lúc 18:30 local (VN)
         try:
-            if now.hour == 21 and now.minute == 50 and (last_kpi_day != (now.year, now.month, now.day)):
+            if now.hour == 18 and now.minute == 30 and (last_kpi_day != (now.year, now.month, now.day)):
                 last_kpi_day = (now.year, now.month, now.day)
                 # Teaser KPI: list 24H (chỉ lệnh ĐÓNG-chưa-báo-cáo) + hiệu suất NGÀY
                 perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR", "./data")))
