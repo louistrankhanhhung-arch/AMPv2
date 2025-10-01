@@ -806,9 +806,15 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
             price_now = float(df4["close"].iloc[-1])
         elif df1 is not None and len(df1):
             price_now = float(df1["close"].iloc[-1])
-        if price_now:
-            eb_bundle = build_evidence_bundle(symbol, dfs, cfg)
-            _time_exit_and_breakeven_checks(symbol, dfs.get("4H"), price_now, eb_bundle, SignalPerfDB(JsonStore(DATA_DIR)))
+        if price_now is not None:
+            # Dùng lại 'bundle' đã build từ feats_by_tf ở trên (đúng cấu trúc)
+            _time_exit_and_breakeven_checks(
+                symbol,
+                dfs.get("4H"),
+                price_now,
+                bundle,
+                SignalPerfDB(JsonStore(os.getenv("DATA_DIR", "./data")))
+            )
     except Exception as e:
         log.warning(f"[{symbol}] post-scan checks failed: {e}")
       
