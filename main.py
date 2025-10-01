@@ -883,7 +883,6 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 _side = (plan_for_teaser.get("DIRECTION") or "-").upper()
                 if _side in ("LONG","SHORT") and _ms.is_side_disabled(_side):
                     log.info(f"[{symbol}] skip ENTER due to market guard side-block: {_side}")
-                    pass
                     return
             except Exception:
                 pass
