@@ -1387,7 +1387,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     hits["TP5"] = int(__import__("time").time())
                     perf.close(t["sid"], "TP5")
                     t["status"] = "CLOSE"
-                    note = "✨ TP5 hit — Đóng lệnh."
+                    note = "✨ TP5 hit — Hoàn thành tất cả mục tiêu."
                     extra = {"margin_pct": margin_pct(float(t["tp5"]))}
                     if tn2:
                         if msg_id:
