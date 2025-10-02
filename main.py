@@ -33,18 +33,6 @@ from storage import SignalPerfDB, JsonStore, UserDB
 from templates import render_update, render_teaser
 from fb_notifier import FBNotifier
 
-from intraday_core import decide_intraday, IntradayCore, IntradayCfg
-
-bundle = {
-  "symbol": sym,
-  "dfs":   {"15m": df15, "1H": df1h, "4H": df4h},
-  "market": {"BTC": {"1H": btc1h, "4H": btc4h},
-             "ETH": {"1H": eth1h, "4H": eth4h}},
-  "liquidity": {"spread": spread_est, "vol_usd": vol_usd_est}
-}
-plan = decide_intraday(bundle)   # hoặc IntradayCore().decide(bundle)
-
-
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 TIMEFRAMES = ("1H", "4H", "1D")
 
