@@ -20,6 +20,8 @@ import ccxt  # type: ignore
 # Timeframe mapping (friendly -> ccxt)
 # ---------------------------------
 TIMEFRAME_MAP: Dict[str, str] = {
+    "5M": "5m",
+    "15M": "15m",
     "1H": "1h",
     "4H": "4h",
     "1D": "1d",
@@ -307,8 +309,8 @@ def fetch_ohlcv_history(
     if end_ms is not None:
         out = out[out.index <= pd.to_datetime(end_ms, unit="ms", utc=True)]
 
-    # Only drop partial bar for 1H timeframe
-    if drop_partial and tf_str == "1h" and not out.empty:
+    # Drop partial bar for short TFs used in execution/context
+    if drop_partial and tf_str in ("5m", "15m", "1h") and not out.empty:
         out = _drop_partial_bar(out, bar_ms)
 
     return out
@@ -316,7 +318,7 @@ def fetch_ohlcv_history(
 
 def fetch_batch(
     symbol: str,
-    timeframes: Iterable[str] = ("1H", "4H", "1D"),
+    timeframes: Iterable[str] = ("5M", "15M","1H", "4H", "1D"),
     *,
     limit: int = 300,
     since_ms: Optional[int] = None,
