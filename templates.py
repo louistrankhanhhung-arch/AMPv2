@@ -284,8 +284,8 @@ def render_kpi_teaser_two_parts(detail_24h: dict,
     avgR_lev        = (sum_R_lev / max(1, n))
     avg_usd_lev     = avgR_lev * 100.0
 
-    # Build lines (new format/order)
-    lines = [
+    # Build lines (append performance block after the 24H list)
+    lines += [
         "📊 <b>Hiệu suất giao dịch:</b>",
         f"- Tổng lệnh đã đóng: {n}",
         f"- Tỉ lệ thắng: {wr_pct:.2f}%",
