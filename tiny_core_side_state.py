@@ -152,11 +152,12 @@ def _apply_sl_upgrades(side_meta: Any, side: str, entry: float, sl: float, cfg: 
     atr = float(_safe_get(side_meta, "atr", 0.0) or 0.0)
     regime = str(_safe_get(side_meta, "regime", "normal"))
     # wide_range tweak: reduce min ATR gap by 0.1 (floor at 0.50) to make TP1 easier
-        try:
-            if bool(_safe_get(side_meta, "wide_range", False)):
-                sl_min_atr = max(0.50, sl_min_atr - 0.10)
-        except Exception:
-            pass
+    # Trong wide_range, giảm nhẹ yêu cầu tối thiểu 0.1 ATR nhưng không thấp hơn 0.50 ATR
+    try:
+        if bool(_safe_get(side_meta, "wide_range", False)):
+            sl_min_atr = max(0.50, sl_min_atr - 0.10)
+    except Exception:
+        pass
     if regime == "low":
         min_atr = cfg.sl_min_atr_low
     elif regime == "high":
