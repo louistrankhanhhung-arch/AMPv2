@@ -636,6 +636,31 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
             meta.update({"gate": "continuation"})
             return "trend_break", side_c, meta
 
+    # --- 0b) REVERSAL candidate (mean-reversion / false-breakout) ---
+    try:
+        ev_mr   = _get_ev(eb, 'mean_reversion')
+        ev_fb_o = _get_ev(eb, 'false_breakout')
+        ev_fb_d = _get_ev(eb, 'false_breakdown')
+        side_rev = None
+        why_rev = []
+        if ev_mr.get('ok'):
+            side_rev = str(ev_mr.get('side') or '').lower() or None
+            why_rev.append('mean_reversion')
+        elif ev_fb_o.get('ok'):
+            side_rev = 'short'; why_rev.append('false_breakout')
+        elif ev_fb_d.get('ok'):
+            side_rev = 'long';  why_rev.append('false_breakdown')
+        if side_rev in ('long','short'):
+            mini_ok = bool(_safe_get_local(si, 'mini_retest_long', False)) if side_rev=='long' \
+                      else bool(_safe_get_local(si, 'mini_retest_short', False))
+            # cho phép dùng reclaim_ok như một confirm mềm nếu chưa có mini_retest
+            confirm_ok = mini_ok or bool(_safe_get_local(si, 'reclaim_ok', False))
+            if confirm_ok:
+                meta.update({'gate': 'reversal', 'why': ','.join(why_rev)})
+                return 'reversal', side_rev, meta
+    except Exception:
+        pass
+
     # --- 1) BREAK regime (trend_break) có guard NATR & volume ---
     # Early-breakout/Continuation: khi chưa có breakout flag nhưng đủ điều kiện động lượng trong regime NATR thấp
     if (not _safe_get_local(si, 'breakout_ok', False)) and bool(getattr(cfg, 'early_breakout_ok', True)):
