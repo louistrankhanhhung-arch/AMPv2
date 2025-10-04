@@ -227,7 +227,7 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     try:
         df4 = (features_by_tf or {}).get("4H", {}).get("df")
         df1 = (features_by_tf or {}).get("1H", {}).get("df")
-        if dec.side in ("long", "short"):
+        if dec.side in ("long", "short") and (dec.state or "").lower() != "reversal":
             is_rev, why_rev = _reversal_signal(dec.side.upper(), df4, df1)
             if is_rev:
                 dec.decision = "WAIT"
@@ -473,6 +473,9 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     f_tp3   = _fmt(tp3, dp) if tp3 is not None else None
 
     # legacy log line(s) — keep for backward-compat printing
+    # Set plan STRATEGY for templates
+    if (state or '').lower() == 'reversal':
+        plan['STRATEGY'] = 'Reversal'
     legacy_lines = []
     legacy_lines.append(
         " ".join(
