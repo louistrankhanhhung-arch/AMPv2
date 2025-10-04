@@ -188,29 +188,36 @@ def render_kpi_teaser_two_parts(detail_24h: dict,
     if not items:
         lines += ["Không có tín hiệu nào phù hợp.", ""]
     else:
-        # Danh sách lệnh đã đóng (tận dụng lại code/biến sẵn có)
+        # Danh sách lệnh đã đóng (24H) — dùng số THỰC NHẬN
         lines.append("<b>Danh sách lệnh đã đóng (24H):</b>")
-        icons = {"TP1": "🟢", "TP2": "🟢", "TP3": "🟢", "TP4": "🟢", "TP5": "🟢", "SL": "⛔"}
+        icons = {"TP1": "🟢", "TP2": "🟢", "TP3": "🟢", "TP4": "🟢", "TP5": "🟢", "SL": "⛔", "CLOSE": "⚪"}
         for it in items:
-            status = str(it.get("status") or it.get("closed_reason") or "").upper()
+            status = str(it.get("status") or "").upper()
             icon = icons.get(status, "⚪")
-            # pct ưu tiên số đã weight; fallback số thô
-            try:
-                pct = float(it.get("pct_weighted") or it.get("pct") or 0.0)
-            except Exception:
-                pct = 0.0
-            # R nếu có (ưu tiên R_weighted)
-            try:
-                Rv = float(it.get("R_weighted") or it.get("R") or 0.0)
-            except Exception:
-                Rv = 0.0
             sym  = it.get("symbol") or "?"
-            diru = (it.get("dir") or it.get("direction") or "").upper()
+            rW   = float(it.get("R_weighted") or it.get("R") or 0.0)
+            try:
+                pctW = float(it.get("pct_weighted") or 0.0)
+            except Exception:
+                pctW = 0.0
             lev  = _item_leverage(it)
-            lev_s = f" x{int(lev)}" if lev and lev > 0 else ""
-            dir_part = f" {diru}" if diru else ""
-            lines.append(f"{icon} {sym}{dir_part} • {status}: {pct:+.2f}% ({Rv:+.2f}R){lev_s}")
+            lev_s = f" • x{int(lev)}" if isinstance(lev,(int,float)) and lev>0 else ""
+            lines.append(f"{icon} <b>{sym}</b> — {status} • <b>{rW:+.2f}R</b> • <b>{pctW:+.2f}%</b>{lev_s}")
         lines.append("")
+        
+    # Khối hiệu suất ngày (Today) — hiển thị cả R và % thực nhận
+    lines.append("<b>Hiệu suất ngày (Today)</b>")
+    try:
+        wr = float(kpi_day.get("wr", 0.0) or 0.0)
+        avgR = float(kpi_day.get("avgR", 0.0) or 0.0)
+        sumR = float(kpi_day.get("sumR", 0.0) or 0.0)
+        avgPctW = float(kpi_day.get("avgPctW", 0.0) or 0.0)
+        sumPctW = float(kpi_day.get("sumPctW", 0.0) or 0.0)
+        lines.append(f"• Win-rate: {wr:.0%}")
+        lines.append(f"• Avg R: {avgR:.2f}  |  Total R: {sumR:.2f}")
+        lines.append(f"• Avg %: {avgPctW:.2f}%  |  Total %: {sumPctW:.2f}%")
+    except Exception:
+        lines.append("• (thiếu dữ liệu)")
 
     totals = (detail_24h.get("totals") or {}) if isinstance(detail_24h, dict) else {}
     n = int(totals.get("n", 0) or 0)
