@@ -1096,6 +1096,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 "DIRECTION": (plan.get("direction") or plan.get("dir") or "-").upper() if isinstance(plan, dict) else "-",
                 "STATE": state,
                 "notes": out.get("notes", []),
+                "STRATEGY": out.get("strategy"),
             })
             perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
             # 0) Block by market-side cooldown (Early Flip Guard)
