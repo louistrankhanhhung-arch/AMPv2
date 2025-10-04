@@ -1537,13 +1537,26 @@ def loop_scheduler():
         try:
             if now.hour == 18 and now.minute == 30 and (last_kpi_day != (now.year, now.month, now.day)):
                 last_kpi_day = (now.year, now.month, now.day)
-                # Teaser KPI: list 24H (chỉ lệnh ĐÓNG-chưa-báo-cáo) + hiệu suất NGÀY
+                # Teaser KPI 24H — dùng số THỰC NHẬN: realized_R (R_weighted) & pct_weighted
                 perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR", "./data")))
-                detail_24h, sids_to_mark = perf.kpis_24h_unreported()
-                kpi_day = perf.kpis("day")           # sumR, wr, ...
-                detail_day = perf.kpis_detail("day") # equity 1x + tp_counts
+                # Lấy dữ liệu 24H chuẩn hoá
+                detail_24h = perf.kpis_24h_detail() if hasattr(perf, "kpis_24h_detail") else {"items": [], "totals": {}}
+                totals = detail_24h.get("totals") or {}
+                # Tóm tắt hiệu suất ngày để render (R & % thực nhận)
+                kpi_day = {
+                    "wr":       float(totals.get("win_rate", 0.0) or 0.0),
+                    "avgR":     float(totals.get("avg_R", 0.0) or 0.0),
+                    "sumR":     float(totals.get("sum_R", 0.0) or 0.0),
+                    "avgPctW":  float(totals.get("avg_pct_weighted", 0.0) or 0.0),
+                    "sumPctW":  float(totals.get("sum_pct_weighted", 0.0) or 0.0),
+                }
+                # detail_day chỉ cần truyền các khoá % để template hiển thị nếu có
+                detail_day = {
+                    "avgPctW": kpi_day["avgPctW"],
+                    "sumPctW": kpi_day["sumPctW"],
+                }
                 report_date_str = now.strftime("%d/%m/%Y")
-          
+
                 tn = _get_notifier()
                 fb = _get_fb_notifier()
                 from templates import render_kpi_teaser_two_parts
@@ -1557,11 +1570,6 @@ def loop_scheduler():
                         fb.post_kpi_24h(html)
                     except Exception as e:
                         log.warning(f"KPI-24H fanpage failed: {e}")
-                # Đánh dấu đã report (không phụ thuộc TN)
-                try:
-                    perf.mark_kpi24_reported(sids_to_mark)
-                except Exception:
-                    pass
             # NEW: KPI TUẦN — 08:16 sáng Thứ Bảy (Asia/Ho_Chi_Minh) — Telegram & Fanpage độc lập
             if now.weekday() == 5 and now.hour == 8 and now.minute == 16:
                 wk_key = (now.isocalendar().year, now.isocalendar().week)
