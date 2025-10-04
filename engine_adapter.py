@@ -245,15 +245,6 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     new_tp4 = _mid(tp2, tp3) if (tp2 is not None and tp3 is not None) else None
     new_tp5 = tp3
     tp1, tp2, tp3, tp4, tp5 = new_tp1, new_tp2, new_tp3, new_tp4, new_tp5
-    # Range-aware TP1: if wide_range, set TP1 at 0.6R from entry for quicker partials
-    if bool((dec.meta or {}).get('wide_range', False)) and (dec.setup.entry is not None) and (dec.setup.sl is not None):
-        try:
-            if dec.side == 'long':
-                tp1 = float(dec.setup.entry) + 0.6 * (float(dec.setup.entry) - float(dec.setup.sl))
-            elif dec.side == 'short':
-                tp1 = float(dec.setup.entry) - 0.6 * (float(dec.setup.sl) - float(dec.setup.entry))
-        except Exception:
-            pass
     rr1 = _rr(dec.setup.entry, dec.setup.sl, tp1, dec.side)
     rr2 = _rr(dec.setup.entry, dec.setup.sl, tp2, dec.side)
     rr3 = _rr(dec.setup.entry, dec.setup.sl, tp3, dec.side)
@@ -313,10 +304,7 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     rr2_base = float(os.getenv("RR2_FLOOR", "1.30"))  # floor cho TP2 (cũ) -> TP3 (mới)
     rr3_base = float(os.getenv("RR3_FLOOR", "1.80"))  # floor cho TP3 (cũ) -> TP5 (mới)
     regime = (dec.meta or {}).get("regime", "normal") if isinstance(dec.meta, dict) else "normal"
-    wide_range = bool((dec.meta or {}).get('wide_range', False))
-    if wide_range:
-        rr_tp3_floor, rr_tp5_floor = 1.10, 1.60
-    elif regime == "high":
+    if regime == "high":
         rr_tp3_floor, rr_tp5_floor = 1.10, 1.60
     elif regime == "normal":
         rr_tp3_floor, rr_tp5_floor = 1.20, 1.70
