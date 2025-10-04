@@ -555,6 +555,22 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     if "soft_proximity" in dec.reasons:
         notes.append(f"Soft proximity (BB/EMA): {prox.get('why','')}")
 
+    # Build humanized strategy label for templates/teaser
+    def _strategy_label(state: str, meta: Dict[str, Any] | None) -> str:
+        label = (state or "").replace("_", " ").title() if state else "-"
+        try:
+            gate = (meta or {}).get("gate")
+            if gate == "continuation" and "trend" in (state or ""):
+                label = "Breakout (Continuation)"
+            if (meta or {}).get("early_breakout"):
+                # nếu early breakout, bổ sung tag
+                if "Breakout" in label or "Trend Break" in label or "Trend" in label:
+                    label = label.replace("Trend Break", "Breakout").replace("Trend", "Breakout")
+                label = f"{label} — Early"
+        except Exception:
+           pass
+        return label
+
     out = {
         "symbol": symbol,
         "timeframe": timeframe,
@@ -568,5 +584,6 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         "notes": notes,
         "headline": headline,
         "telegram_signal": telegram_signal,
+        "strategy": _strategy_label(state, dec.meta),
     }
     return out
