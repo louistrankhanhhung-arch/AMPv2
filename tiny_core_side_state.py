@@ -869,14 +869,43 @@ def build_setup(si: SI, state: str, side: Optional[str], cfg: SideCfg) -> Setup:
             st.entry = float(min(price, ref))
             st.sl = float((lvl + 0.6 * atr) if lvl is not None else (st.entry + 0.8 * atr))
     else:
-        # RETEST: ưu tiên mid
+        # RETEST/REVERSAL: ưu tiên EDGE theo side để tối ưu RR (không dùng mid mặc định)
         z_mid = _safe_get(si, "retest_zone_mid")
-        st.entry = float(z_mid if z_mid is not None else price)
+        z_lo  = _safe_get(si, "retest_zone_lo")
+        z_hi  = _safe_get(si, "retest_zone_hi")
+        # pad entry theo ATR và regime: high-vol -> pad lớn hơn để tránh fill sớm
+        try:
+            regime = (_safe_get(si, "regime") or "normal")
+        except Exception:
+            regime = "normal"
+        pad_k = 0.12 if regime in ("low","normal") else 0.18
+        e_pad = pad_k * atr
 
-    # SL: nếu có zone_lo/hi dùng làm mốc, có pad nhỏ; else dùng ATR
+        if side == "long":
+            # Ưu tiên mua gần cạnh dưới vùng retest để tối ưu RR; không vượt quá mid
+            if z_lo is not None and z_mid is not None:
+                st.entry = float(min(z_lo + e_pad, z_mid))
+            elif z_lo is not None:
+                st.entry = float(z_lo + e_pad)
+            elif z_mid is not None:
+                st.entry = float(min(price, z_mid))  # snap về mid nếu giá cao hơn
+            else:
+                st.entry = float(price)
+        elif side == "short":
+            # Ưu tiên bán gần cạnh trên vùng retest để tối ưu RR; không thấp hơn mid
+            if z_hi is not None and z_mid is not None:
+                st.entry = float(max(z_hi - e_pad, z_mid))
+            elif z_hi is not None:
+                st.entry = float(z_hi - e_pad)
+            elif z_mid is not None:
+                st.entry = float(max(price, z_mid))
+            else:
+                st.entry = float(price)
+        else:
+            st.entry = float(price)
+
+    # SL: nếu có zone_lo/hi dùng làm mốc, có pad nhỏ; else dùng ATR (giữ như cũ)
     if state != "trend_break":
-        z_lo = _safe_get(si, "retest_zone_lo")
-        z_hi = _safe_get(si, "retest_zone_hi")
         pad = 0.1 * atr
         if side == "long":
             if z_lo is not None:
@@ -966,8 +995,9 @@ def decide_5_gates(state: str, side: Optional[str], setup: Setup, si: SI, cfg: S
         dec.reasons = sorted(set(reasons))
         return dec
 
-    # Proximity guard: không vào nếu quá xa entry (>0.75 ATR)
-    if abs(price - setup.entry) > (0.75 * atr):
+    # Proximity guard: cho REVERSAL linh hoạt hơn (≤1.0 ATR), mặc định 0.75 ATR
+    far_thr = 1.0 if (state or '').lower() == 'reversal' else 0.75
+    if abs(price - setup.entry) > (far_thr * atr):
         reasons.append("far_from_entry")
 
     # RR guard: RR tới TP1 tối thiểu 1.0
