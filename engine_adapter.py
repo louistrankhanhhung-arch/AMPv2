@@ -142,8 +142,17 @@ def _near_soft_level_guard_multi(
             continue
         bb_u, bb_m, bb_l = lv.get("bb_upper"), lv.get("bb_mid"), lv.get("bb_lower")
         e20, e50 = lv.get("ema20"), lv.get("ema50")
-        thr_band   = 0.35 * atr
-        thr_center = 0.30 * atr
+        # regime-adaptive thresholds
+        try:
+            regime = (feats.get('4H', {}).get('meta', {}) or {}).get('regime', 'normal')
+        except Exception:
+            regime = 'normal'
+        if regime == 'high':
+            thr_band, thr_center = 0.40 * atr, 0.35 * atr
+        elif regime == 'low':
+            thr_band, thr_center = 0.30 * atr, 0.25 * atr
+        else:
+            thr_band, thr_center = 0.35 * atr, 0.30 * atr
         def _dist(a, b):
             try: return abs(float(a) - float(b))
             except Exception: return float("inf")
@@ -199,6 +208,18 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     # evidence_bundle expected to include 'evidence' object; pass through as eb-like
     eb = evidence_bundle.get("evidence") or evidence_bundle  # tolerate both shapes
     cfg = SideCfg()
+    # ===== ATR-based TP ladder via ENV =====
+    # ATR_TP_MODE: "1"/"true"/"True" để bật
+    # ATR_TP_BASE: "1.0,1.5,2.5" (ít nhất 3 số) nếu muốn đổi base
+    try:
+        if str(os.getenv("ATR_TP_MODE", "0")).strip() in ("1", "true", "True"):
+            cfg.atr_tp_mode = True
+        _base = str(os.getenv("ATR_TP_BASE", "1.0,1.5,2.5")).strip()
+        parts = [float(x) for x in _base.split(",") if x.strip()]
+        if len(parts) >= 3:
+            cfg.atr_tp_base = (parts[0], parts[1], parts[2])
+    except Exception:
+        pass
     dec = run_side_state_core(features_by_tf, eb, cfg)
 
     # -------- REVERSAL GUARD (filter before release) --------
@@ -339,8 +360,10 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     if rr_floor_hit and dec.side in ("long","short") and dec.setup.entry is not None and dec.setup.sl is not None:
         # Soft rule sau expand:
         #   Nếu RR1>=0.8 và (RR@TP3 < sàn) nhưng (RR@TP5 >= sàn) => vẫn ENTER, chỉ log cảnh báo
+        # Cho phép "allow_soft" nếu TP5 đạt floor dù TP3 chưa đạt; RR1 tối thiểu tuỳ regime
+        allow_rr1_min = 0.4 if regime == "high" else 0.5
         allow_soft = (
-            (rr1 is not None and rr1 >= 0.5) and
+            (rr1 is not None and rr1 >= allow_rr1_min) and
             (tp3 is not None and rr3 is not None and rr3 < rr_tp3_floor) and
             (tp5 is not None and rr5 is not None and rr5 >= rr_tp5_floor)
         )
