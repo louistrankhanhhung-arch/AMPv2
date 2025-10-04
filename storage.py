@@ -9,6 +9,16 @@ try:
 except Exception:
     _tmpl_pct_for_hit = None
 
+ leverage helpers (dùng nếu có)
+try:
+    from templates import _item_leverage as _tmpl_item_leverage
+except Exception:
+    _tmpl_item_leverage = None
+try:
+    from templates import _report_leverage as _tmpl_report_leverage
+except Exception:
+    _tmpl_report_leverage = None
+
 def _pct_for_hit(t: dict, price_hit: float) -> float:
     """
     % thay đổi so với entry theo side (LONG dương khi giá tăng; SHORT dương khi giá giảm).
@@ -184,6 +194,85 @@ class SignalPerfDB:
         data[sid] = t
         self._write(data)
         return t
+        
+    # === KPI 24H: các lệnh đóng trong [now-24h, now) với % thực nhận & R_weighted ===
+    def kpis_24h_detail(self, now_ts: int | None = None) -> dict:
+        """
+        Trả về:
+          {
+            "items": [
+              {
+                "sid":..., "symbol":..., "status": "TP1|TP2|TP3|TP4|TP5|SL|CLOSE",
+                "R_weighted": <float>,           # realized_R (đã scale-out 20%/TP)
+                "pct_weighted": <float>,         # % thực nhận = realized_R * risk% * leverage
+                "leverage_used": <float>,        # leverage hiệu dụng của lệnh
+              }, ...
+            ],
+            "totals": {
+              "n":..., "wins":..., "losses":..., "win_rate":..., 
+              "sum_R":..., "avg_R":..., "sum_pct_weighted":..., "avg_pct_weighted":...
+            }
+          }
+        """
+        import time
+        now = int(now_ts or time.time())
+        start_ts = now - 24*3600
+
+        def _label_of(t: dict) -> str:
+            st = (t.get("status") or "OPEN").upper()
+            if st == "SL":
+                return "SL"
+            # Ưu tiên nhãn TP cao nhất đã từng hit khi CLOSE
+            hits = t.get("hits") or {}
+            for lab in ("TP5","TP4","TP3","TP2","TP1"):
+                if hits.get(lab):
+                    return lab
+            return "CLOSE" if st in ("CLOSE", "TP3", "TP4", "TP5") else st
+
+        items: List[Dict[str, Any]] = []
+        wins = losses = 0
+        sum_R = 0.0
+        sum_pctW = 0.0
+        for t in self._all().values():
+            st = (t.get("status") or "").upper()
+            if st not in ("SL","CLOSE","TP3","TP4","TP5"):  # coi TP3+ coi như đã đóng trailing
+                continue
+            closed_at = int(t.get("closed_at") or 0)
+            if not (start_ts <= closed_at < now):
+                continue
+            label = _label_of(t)
+            r_w = float(t.get("realized_R") or 0.0)
+            risk_pct_1R = _risk_pct_of_one_R(t)             # %/R (không đòn bẩy)
+            lev = _effective_leverage_for_item(t)           # leverage hiệu dụng
+            pct_w = float(r_w * risk_pct_1R * lev)          # % thực nhận
+            items.append({
+                "sid": t.get("sid"),
+                "symbol": t.get("symbol"),
+                "status": label,
+                "R_weighted": r_w,
+                "pct_weighted": pct_w,
+                "leverage_used": lev,
+            })
+            sum_R += r_w
+            sum_pctW += pct_w
+            # CLOSE chưa có TP không tính win
+            hits = t.get("hits") or {}
+            has_tp = any(hits.get(k) for k in ("TP1","TP2","TP3","TP4","TP5"))
+            win = (label != "SL") and not (label == "CLOSE" and not has_tp)
+            wins += int(win); losses += int(not win)
+
+        n = len(items)
+        totals = {
+            "n": n,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": (wins / n) if n else 0.0,
+            "sum_R": float(sum_R),
+            "avg_R": float(sum_R / n) if n else 0.0,
+            "sum_pct_weighted": float(sum_pctW),
+            "avg_pct_weighted": float(sum_pctW / n) if n else 0.0,
+        }
+        return {"items": items, "totals": totals}
 
     # === KPI tuần: các lệnh ĐÓNG trong [start_ts, end_ts) ===
     def kpis_week_detail(self, start_ts: int, end_ts: int) -> dict:
@@ -484,6 +573,46 @@ class SignalPerfDB:
                 return (e - float(price_hit)) / e * 100.0
             except Exception:
                 return 0.0
+
+        def _risk_pct_of_one_R(t: dict) -> float:
+            """
+            Quy đổi 1R về % giá (không đòn bẩy), để từ realized_R → % thực nhận.
+            1R = |entry - sl|. Tính % = (|entry - sl| / entry)*100.
+            """
+            try:
+                e = float(t.get("entry") or 0.0)
+                s = float(t.get("sl") or 0.0)
+                if not e or not s:
+                    return 0.0
+                return abs(e - s) / e * 100.0
+            except Exception:
+                return 0.0
+        
+        def _effective_leverage_for_item(t: dict) -> float:
+            """
+            Lấy leverage hiệu dụng:
+              1) risk_size_hint/leverage/lev của item (nếu có)
+              2) fallback ENV REPORT_LEVERAGE (qua templates._report_leverage nếu sẵn)
+              3) cuối cùng = 1.0
+            """
+            # per-item
+            if _tmpl_item_leverage is not None:
+                try:
+                    lev = float(_tmpl_item_leverage(t))
+                    if lev and lev > 0:
+                        return lev
+                except Exception:
+                    pass
+            # ENV default (templates)
+            if _tmpl_report_leverage is not None:
+                try:
+                    lev_env = float(_tmpl_report_leverage())
+                    if lev_env and lev_env > 0:
+                        return lev_env
+                except Exception:
+                    pass
+            return 1.0
+        
         def _r_estimate(t: dict, status: str) -> float:
             rl = (t.get("r_ladder") or {})
             if status == "TP5": return float(rl.get("tp5") or rl.get("TP5") or 3.0)
