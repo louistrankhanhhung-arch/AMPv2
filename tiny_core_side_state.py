@@ -47,7 +47,12 @@ class SideCfg:
 
     # TP ladder mặc định cho tính RR (fallback khi thiếu band)
     rr_targets: Tuple[float, float, float] = (1.2, 2.0, 3.0)
-
+    # ---- ATR-based TP ladder option ----
+    # Khi bật atr_tp_mode, core sẽ trả về 3 mốc TP theo ATR (1.0,1.5,2.5)*ATR,
+    # để engine_adapter mở rộng 3→5 thành [0.5,1.0,1.5,2.0,2.5]*ATR đúng yêu cầu.
+    atr_tp_mode: bool = False
+    atr_tp_base: Tuple[float, float, float] = (1.0, 1.5, 2.5)
+    
     # Timeframes (trigger/execution thống nhất 4H)
     tf_primary: str = "4H"
     tf_confirm: str = "4H"
@@ -251,6 +256,23 @@ def _tp_by_rr(entry: float, sl: float, side: str, targets: Tuple[float, ...]) ->
     except Exception:
         return []
 
+def _tp_by_atr(entry: float, side: str, atr: float, multipliers: Tuple[float, ...]) -> List[float]:
+    """
+    Tạo 3 TP theo ATR (side-aware). Dùng multipliers mặc định (1.0, 1.5, 2.5).
+    Thiết kế để engine_adapter mở rộng thành 5 TP (0.5→2.5 ATR).
+    """
+    try:
+        if side not in ("long", "short") or atr is None or atr <= 0:
+            return []
+        tps: List[float] = []
+        for m in multipliers:
+            tp = entry + float(m) * atr if side == "long" else entry - float(m) * atr
+            tps.append(float(tp))
+        # Với short, TP lớn hơn sẽ nằm gần entry hơn; đảm bảo thứ tự nhất quán
+        tps.sort(reverse=(side == "short"))
+        return tps
+    except Exception:
+        return []
 
 # -------------------------------------------------------
 # Collect side indicators từ features + evidence bundle
@@ -850,7 +872,11 @@ def build_setup(si: SI, state: str, side: Optional[str], cfg: SideCfg) -> Setup:
         struct_tps = _structure_tps(si, side, st.entry, st.sl, atr, state)
     except Exception:
         struct_tps = []
-    if struct_tps:
+    # - Nếu bật ATR mode: xuất 3 TP theo ATR để engine mở rộng thành 5 TP 0.5→2.5 ATR
+    # - Nếu không: ưu tiên cấu trúc; rơi về RR nếu không có cấu trúc
+    if getattr(cfg, "atr_tp_mode", False):
+        st.tps = _tp_by_atr(st.entry, side, atr, getattr(cfg, "atr_tp_base", (1.0, 1.5, 2.5)))
+    elif struct_tps:
         st.tps = struct_tps
     else:
         st.tps = _tp_by_rr(st.entry, st.sl, side, cfg.rr_targets)
