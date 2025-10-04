@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from typing import Dict, Any
 import math, os
 
+
+
 # Module exports (giúp static import/IDE & đảm bảo namespace đầy đủ)
 __all__ = [
     "_side_of", "_entry_of", "_pct_for_hit",
@@ -104,17 +106,23 @@ def fmt_price(v):
         s = s.rstrip("0").rstrip(".")      # bỏ số 0 thừa cuối
     return s
 
+def _humanize_state(s: str) -> str:
+    s = (s or "").strip()
+    if not s:
+        return "-"
+    return s.replace("_", " ").title()
+
 def render_teaser(plan: Dict[str, Any]) -> str:
     sym = plan.get("symbol", "")
     direction = plan.get("DIRECTION", "LONG")
     state = plan.get("STATE", "")
-    strategy = " • ".join([n for n in plan.get("notes", [])[:1]])  # one-liner
+    strategy = plan.get("STRATEGY") or _humanize_state(state)
     return (
         f"🧭 <b>{sym} | {direction}</b>\n"
         f"<b>Entry:</b> —    <b>SL:</b> —\n"
         f"<b>TP:</b> — • — • — • — • —\n"
         f"<b>Scale-out:</b> 20% mỗi mốc TP\n"
-        f"<b>Chiến lược:</b> {strategy or state}"
+        f"<b>Chiến lược:</b> {strategy}"
     )
 
 def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bool = True) -> str:
@@ -130,12 +138,14 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
         don_bay_line = f"<b>Đòn bẩy:</b> x{int(risk_disp)}"
     else:
         don_bay_line = None
+    strategy = plan.get("STRATEGY") or _humanize_state(plan.get("STATE", ""))
     lines = [
         f"🧭 <b>{sym} | {direction}</b>",
         "",  # dòng trống sau tiêu đề
         
         f"<b>Entry:</b> {entry}",
         f"<b>SL:</b> {sl}",
+        f"<b>Chiến lược:</b> {strategy}",
         "",  # dòng trống sau Entry/SL
         
         f"<b>TP1:</b> {tp1}",
