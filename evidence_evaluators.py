@@ -1060,6 +1060,8 @@ def build_evidence_bundle(symbol: str, features_by_tf: Dict[str, Dict[str, Any]]
         'price_breakdown': ev_pdn,
         'price_reclaim': ev_prc,
         'sideways': ev_sdw,
+        'false_breakout': ev_fb_out,
+        'false_breakdown': ev_fb_dn,
         # expose primary/confirm plus summary fields for main logger
         'volume': {
             'primary': ev_vol_1h,
@@ -1135,4 +1137,6 @@ TF_GUIDANCE: Dict[str, Dict[str, List[str]]] = {
     'bb_expanding':    {'required': ['1H'], 'optional': []},
     'throwback':       {'required': ['1H'], 'optional': ['4H']},
     'pullback':        {'required': ['1H'], 'optional': ['4H']},
+    'false_breakout':  {'required': ['1H'], 'optional': ['4H']},
+    'false_breakdown': {'required': ['1H'], 'optional': ['4H']},
 }
