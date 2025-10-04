@@ -34,8 +34,6 @@ class SideCfg:
     # --- Continuation gate & mini-retest (mới) ---
     use_continuation_gate: bool = True
     continuation_need_inside_or_minitest: bool = True
-    # Strict mode: require inside/mini for continuation (no bypass)
-    allow_continuation_bypass: bool = False
     mini_retest_lookback_bars: int = 3
     mini_retest_atr_frac: float = 0.25
 
@@ -151,13 +149,6 @@ def _apply_sl_upgrades(side_meta: Any, side: str, entry: float, sl: float, cfg: 
     # side_meta có thể là dict hoặc SI object
     atr = float(_safe_get(side_meta, "atr", 0.0) or 0.0)
     regime = str(_safe_get(side_meta, "regime", "normal"))
-    # wide_range tweak: reduce min ATR gap by 0.1 (floor at 0.50) to make TP1 easier
-    # Trong wide_range, giảm nhẹ yêu cầu tối thiểu 0.1 ATR nhưng không thấp hơn 0.50 ATR
-    try:
-        if bool(_safe_get(side_meta, "wide_range", False)):
-            sl_min_atr = max(0.50, sl_min_atr - 0.10)
-    except Exception:
-        pass
     if regime == "low":
         min_atr = cfg.sl_min_atr_low
     elif regime == "high":
@@ -449,39 +440,6 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
     si = SIObj()
     si.price = price
     si.atr = atr
-    
-    # --- wide_range detector (4H bias + 1H RSI band) ---
-    try:
-        df4 = f4.get('df') if isinstance(f4, dict) else None
-        df1 = f1.get('df') if isinstance(f1, dict) else None
-    except Exception:
-        df4 = None; df1 = None
-    wide_range = False
-    try:
-        if df4 is not None and len(df4) >= 30:
-            # use last closed bars
-            last4 = df4.iloc[-2] if len(df4) >= 2 else df4.iloc[-1]
-            prev4 = df4.iloc[-3] if len(df4) >= 3 else None
-            bbw = float(last4.get('bb_width_pct', float('nan')))
-            # rolling median of bb_width_pct
-            bbw_med = float(df4['bb_width_pct'].tail(100).median()) if 'bb_width_pct' in df4.columns else float('nan')
-            atr4 = float(last4.get('atr14', 0.0) or 0.0)
-            ema50 = float(last4.get('ema50', float('nan')))
-            ema50_prev = float(prev4.get('ema50', float('nan'))) if prev4 is not None else float('nan')
-            ema_slope_atr = abs(ema50 - ema50_prev) / max(atr4, 1e-9) if (ema50==ema50 and ema50_prev==ema50_prev and atr4>0) else float('inf')
-            # 1H RSI band check (use last closed)
-            rsi1_ok = True
-            try:
-                if df1 is not None and len(df1):
-                    last1 = df1.iloc[-2] if len(df1) >= 2 else df1.iloc[-1]
-                    rsi1 = float(last1.get('rsi14', last1.get('rsi', 50.0)))
-                    rsi1_ok = (40.0 <= rsi1 <= 60.0)
-            except Exception:
-                rsi1_ok = True
-            wide_range = (bbw==bbw and bbw_med==bbw_med and (bbw >= 1.2 * bbw_med)) and (ema_slope_atr <= 0.2) and rsi1_ok
-    except Exception:
-        wide_range = False
-    si.wide_range = bool(wide_range)
     si.natr = natr
     si.dist_atr = dist_atr
     # attach EMA50 4H for SL cushion
@@ -647,7 +605,7 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         # vẫn cho qua tiếp (đánh dấu bypass) — bước guard phía sau sẽ yêu cầu RR>=1.2.
         bypass_long  = (tr > 0 and momo > 0 and vdir >= 0) and need_candle and (not (inside or mini_ok_long))
         bypass_short = (tr < 0 and momo < 0 and vdir >= 0) and need_candle and (not (inside or mini_ok_short))
-        if bool(getattr(cfg, 'allow_continuation_bypass', False)) and (not liq_block) and (bypass_long or bypass_short):
+        if (not liq_block) and (bypass_long or bypass_short):
             side_c = "long" if bypass_long else "short"
             meta.update({"gate": "continuation", "bypass_continuation": True})
             return "trend_break", side_c, meta
@@ -913,10 +871,6 @@ def decide_5_gates(state: str, side: Optional[str], setup: Setup, si: SI, cfg: S
     liq_thr_map = {"low": 0.65, "normal": 0.55, "high": 0.5}
     dec.meta["regime"] = regime
     dec.meta["liq_thr"] = liq_thr_map.get(regime, 0.55)
-    try:
-        dec.meta['wide_range'] = bool(_safe_get(si, 'wide_range', False))
-    except Exception:
-        dec.meta['wide_range'] = False
     # Side votes (numeric strengths; may be -1..+1 or scaled)
     try:
         dec.meta["side_votes"] = {
@@ -981,7 +935,7 @@ def decide_5_gates(state: str, side: Optional[str], setup: Setup, si: SI, cfg: S
             # si.retest_ok đã gộp pullback/throwback validator từ evidences
             pb_ok = bool(getattr(si, "retest_ok", False))
             if not (inside_ok or mini_ok or pb_ok):
-                bypass = bool(dec.meta.get("bypass_continuation", False)) and bool(getattr(cfg, 'allow_continuation_bypass', False))
+                bypass = bool(dec.meta.get("bypass_continuation", False))
                 rr_ok = bool(rr1 is not None and rr1 >= 1.2)
                 # Cần alignment mạnh + volume tilt >= 0 để bypass hợp lệ
                 tr_v = float(dec.meta.get("trend", 0.0) or 0.0)
