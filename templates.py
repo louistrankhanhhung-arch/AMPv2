@@ -114,7 +114,7 @@ def render_teaser(plan: Dict[str, Any]) -> str:
         f"<b>Entry:</b> —    <b>SL:</b> —\n"
         f"<b>TP:</b> — • — • — • — • —\n"
         f"<b>Scale-out:</b> 20% mỗi mốc TP\n"
-        f"<b>Chiến lược:</b> T+"
+        f"<b>Chiến lược:</b> {strategy or state}"
     )
 
 def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bool = True) -> str:
