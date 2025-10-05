@@ -130,6 +130,33 @@ def _has_any_tp_hit(it: dict) -> bool:
         pass
     return False
 
+# ---------- BE Turbo thresholds for 1H-ladder profile ----------
+_BE_LADDER_PROFILE = {
+    # profile -> (hit_fract_for_BE, time_exit_n_4h_bars, time_exit_min_R_progress)
+    "1H-ladder": (0.55, 3, 0.30),
+}
+
+def _profile_params(profile: str, regime: str) -> tuple[float, int, float]:
+    """
+    Trả về bộ tham số (be_hit, time_n_bars, min_prog_R).
+    - Ưu tiên theo profile trong _BE_LADDER_PROFILE (nếu có).
+    - Nếu không có profile phù hợp, fallback theo regime:
+        LOW    → be_hit=0.60, time_n_bars=3, min_prog_R=0.30
+        NORMAL → be_hit=0.80, time_n_bars=3, min_prog_R=0.30
+        HIGH   → tắt BE turbo/time-exit (trả tham số None) — caller tự quyết.
+    """
+    p = (profile or "").strip()
+    r = (regime or "normal").lower()
+    if p in _BE_LADDER_PROFILE:
+        bh, nbar, minp = _BE_LADDER_PROFILE[p]
+        return float(bh), int(nbar), float(minp)
+    if r == "low":
+        return 0.60, 3, 0.30
+    if r == "normal":
+        return 0.80, 3, 0.30
+    # high-vol → không khuyến khích auto BE/time-exit
+    return float("nan"), 0, float("nan")
+
 def _count_open_by_side(perf: "SignalPerfDB") -> dict:
     """Đếm số lệnh đang OPEN theo side, **chỉ** tính lệnh CHƯA có TP nào."""
     res = {"LONG":0, "SHORT":0}
@@ -572,14 +599,21 @@ def _time_exit_and_breakeven_checks(symbol: str,
         open_trades = perfdb.by_symbol(symbol)
         for t in open_trades:
             status = (t.get("status") or "OPEN").upper()
+            # lấy profile nếu có (ưu tiên trường đã lưu trong DB khi ENTER)
+            profile = str(t.get("profile") or t.get("meta_profile") or t.get("ladder_profile") or "").strip()
+            be_hit, time_n_bars_default, min_prog_default = _profile_params(profile, reg)
             # -------- Breakeven Turbo (áp dụng khi chưa TP1) --------
             if status == "OPEN":
                 R_now = _unrealized_R(t, price_now)
-                thr = 0.6 if reg == "low" else 0.8
+                # nếu high-vol → bỏ qua BE turbo/time-exit
+                if be_hit != be_hit:  # NaN check
+                    thr = None
+                else:
+                    thr = be_hit
                 be_flag = bool(t.get("breakeven_turbo"))
                 # chống trùng lặp: đã từng gửi thông báo BE cho lệnh này?
                 be_notified = bool(t.get("be_notify_ts"))
-                if (R_now >= thr) and (not be_flag) and (not be_notified):
+                if (thr is not None) and (R_now >= float(thr)) and (not be_flag) and (not be_notified):
                     # dời SL động về Entry, đánh dấu đã kích hoạt BE và lưu mốc trigger để theo dõi stall-fail
                     now_ts = int(time.time())
                     upd = perfdb.update_fields(
@@ -588,7 +622,8 @@ def _time_exit_and_breakeven_checks(symbol: str,
                         breakeven_turbo=True,
                         be_notify_ts=now_ts,           # chống trùng lặp thông báo BE
                         be_trigger_ts=now_ts,          # mốc kích hoạt 0.6R/0.8R
-                        be_peak_R=float(R_now)         # peak R kể từ trigger
+                        be_peak_R=float(R_now),        # peak R kể từ trigger
+                        meta_profile=profile or None   # lưu lại (ổn định ở DB)
                     )
                     # notify (một lần duy nhất)
                     mid = int(upd.get("message_id") or 0)
@@ -606,15 +641,16 @@ def _time_exit_and_breakeven_checks(symbol: str,
                 has_tp1 = bool(hits.get("TP1"))
                 trig_ts = int(t.get("be_trigger_ts") or 0)
                 if (status == "OPEN") and (trig_ts > 0) and (not has_tp1):
-                    # Cửa sổ quan sát: LOW=2 nến 4H, NORMAL=3 nến 4H
-                    window_n = 2 if reg == "low" else 3
+                    # Cửa sổ quan sát theo profile/regime
+                    window_n = 2 if (profile and profile in _BE_LADDER_PROFILE and reg == "low") else time_n_bars_default
                     bars = _bars_4h_since_ts(df4, trig_ts)
                     if bars >= window_n:
                         # A) Progress test: MFE kể từ trigger không tăng đủ
-                        #    progress = MFE_since_trigger - threshold_at_trigger
-                        thr_prog = 0.15 if reg == "low" else 0.20
+                        #    progress = MFE_since_trigger - threshold_at_trigger(=be_hit)
+                        thr_prog = 0.15 if (profile and profile in _BE_LADDER_PROFILE and reg == "low") else min_prog_default
                         mfe_trig = _mfe_R_since_ts(df4, t, trig_ts)
-                        progress = max(0.0, float(mfe_trig - thr))
+                        base_thr = float(thr) if (thr is not None) else 0.0
+                        progress = max(0.0, float(mfe_trig - base_thr))
                         # Khoảng cách còn lại tới TP1 tính theo R (nếu có TP1)
                         try:
                             entry = float(t.get("entry") or 0.0)
@@ -670,7 +706,14 @@ def _time_exit_and_breakeven_checks(symbol: str,
                             if tn and mid:
                                 tn.send_channel_update(mid, html)
 
-            # -------- Time-based exit 3 x 4H (< +0.3R) --------
+            # -------- Time-based exit profile-aware --------
+            bars = _bars_4h_since_open(df4, t)
+            # lấy tham số mặc định theo profile/regime
+            te_n = time_n_bars_default
+            te_min_prog = min_prog_default
+            if (te_n > 0) and (bars >= int(te_n)):
+                mfeR = _mfe_R_since_open(df4, t)
+                if mfeR < float(te_min_prog):
             bars = _bars_4h_since_open(df4, t)
             if bars >= 3:
                 mfeR = _mfe_R_since_open(df4, t)
@@ -1097,6 +1140,11 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 "STATE": state,
                 "notes": out.get("notes", []),
                 "STRATEGY": out.get("strategy"),
+                # lưu profile để BE/time-exit tra cứu về sau
+                "profile": ( (out.get("meta") or {}).get("profile")
+                             or (plan.get("profile") if isinstance(plan, dict) else None)
+                             or ( (plan.get("ladder_tf")=="1H") and "1H-ladder" if isinstance(plan, dict) else None) ),
+             })
             })
             perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
             # 0) Block by market-side cooldown (Early Flip Guard)
