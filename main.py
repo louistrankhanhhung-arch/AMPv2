@@ -708,7 +708,6 @@ def _time_exit_and_breakeven_checks(symbol: str,
 
             # -------- Time-based exit (profile-aware) --------
             bars = _bars_4h_since_open(df4, t)
-            # tham số theo profile/regime đã tính ở trên
             te_n = time_n_bars_default
             te_min_prog = min_prog_default
             if (te_n > 0) and (bars >= int(te_n)):
@@ -729,6 +728,8 @@ def _time_exit_and_breakeven_checks(symbol: str,
                                           extra={"margin_pct": None})
                     if tn and mid:
                         tn.send_channel_update(mid, html)
+    except Exception as e:
+        log.warning(f"time-exit/breakeven checks failed for {symbol}: {e}")
 
 def _current_vn_window(now_local: datetime) -> tuple[int, int] | None:
     """
