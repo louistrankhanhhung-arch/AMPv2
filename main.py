@@ -706,18 +706,14 @@ def _time_exit_and_breakeven_checks(symbol: str,
                             if tn and mid:
                                 tn.send_channel_update(mid, html)
 
-            # -------- Time-based exit profile-aware --------
+            # -------- Time-based exit (profile-aware) --------
             bars = _bars_4h_since_open(df4, t)
-            # lấy tham số mặc định theo profile/regime
+            # tham số theo profile/regime đã tính ở trên
             te_n = time_n_bars_default
             te_min_prog = min_prog_default
             if (te_n > 0) and (bars >= int(te_n)):
                 mfeR = _mfe_R_since_open(df4, t)
                 if mfeR < float(te_min_prog):
-            bars = _bars_4h_since_open(df4, t)
-            if bars >= 3:
-                mfeR = _mfe_R_since_open(df4, t)
-                if mfeR < 0.3:
                     # Tính R ở giá hiện tại và cap −0.2R (weighted 20%)
                     R_now = _unrealized_R(t, price_now)
                     R_cap = max(R_now, -0.2)
@@ -733,8 +729,6 @@ def _time_exit_and_breakeven_checks(symbol: str,
                                           extra={"margin_pct": None})
                     if tn and mid:
                         tn.send_channel_update(mid, html)
-    except Exception as e:
-        log.warning(f"time-exit/breakeven checks failed for {symbol}: {e}")
 
 def _current_vn_window(now_local: datetime) -> tuple[int, int] | None:
     """
