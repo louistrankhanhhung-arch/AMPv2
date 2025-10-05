@@ -70,6 +70,19 @@ def _rsi_from_features_tf(features_by_tf: Dict[str, Any], tf: str = "1H") -> Opt
         pass
     return None
 
+def _scale_out_weights_for_profile(profile: str) -> Dict[str, float]:
+    """
+    Trả về weights scale-out theo profile.
+    Lưu ý: TP0 (nếu có) dùng weight riêng 'tp0_weight' đã set trong meta.
+    Tổng (TP1..TP4 + TP0 nếu có) ≈ 1.0 là khuyến nghị; không ép buộc trong code.
+    """
+    p = (profile or "").strip().lower()
+    if p == "1h-ladder":
+        # Gợi ý: TP0=0.20 (đã set ở meta), TP1=0.20, TP2=0.25, TP3=0.20, TP4=0.15  ⇒ tổng ≈ 1.0
+        return {"tp1": 0.20, "tp2": 0.25, "tp3": 0.20, "tp4": 0.15, "tp5": 0.0}
+    # fallback chung (không có TP0)
+    return {"tp1": 0.30, "tp2": 0.30, "tp3": 0.20, "tp4": 0.20, "tp5": 0.0}
+    
 def _risk_unit(entry: float, sl: float, side: str) -> float:
     try:
         return (entry - sl) if side == "long" else (sl - entry)
@@ -239,6 +252,61 @@ def _apply_1h_ladder(decision: Dict[str, Any], cfg: SideCfg) -> Dict[str, Any]:
         pass
     return decision
 
+def _rr_snapshot(entry: float, sl: float, side: str, tps: List[float]) -> Dict[str, float]:
+    """Tính RR tới các TP hiện có để guard có thể 'bỏ qua' nếu RR đã đủ."""
+    out = {}
+    try:
+        risk = abs(entry - sl)
+        if risk <= 0: 
+            return out
+        for i, tp in enumerate(tps, start=0):
+            # tp[0] có thể là TP0 — vẫn tính RR để dùng cho rr_ok
+            rr = (tp - entry) / risk if side == "long" else (entry - tp) / risk
+            out[f"tp{i}"] = float(rr)
+    except Exception:
+        pass
+    return out
+
+def _apply_proximity_guard(decision: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Chặn ENTER nếu entry quá gần soft-level/band ở 1H hoặc 4H (headroom kém),
+    trừ khi RR tới TP2 đã đủ tốt (rr_ok ≥ 1.5, có thể chỉnh).
+    """
+    try:
+        if (decision.get("decision") or "").upper() != "ENTER":
+            return decision
+        setup = decision.get("setup") or {}
+        meta  = decision.get("meta") or {}
+        entry = float(setup.get("entry"))
+        sl    = float(setup.get("sl"))
+        side  = (decision.get("side") or meta.get("side") or "").lower()
+        if side not in ("long","short") or not (entry == entry) or not (sl == sl):
+            return decision
+        tps = list(setup.get("tps") or [])
+        feats = meta.get("features_by_tf") or {}
+        # RR tới TP2 (hoặc TP1 nếu thiếu) làm "cửa thoát"
+        rrs = _rr_snapshot(entry, sl, side, tps)
+        rr_ok = float(rrs.get("tp2") or rrs.get("tp1") or 0.0)
+        # gọi guard đa-TF (1H + 4H)
+        g = _near_soft_level_guard_multi(
+            features_by_tf=feats,
+            tfs=("1H", "4H"),
+            entry=entry,
+            side=side,
+            rr_ok=rr_ok
+        )
+        if g.get("block"):
+            # chuyển sang WAIT, nêu lý do
+            new_logs = decision.get("logs") or {}
+            new_logs["WAIT"] = {"reasons": ["near_soft_level"], "details": g.get("why")}
+            decision.update({
+                "decision": "WAIT",
+                "logs": new_logs
+            })
+    except Exception:
+        pass
+    return decision
+
 def _rr(entry: Optional[float], sl: Optional[float], tp: Optional[float], side: Optional[str]) -> Optional[float]:
     if entry is None or sl is None or tp is None or side is None:
         return None
@@ -307,6 +375,66 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         # Không chặn nếu check reversal lỗi, chỉ log warning
         import logging
         logging.getLogger(__name__).warning(f"Reversal guard check failed for {symbol}: {e}")
+
+    # ===== [NEW] HẬU XỬ LÝ PROFILE & PROXIMITY (dựa trên dec/setup hiện có) =====
+    # Chuyển 'dec' về dict tạm để dùng lại các helper _apply_1h_ladder / _apply_proximity_guard
+    try:
+        tmp_decision = {
+            "decision": (dec.decision or "WAIT"),
+            "side": dec.side,
+            "state": dec.state,
+            "meta": {
+                # truyền features để guard 1H+4H tra cứu BB/EMA/ATR
+                "features_by_tf": features_by_tf,
+                # giữ các thông tin có ích nếu core đã gắn
+                "regime": ((dec.meta or {}).get("regime") if isinstance(dec.meta, dict) else None),
+                "profile": ((dec.meta or {}).get("profile") if isinstance(dec.meta, dict) else None),
+            },
+            "setup": {
+                "entry": dec.setup.entry,
+                "sl": dec.setup.sl,
+                "tps": list(dec.setup.tps or []),
+            },
+            # logs để gom lý do nếu guard chuyển sang WAIT
+            "logs": {},
+        }
+        # 1) Áp ladder 1H nếu meta.profile='1H-ladder' (chỉnh SL/TP + TP0; gắn tp0_weight/weights trong meta)
+        tmp_decision = _apply_1h_ladder(tmp_decision, cfg)
+        # 2) Guard proximity 1H+4H ngay trước khi phát hành; rr_ok được tính nội bộ theo TP list
+        tmp_decision = _apply_proximity_guard(tmp_decision)
+        # Ghi ngược lại về object 'dec'
+        dec.decision = tmp_decision.get("decision", dec.decision)
+        # cập nhật setup nếu có thay đổi từ 1H-ladder
+        try:
+            _st = tmp_decision.get("setup") or {}
+            if _st:
+                if _st.get("entry") is not None: dec.setup.entry = float(_st["entry"])
+                if _st.get("sl")    is not None: dec.setup.sl    = float(_st["sl"])
+                if isinstance(_st.get("tps"), list) and _st["tps"]:
+                    dec.setup.tps = list(_st["tps"])
+        except Exception:
+            pass
+        # bổ sung lý do nếu guard block
+        if (tmp_decision.get("decision") or "").upper() != "ENTER":
+            rs = list(dec.reasons or [])
+            wlog = (tmp_decision.get("logs") or {}).get("WAIT") or {}
+            det = wlog.get("details") or ""
+            if "near_soft_level" not in rs and "soft_proximity" not in rs:
+                rs.append("soft_proximity")
+            if det:
+                rs.append(f"prox:{det}")
+            dec.reasons = rs
+        # merge meta (để sau này main.py đọc profile/weights)
+        try:
+            if isinstance(dec.meta, dict):
+                dec.meta.update(tmp_decision.get("meta") or {})
+            else:
+                dec.meta = (tmp_decision.get("meta") or {})
+        except Exception:
+            pass
+    except Exception:
+        # nếu có lỗi, bỏ qua hậu xử lý
+        pass
 
     # Build plan (legacy fields)
     tps = dec.setup.tps or []
