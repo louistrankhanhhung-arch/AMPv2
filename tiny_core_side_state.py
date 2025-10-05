@@ -56,6 +56,11 @@ class SideCfg:
     # Timeframes (trigger/execution thống nhất 4H)
     tf_primary: str = "4H"
     tf_confirm: str = "4H"
+    # ---- 1H-ladder profile (low/normal regime) ----
+    use_1h_ladder_in_low_normal: bool = True
+    rr_targets_1h: Tuple[float, float, float] = (0.8, 1.3, 1.8)
+    tp0_frac: float = 0.35      # ~0.35R scale-out nhanh
+    tp0_weight: float = 0.20    # 20% chốt ở TP0
 
     # --- SL regime adaptation ---
     sl_min_atr_low: float = 0.60
@@ -273,6 +278,21 @@ def _tp_by_atr(entry: float, side: str, atr: float, multipliers: Tuple[float, ..
         return tps
     except Exception:
         return []
+
+# -------- helper: decide profile 1H-ladder (meta flag only) --------
+def _maybe_tag_profile_1h_ladder(meta: Dict[str, Any], cfg: SideCfg) -> None:
+    """
+    Gắn cờ meta['profile']='1H-ladder' nếu regime thuộc low|normal và cho phép trong cfg.
+    Engine adapter sẽ dựa cờ này để build SL/TP theo ATR(1H) + TP0.
+    """
+    try:
+        if not getattr(cfg, "use_1h_ladder_in_low_normal", True):
+            return
+        regime = str(meta.get("regime", "normal"))
+        if regime in ("low", "normal"):
+            meta["profile"] = "1H-ladder"
+    except Exception:
+        pass
 
 # -------------------------------------------------------
 # Collect side indicators từ features + evidence bundle
