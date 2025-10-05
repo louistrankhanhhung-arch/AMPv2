@@ -1141,13 +1141,13 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 "notes": out.get("notes", []),
                 "STRATEGY": out.get("strategy"),
                 # lưu profile để BE/time-exit tra cứu về sau
-                "profile": ( (out.get("meta") or {}).get("profile")
-                             or (plan.get("profile") if isinstance(plan, dict) else None)
-                             or ( (plan.get("ladder_tf")=="1H") and "1H-ladder" if isinstance(plan, dict) else None) ),
-                # scale-out weights (nếu có từ meta/adapter)
+                "profile": (
+                    (out.get("meta") or {}).get("profile")
+                    or (plan.get("profile") if isinstance(plan, dict) else None)
+                    or ("1H-ladder" if (isinstance(plan, dict) and plan.get("ladder_tf") == "1H") else None)
+                ),
                 "scale_out_weights": (out.get("meta") or {}).get("scale_out_weights"),
                 "tp0_weight": (out.get("meta") or {}).get("tp0_weight"),
-             })
             })
             perf = SignalPerfDB(JsonStore(os.getenv("DATA_DIR","./data")))
             # 0) Block by market-side cooldown (Early Flip Guard)
