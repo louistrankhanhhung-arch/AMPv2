@@ -338,6 +338,46 @@ def _leverage_hint(side: Optional[str], entry: Optional[float], sl: Optional[flo
     except Exception:
         return None
 
+def _sanitize_meta_for_logs(meta_in) -> Dict[str, Any]:
+    """
+    Loại bỏ/thu gọn các trường không JSON-serializable (đặc biệt là DataFrame)
+    trước khi đưa meta vào logs/JSON.
+    - Bỏ hẳn 'features_by_tf'
+    - Nếu gặp DataFrame ở mức 1, thay bằng string mô tả
+    - Nếu gặp dict có key 'df', set 'df'=None để tránh serialize DataFrame
+    """
+    try:
+        if not isinstance(meta_in, dict):
+            return {}
+        meta_out: Dict[str, Any] = {}
+        # Bỏ hẳn features_by_tf (chứa df)
+        items = {k: v for k, v in meta_in.items() if k != "features_by_tf"}
+        for k, v in items.items():
+            # xử lý dict có 'df'
+            if isinstance(v, dict) and ("df" in v):
+                vv = dict(v)
+                try:
+                    # nếu vv["df"] là DataFrame → None
+                    import pandas as _pd  # lazy import chỉ để isinstance check
+                    if isinstance(vv.get("df"), _pd.DataFrame):
+                        vv["df"] = None
+                except Exception:
+                    vv["df"] = None
+                meta_out[k] = vv
+                continue
+            # thay DataFrame mức 1 bằng mô tả string
+            try:
+                import pandas as _pd
+                if isinstance(v, _pd.DataFrame):
+                    meta_out[k] = f"DataFrame(shape={v.shape})"
+                    continue
+            except Exception:
+                pass
+            meta_out[k] = v
+        return meta_out
+    except Exception:
+        return {}
+
 def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]], evidence_bundle: Dict[str, Any]) -> Dict[str, Any]:
     # evidence_bundle expected to include 'evidence' object; pass through as eb-like
     eb = evidence_bundle.get("evidence") or evidence_bundle  # tolerate both shapes
@@ -424,12 +464,14 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
             if det:
                 rs.append(f"prox:{det}")
             dec.reasons = rs
-        # merge meta (để sau này main.py đọc profile/weights)
+        # merge meta nhưng KHÔNG giữ features_by_tf (có DataFrame)
         try:
+            _m = dict(tmp_decision.get("meta") or {})
+            _m.pop("features_by_tf", None)
             if isinstance(dec.meta, dict):
-                dec.meta.update(tmp_decision.get("meta") or {})
+                dec.meta.update(_m)
             else:
-                dec.meta = (tmp_decision.get("meta") or {})
+                dec.meta = _m
         except Exception:
             pass
     except Exception:
@@ -728,14 +770,15 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
     # Chuẩn hoá logs cho main.py:
     # - Giữ legacy text trong logs["TEXT"] (list)
     # - Cung cấp cấu trúc cho WAIT/ENTER để main.py lấy missing/reasons
+    _meta_for_logs = _sanitize_meta_for_logs(dec.meta if isinstance(dec.meta, dict) else {})
     logs: Dict[str, Any] = {
         "TEXT": legacy_lines,
-        "ENTER": {"state_meta": dec.meta} if decision == "ENTER" else {},
+        "ENTER": {"state_meta": _meta_for_logs} if decision == "ENTER" else {},
         "WAIT": (
             {
                 "missing": list(dec.reasons or []),
                 "reasons": list(dec.reasons or []),
-                "state_meta": dec.meta,
+                "state_meta": _meta_for_logs,
             }
             if decision != "ENTER"
             else {}
