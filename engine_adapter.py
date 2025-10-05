@@ -70,6 +70,12 @@ def _rsi_from_features_tf(features_by_tf: Dict[str, Any], tf: str = "1H") -> Opt
         pass
     return None
 
+def _risk_unit(entry: float, sl: float, side: str) -> float:
+    try:
+        return (entry - sl) if side == "long" else (sl - entry)
+    except Exception:
+        return 0.0
+
 def _guard_near_bb_low_4h_and_rsi1h_extreme(
     side: Optional[str],
     entry: Optional[float],
@@ -172,6 +178,66 @@ def _near_soft_level_guard_multi(
     if reasons and not (isinstance(rr_ok, (int, float)) and rr_ok >= 1.0):
         return {"block": True, "why": ";".join(reasons)}
     return {"block": False, "why": ""}
+
+def _apply_1h_ladder(decision: Dict[str, Any], cfg: SideCfg) -> Dict[str, Any]:
+    """
+    Post-build transform: khi meta.profile == '1H-ladder' thì:
+    - SL min-gap dựa ATR(1H) (cạn hơn) nhưng vẫn chắc.
+    - TPs dùng rr_targets_1h + chèn TP0 ở +0.35R (mặc định).
+    - Gắn meta để main.py biết kích hoạt BE Turbo sớm.
+    """
+    try:
+        meta = decision.get("meta", {}) or {}
+        setup = decision.get("setup", {}) or {}
+        side  = (decision.get("side") or "").lower()
+        if meta.get("profile") != "1H-ladder":
+            return decision
+        entry = float(setup.get("entry"))
+        sl    = float(setup.get("sl"))
+        if side not in ("long","short") or not (entry == entry) or not (sl == sl):
+            return decision
+        feats = meta.get("features_by_tf") or {}
+        atr1h = _atr_from_features_tf(feats, "1H")
+        atr4h = _atr_from_features_tf(feats, "4H")
+        # đảm bảo có ATR (fallback 4H nếu 1H thiếu)
+        atr = atr1h if atr1h > 0 else atr4h
+        if atr <= 0:
+            return decision
+        # Bảo đảm SL gap tối thiểu theo regime (xấp xỉ logic core)
+        regime = str(meta.get("regime", "normal"))
+        if regime == "low":
+            min_atr = getattr(cfg, "sl_min_atr_low", 0.60)
+        elif regime == "high":
+            min_atr = getattr(cfg, "sl_min_atr_high", 1.20)
+        else:
+            min_atr = getattr(cfg, "sl_min_atr_normal", 0.80)
+        min_gap = max(1e-9, min_atr * atr)  # ATR(1H) ưu tiên
+        if side == "long" and (entry - sl) < min_gap:
+            sl = entry - min_gap
+        elif side == "short" and (sl - entry) < min_gap:
+            sl = entry + min_gap
+        # RR ladder 1H
+        r = _risk_unit(entry, sl, side)
+        if r <= 0:
+            return decision
+        rr_targets_1h = tuple(getattr(cfg, "rr_targets_1h", (0.8, 1.3, 1.8)))
+        tps = []
+        for rr in rr_targets_1h:
+            tp = entry + rr * r if side == "long" else entry - rr * r
+            tps.append(float(tp))
+        # TP0 ~ +0.35R
+        tp0_frac = float(getattr(cfg, "tp0_frac", 0.35))
+        tp0 = entry + tp0_frac * r if side == "long" else entry - tp0_frac * r
+        tps = [tp0] + tps
+        # cập nhật setup & meta
+        meta["ladder_tf"] = "1H"
+        meta["tp0_weight"] = float(getattr(cfg, "tp0_weight", 0.20))
+        meta["be_turbo_profile"] = "1H-ladder"
+        decision["meta"] = meta
+        decision["setup"] = {"entry": entry, "sl": sl, "tps": tps}
+    except Exception:
+        pass
+    return decision
 
 def _rr(entry: Optional[float], sl: Optional[float], tp: Optional[float], side: Optional[str]) -> Optional[float]:
     if entry is None or sl is None or tp is None or side is None:
