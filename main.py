@@ -595,7 +595,7 @@ def _time_exit_and_breakeven_checks(symbol: str,
                     if tn and mid:
                         html = render_update(
                             {"symbol": t.get("symbol"), "DIRECTION": t.get("dir")},
-                            event="📌 Dời SL về Entry. Khuyến nghị TP sớm.",
+                            event="📌 Dời SL về Entry giữ an toàn vốn.",
                             extra=None
                         )
                         tn.send_channel_update(mid, html)
