@@ -138,6 +138,15 @@ class SignalPerfDB:
         # Cho phép override posted_at và bổ sung các trường baseline (hl0_*, v.v.)
         _now = int(time.time())
         posted_at = int(extra.pop("posted_at", _now) or _now)
+        # scale-out weights từ plan (nếu có), fallback 0.2 đều
+        _w = (plan.get("scale_out_weights") or {}) if isinstance(plan, dict) else {}
+        weights = {
+            "tp1": float(_w.get("tp1", 0.2)),
+            "tp2": float(_w.get("tp2", 0.2)),
+            "tp3": float(_w.get("tp3", 0.2)),
+            "tp4": float(_w.get("tp4", 0.2)),
+            "tp5": float(_w.get("tp5", 0.2)),
+        }
         rec = {
             "sid": sid,
             "symbol": plan.get("symbol"),
@@ -155,12 +164,20 @@ class SignalPerfDB:
             "status": "OPEN",
             "hits": {},
             "r_ladder": {"tp1": plan.get("rr1"), "tp2": plan.get("rr2"), "tp3": plan.get("rr3"), "tp4": plan.get("rr4"), "tp5": plan.get("rr5")},
-            "weights": {"tp1": 0.2, "tp2": 0.2, "tp3": 0.2, "tp4": 0.2, "tp5": 0.2},
+            "weights": weights,
             "realized_R": 0.0,
             "close_reason": None,
             # NEW: đánh dấu đã được tính trong báo cáo KPI 24h hay chưa
             "kpi24_reported_at": None,
         }
+        # Lưu thêm metadata hữu ích cho 1H-ladder (nếu có)
+        try:
+            if plan.get("profile"):
+                rec["profile"] = plan.get("profile")
+            if plan.get("tp0_weight") is not None:
+                rec["tp0_weight"] = float(plan.get("tp0_weight"))
+        except Exception:
+            pass
         # Merge các field bổ sung (vd: hl0_4h_hi/lo, hl0_1h_hi/lo, close_px, close_pct…)
         try:
             for k, v in (extra or {}).items():
