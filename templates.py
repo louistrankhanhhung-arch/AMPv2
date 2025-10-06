@@ -239,7 +239,7 @@ def render_kpi_teaser_two_parts(detail_24h: dict,
                 pctW = 0.0
             lev  = _item_leverage(it)
             lev_s = f" • x{int(lev)}" if isinstance(lev,(int,float)) and lev>0 else ""
-            lines.append(f"{icon} {sym} — {status} • {rW:+.2f}R • {pctW:+.2f}%{lev_s}")
+            lines.append(f"{icon} {sym}  •  {pctW:+.2f}%{lev_s}")
         lines.append("")
         
     # Khối hiệu suất ngày (Today) — hiển thị cả R và % thực nhận
