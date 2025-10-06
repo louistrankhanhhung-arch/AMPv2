@@ -222,6 +222,41 @@ def _guard_near_bb_low_4h_and_rsi1h_extreme(
         pass
     return {"block": False, "why": ""}
 
+# ============================================================
+# Guard bổ sung: chặn continuation khi thị trường sideway
+# ============================================================
+def _guard_sideway_regime(
+    features_by_tf: Dict[str, Any],
+    side: Optional[str] = None,
+    *,
+    state: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    WAIT guard khi thị trường 4H ở regime='low' hoặc BB width hẹp.
+    - Mục đích: tránh continuation trong range, dễ bị gập giá ngược.
+    - Áp dụng cho cả long và short.
+    """
+    try:
+        # Bỏ qua nếu chưa có features
+        df4 = (features_by_tf or {}).get("4H", {}).get("df")
+        meta4 = ((features_by_tf or {}).get("4H") or {}).get("meta", {}) or {}
+        if df4 is None or len(df4) < 5:
+            return {"block": False, "why": ""}
+
+        # Đọc BB width % và regime
+        bbw = float(df4["bb_width_pct"].iloc[-2]) if "bb_width_pct" in df4.columns else float("nan")
+        regime = str(meta4.get("regime", "normal")).lower()
+
+        # Nếu BB hẹp hoặc regime low → block
+        if (regime == "low") or (bbw == bbw and bbw < 1.2):
+            return {
+                "block": True,
+                "why": f"sideway regime (regime={regime}, BBW={bbw:.2f}%)"
+            }
+    except Exception:
+        pass
+    return {"block": False, "why": ""}
+    
 def _near_soft_level_guard_multi(
     side: Optional[str],
     entry: Optional[float],
@@ -661,6 +696,20 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         reasons = list(dec.reasons or [])
         reasons.append("guard:near_4h_bb_low_and_rsi1h_os")
         dec.reasons = reasons
+
+    # -------- SIDEWAY regime guard (low volatility / narrow BB) --------
+    try:
+        sideway_guard = _guard_sideway_regime(features_by_tf, side=dec.side, state=dec.state)
+        if sideway_guard.get("block"):
+            dec.decision = "WAIT"
+            reasons = list(dec.reasons or [])
+            reasons.append("guard:sideway_regime")
+            dec.reasons = reasons
+            # Thêm chi tiết để dễ trace log
+            if isinstance(dec.meta, dict):
+                dec.meta["sideway_guard_why"] = sideway_guard.get("why")
+    except Exception:
+        pass
 
     # -------- RR floors sau khi mở rộng 3TP -> 5TP --------
     # Mapping:
