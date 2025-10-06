@@ -117,11 +117,25 @@ def render_teaser(plan: Dict[str, Any]) -> str:
     direction = plan.get("DIRECTION", "LONG")
     state = plan.get("STATE", "")
     strategy = plan.get("STRATEGY") or _humanize_state(state)
+    # scale-out teaser (ưu tiên weights trong plan/meta)
+    def _weights_line(p: Dict[str, Any]) -> str:
+        w = (p.get("scale_out_weights") or {}) if isinstance(p, dict) else {}
+        tp0w = p.get("tp0_weight")
+        prof = (p.get("profile") or "").replace("-", " ")
+        if w:
+            def pct(x): 
+                try: return f"{float(x)*100:.0f}%"
+                except Exception: return "-"
+            parts = [pct(w.get("tp1",0)), pct(w.get("tp2",0)), pct(w.get("tp3",0)), pct(w.get("tp4",0)), pct(w.get("tp5",0))]
+            if isinstance(tp0w,(int,float)) and tp0w>0:
+                return f"TP0: {pct(tp0w)} • " + " / ".join(parts) + (f"  ({prof})" if prof else "")
+            return " / ".join(parts) + (f"  ({prof})" if prof else "")
+        return "20% mỗi mốc TP"
     return (
         f"🧭 <b>{sym} | {direction}</b>\n"
         f"<b>Entry:</b> —    <b>SL:</b> —\n"
         f"<b>TP:</b> — • — • — • — • —\n"
-        f"<b>Scale-out:</b> 20% mỗi mốc TP\n"
+        f"<b>Scale-out:</b> {_weights_line(plan)}\n"
         f"<b>Chiến lược:</b> {strategy}"
     )
 
@@ -139,6 +153,26 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
     else:
         don_bay_line = None
     strategy = plan.get("STRATEGY") or _humanize_state(plan.get("STATE", ""))
+    # scale-out block
+    def _scaleout_block(p: Dict[str, Any]) -> str | None:
+        w = (p.get("scale_out_weights") or {}) if isinstance(p, dict) else {}
+        prof = (p.get("profile") or "").replace("-", " ")
+        tp0w = p.get("tp0_weight")
+        if not w and not tp0w:
+            return None
+        def pct(x):
+            try: return f"{float(x)*100:.0f}%"
+            except Exception: return "-"
+        parts = [
+            f"TP1: {pct(w.get('tp1',0))}",
+            f"TP2: {pct(w.get('tp2',0))}",
+            f"TP3: {pct(w.get('tp3',0))}",
+            f"TP4: {pct(w.get('tp4',0))}",
+            f"TP5: {pct(w.get('tp5',0))}",
+        ]
+        head = f"<b>Scale-out:</b> " + (f"TP0: {pct(tp0w)} • " if isinstance(tp0w,(int,float)) and tp0w>0 else "")
+        tail = " | ".join(parts) + (f"  ({prof})" if prof else "")
+        return head + tail
     lines = [
         f"🧭 <b>{sym} | {direction}</b>",
         "",  # dòng trống sau tiêu đề
@@ -155,6 +189,9 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
         f"<b>TP5:</b> {tp5}",
         "",  # dòng trống sau Entry/SL
     ]
+    _so = _scaleout_block(plan)
+    if _so:
+        lines.append(_so)
     if don_bay_line:
         lines.append(don_bay_line)
 
