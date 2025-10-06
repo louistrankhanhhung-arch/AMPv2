@@ -285,15 +285,17 @@ class SignalPerfDB:
             if not (start_ts <= closed_at < now):
                 continue
 
-            # label: ưu tiên TP cao nhất đã hit; CLOSE không TP không tính win
+            # label: ưu tiên TP cao nhất đã hit; CLOSE có TP thì hiển thị TP*, CLOSE không TP giữ nguyên
             hits = t.get("hits") or {}
-            if st == "SL":
+            has_tp = any(hits.get(k) for k in ("TP5","TP4","TP3","TP2","TP1"))
+            if has_tp:
+                if   hits.get("TP5"): label = "TP5"; tp_counts["TP5"] += 1
+                elif hits.get("TP4"): label = "TP4"; tp_counts["TP4"] += 1
+                elif hits.get("TP3"): label = "TP3"; tp_counts["TP3"] += 1
+                elif hits.get("TP2"): label = "TP2"; tp_counts["TP2"] += 1
+                else:                 label = "TP1"; tp_counts["TP1"] += 1
+            elif st == "SL":
                 label = "SL"; tp_counts["SL"] += 1
-            elif hits.get("TP5"): label = "TP5"; tp_counts["TP5"] += 1
-            elif hits.get("TP4"): label = "TP4"; tp_counts["TP4"] += 1
-            elif hits.get("TP3"): label = "TP3"; tp_counts["TP3"] += 1
-            elif hits.get("TP2"): label = "TP2"; tp_counts["TP2"] += 1
-            elif hits.get("TP1"): label = "TP1"; tp_counts["TP1"] += 1
             else:
                 label = "CLOSE"
 
@@ -432,7 +434,9 @@ class SignalPerfDB:
         if not t:
             return {}
         # Map reason → status
-        # TP5/TP4/TP3 => chốt lời; ENTRY/REVERSAL => đóng trung tính; còn lại => SL
+        # TP5/TP4/TP3 => chốt lời;
+        # ENTRY/REVERSAL/TRAiL/TIME_EXIT/STALL_FAIL_AFTER_TRIGGER => CLOSE (đóng trung tính / theo SL động)
+        # còn lại => SL
         r = (reason or "").upper()
         if r == "TP5":
             t["status"] = "TP5"
@@ -440,7 +444,7 @@ class SignalPerfDB:
             t["status"] = "TP4"
         elif r == "TP3":
             t["status"] = "TP3"
-        elif r in ("ENTRY", "REVERSAL"):
+        elif r in ("ENTRY", "REVERSAL", "TRAIL", "TIME_EXIT", "STALL_FAIL_AFTER_TRIGGER"):
             t["status"] = "CLOSE"
         else:
             t["status"] = "SL"
@@ -543,10 +547,29 @@ class SignalPerfDB:
             if t.get("kpi24_reported_at"):
                 continue
             win = False; price_hit = None; show_status = status
+            has_tp = any(k in hits for k in ("TP1","TP2","TP3","TP4","TP5"))
             if early_close_no_tp:
                 show_status = "CLOSE"; win = False
                 pct = float(t.get("close_pct") or 0.0)
                 R = float(t.get("realized_R") or 0.0)
+            elif status == "CLOSE" and has_tp:
+                # CLOSE theo SL động/Trail/BE: hiển thị theo TP cao nhất đã đạt
+                if   hits.get("TP5"): price_hit = t.get("tp5"); show_status = "TP5"; win = True; tp_counts["TP5"] += 1
+                elif hits.get("TP4"): price_hit = t.get("tp4"); show_status = "TP4"; win = True; tp_counts["TP4"] += 1
+                elif hits.get("TP3"): price_hit = t.get("tp3"); show_status = "TP3"; win = True; tp_counts["TP3"] += 1
+                elif hits.get("TP2"): price_hit = t.get("tp2"); show_status = "TP2"; win = True; tp_counts["TP2"] += 1
+                else:                 price_hit = t.get("tp1"); show_status = "TP1"; win = True; tp_counts["TP1"] += 1
+                pct = _pct_for_hit(t, price_hit)
+                R = float(t.get("realized_R", 0.0) or 0.0)
+            elif status == "SL" and has_tp:
+                # Safety cho dữ liệu cũ: nếu SL nhưng đã có TP ⇒ coi là trail
+                if   hits.get("TP5"): price_hit = t.get("tp5"); show_status = "TP5"; win = True; tp_counts["TP5"] += 1
+                elif hits.get("TP4"): price_hit = t.get("tp4"); show_status = "TP4"; win = True; tp_counts["TP4"] += 1
+                elif hits.get("TP3"): price_hit = t.get("tp3"); show_status = "TP3"; win = True; tp_counts["TP3"] += 1
+                elif hits.get("TP2"): price_hit = t.get("tp2"); show_status = "TP2"; win = True; tp_counts["TP2"] += 1
+                else:                 price_hit = t.get("tp1"); show_status = "TP1"; win = True; tp_counts["TP1"] += 1
+                pct = _pct_for_hit(t, price_hit)
+                R = float(t.get("realized_R", 0.0) or 0.0)
             elif status == "TP5" or ("TP5" in hits):
                 price_hit = t.get("tp5"); win = True; show_status = "TP5"; tp_counts["TP5"] += 1
             elif status == "TP4" or ("TP4" in hits):
