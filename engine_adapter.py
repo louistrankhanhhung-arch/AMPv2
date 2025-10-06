@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional, Iterable
 from tiny_core_side_state import SideCfg, run_side_state_core
 import os
 from evidence_evaluators import _reversal_signal
+import math
 
 def _last_closed_bar(df):
     """
@@ -35,6 +36,12 @@ def _atr_from_features_tf(features_by_tf: Dict[str, Any], tf: str = "4H") -> flo
     except Exception:
         pass
     return 0.0
+
+def _regime_from_feats(features_by_tf: Dict[str, Any], tf: str = "4H") -> str:
+    try:
+        return str(((features_by_tf or {}).get(tf) or {}).get("meta", {}) or {}).get("regime","normal")
+    except Exception:
+        return "normal"
 
 def _soft_levels_by_tf(features_by_tf: Dict[str, Any], tf: str = "4H") -> Dict[str, float]:
     """
@@ -80,6 +87,12 @@ def _scale_out_weights_for_profile(profile: str) -> Dict[str, float]:
     if p == "1h-ladder":
         # Gợi ý: TP0=0.20 (đã set ở meta), TP1=0.20, TP2=0.25, TP3=0.20, TP4=0.15  ⇒ tổng ≈ 1.0
         return {"tp1": 0.20, "tp2": 0.25, "tp3": 0.20, "tp4": 0.15, "tp5": 0.0}
+    if p == "momentum-back":
+        # Động lượng mạnh → back-load (giữ phần lớn cho TP xa)
+        return {"tp1": 0.10, "tp2": 0.15, "tp3": 0.25, "tp4": 0.25, "tp5": 0.25}
+    if p == "range-front":
+        # Sideways/range → front-load để hiện thực hóa sớm
+        return {"tp1": 0.35, "tp2": 0.25, "tp3": 0.20, "tp4": 0.15, "tp5": 0.05}
     # fallback chung (không có TP0)
     return {"tp1": 0.30, "tp2": 0.30, "tp3": 0.20, "tp4": 0.20, "tp5": 0.0}
     
@@ -88,6 +101,85 @@ def _risk_unit(entry: float, sl: float, side: str) -> float:
         return (entry - sl) if side == "long" else (sl - entry)
     except Exception:
         return 0.0
+
+def _entry_cushion_k_from_env(side: str, regime: str) -> float:
+    """
+    Thứ tự ưu tiên ENV:
+      ENTRY_CUSHION_ATR_{SIDE} > ENTRY_CUSHION_ATR_{REGIME} > ENTRY_CUSHION_ATR
+    """
+    def _f(name, default=None):
+        try:
+            v = os.getenv(name)
+            return float(v) if v is not None and v != "" else default
+        except Exception:
+            return default
+    side_u = (side or "").upper()
+    reg_u  = (regime or "normal").upper()
+    for key in (f"ENTRY_CUSHION_ATR_{side_u}", f"ENTRY_CUSHION_ATR_{reg_u}", "ENTRY_CUSHION_ATR"):
+        k = _f(key, None)
+        if k is not None:
+            return max(0.0, float(k))
+    return 0.0
+
+def _apply_entry_cushion(entry: Optional[float], side: Optional[str], atr4: float, k: float) -> Optional[float]:
+    """LONG: entry += k*ATR ; SHORT: entry -= k*ATR"""
+    try:
+        if entry is None or side not in ("long","short") or atr4 <= 0 or k <= 0:
+            return entry
+        return float(entry + k*atr4) if side == "long" else float(entry - k*atr4)
+    except Exception:
+        return entry
+
+def _momentum_grade_1h(features_by_tf: Dict[str, Any]) -> str:
+    """
+    Đánh giá nhanh động lượng 1H dựa trên RSI, BB width, và vol_ratio.
+    - strong: rsi>=60, bb_width_pct tăng và vol_ratio>=1.2
+    - weak:   rsi<=45 hoặc bb_width_pct rất hẹp
+    - normal: còn lại
+    (bb_width_pct & vol_ratio được enrich trong indicators.py)
+    """
+    try:
+        df1 = ((features_by_tf or {}).get("1H") or {}).get("df")
+        if df1 is None or len(df1) < 5:
+            return "normal"
+        rsi = float(df1["rsi14"].iloc[-2]) if "rsi14" in df1.columns else float("nan")
+        vw  = float(df1["bb_width_pct"].iloc[-2]) if "bb_width_pct" in df1.columns else float("nan")
+        vw_prev = float(df1["bb_width_pct"].iloc[-4]) if "bb_width_pct" in df1.columns and len(df1)>=4 else vw
+        volr = float(df1["vol_ratio"].iloc[-2]) if "vol_ratio" in df1.columns else 1.0
+        widening = (vw == vw) and (vw_prev == vw_prev) and (vw > vw_prev)
+        if (rsi == rsi) and rsi >= 60.0 and widening and volr >= 1.2:
+            return "strong"
+        if (rsi == rsi) and rsi <= 45.0:
+            return "weak"
+        if (vw == vw) and vw < 1.0:
+            return "weak"
+        return "normal"
+    except Exception:
+        return "normal"
+
+def _choose_scaleout_profile(features_by_tf: Dict[str, Any], side: Optional[str]) -> str:
+    """
+    Quy tắc chọn profile:
+      - momentum-back: 1H momentum strong và 4H không ở 'high' regime
+      - range-front:   1H momentum weak hoặc 4H regime='low'
+      - 1h-ladder:     nếu meta/profile đã gợi ý trước đó
+      - fallback:      balanced
+    """
+    try:
+        regime4 = _regime_from_feats(features_by_tf, "4H")
+        mom1 = _momentum_grade_1h(features_by_tf)
+        if mom1 == "strong" and regime4 != "high":
+            return "momentum-back"
+        if mom1 == "weak" or regime4 == "low":
+            return "range-front"
+        # nếu core đã set profile (ví dụ 1h-ladder), giữ nguyên
+        meta = ((features_by_tf or {}).get("4H") or {}).get("meta", {}) or {}
+        prof = str(meta.get("profile") or "").strip().lower()
+        if prof:
+            return prof
+        return "balanced"
+    except Exception:
+        return "balanced"
 
 def _guard_near_bb_low_4h_and_rsi1h_extreme(
     side: Optional[str],
@@ -440,6 +532,22 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         }
         # 1) Áp ladder 1H nếu meta.profile='1H-ladder' (chỉnh SL/TP + TP0; gắn tp0_weight/weights trong meta)
         tmp_decision = _apply_1h_ladder(tmp_decision, cfg)
+        # 1.1) ENTRY CUSHION THEO ATR_4H (áp trước proximity để guard dùng entry đã cushion)
+        try:
+            _side   = (tmp_decision.get("side") or "").lower()
+            _entry  = tmp_decision.get("setup", {}).get("entry")
+            _atr4   = _atr_from_features_tf(features_by_tf, "4H")
+            _reg4   = _regime_from_feats(features_by_tf, "4H")
+            _k      = _entry_cushion_k_from_env(_side, _reg4)
+            _entry2 = _apply_entry_cushion(_entry, _side, _atr4, _k)
+            if _entry2 is not None and _entry2 != _entry:
+                tmp_decision["setup"]["entry"] = float(_entry2)
+                # ghi reason để trace
+                _logs = tmp_decision.get("logs") or {}
+                _logs["CUSHION"] = {"k_atr": float(_k), "atr4": float(_atr4)}
+                tmp_decision["logs"] = _logs
+        except Exception:
+            pass
         # 2) Guard proximity 1H+4H ngay trước khi phát hành; rr_ok được tính nội bộ theo TP list
         tmp_decision = _apply_proximity_guard(tmp_decision)
         # Ghi ngược lại về object 'dec'
@@ -671,6 +779,10 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
 
     # ---------- end helpers ----------
 
+    # === Chọn playbook scale-out theo động lượng & gắn weights vào plan ===
+    profile = _choose_scaleout_profile(features_by_tf, dec.side)
+    scale_weights = _scale_out_weights_for_profile(profile)
+
     plan = {
         "direction": dec.side.upper() if dec.side else None,
         "entry": dec.setup.entry,
@@ -688,6 +800,8 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         "rr4": rr4,
         "rr5": rr5,
         "risk_size_hint": size_hint,  # <— leverage đề xuất
+        "profile": profile,
+        "scale_out_weights": scale_weights,
     }
 
     # ---- ensure locals before logging ----
