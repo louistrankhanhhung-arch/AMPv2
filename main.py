@@ -457,6 +457,29 @@ def _unrealized_R(trade: dict, px: float) -> float:
     except Exception:
         return 0.0
 
+def _remaining_weight(trade: dict) -> float:
+    """
+    Phần trọng số còn lại của vị thế (1 - tổng weight các TP đã hit).
+    - Ưu tiên 'weights' do storage lưu khi mở lệnh (map: tp1..tp5)
+    - Nếu thiếu thì fallback 0.0 (tức coi như không còn vị thế — bảo thủ)
+    """
+    try:
+        w = (trade.get("weights") or trade.get("scale_out_weights") or {}) if isinstance(trade, dict) else {}
+        hits = (trade.get("hits") or {}) if isinstance(trade, dict) else {}
+        hit_sum = 0.0
+        for lv in ("TP1","TP2","TP3","TP4","TP5"):
+            if hits.get(lv):
+                try:
+                    hit_sum += float(w.get(lv.lower(), 0.0))
+                except Exception:
+                    pass
+        rem = 1.0 - hit_sum
+        if rem < 0.0: rem = 0.0
+        if rem > 1.0: rem = 1.0
+        return float(rem)
+    except Exception:
+        return 0.0
+
 def _mfe_R_since_open(df4: pd.DataFrame, trade: dict) -> float:
     """
     MFE tính theo 4H kể từ nến *đóng* gần thời điểm post lệnh.
@@ -691,10 +714,21 @@ def _time_exit_and_breakeven_checks(symbol: str,
 
                         # QUY TẮC: CLOSE nếu A & (B hoặc REVERSAL)
                         if progress_ok and (give_ok or is_rev):
-                            # Tính R_now và ghi KPI weighted 20%
+                            # Tính R_now và ghi KPI theo phần trọng số còn lại (scale-out động)
                             R_cap = R_now  # không cap cứng trong stall-fail
-                            new_R = float(t.get("realized_R") or 0.0) + 0.2 * R_cap
-                            perfdb.update_fields(t["sid"], realized_R=new_R)
+                            rem_w = _remaining_weight(t)
+                            new_R = float(t.get("realized_R") or 0.0) + rem_w * R_cap
+                            # cập nhật close_px/close_pct để KPI % chuẩn
+                            try:
+                                entry = float(t.get("entry") or 0.0)
+                                side  = (t.get("dir") or "").upper()
+                                def _pct(entry_px: float, px: float, _side: str) -> float:
+                                    if not entry_px or not px: return 0.0
+                                    return ((px - entry_px) / entry_px * 100.0) if _side=="LONG" else ((entry_px - px) / entry_px * 100.0)
+                                close_pct = _pct(entry, float(price_now), side)
+                            except Exception:
+                                close_pct = 0.0
+                            perfdb.update_fields(t["sid"], realized_R=new_R, close_px=float(price_now), close_pct=float(close_pct))
                             perfdb.close(t["sid"], reason="STALL_FAIL_AFTER_TRIGGER")
                             # notify
                             mid = int((t.get("message_id") or 0))
@@ -713,11 +747,22 @@ def _time_exit_and_breakeven_checks(symbol: str,
             if (te_n > 0) and (bars >= int(te_n)):
                 mfeR = _mfe_R_since_open(df4, t)
                 if mfeR < float(te_min_prog):
-                    # Tính R ở giá hiện tại và cap −0.2R (weighted 20%)
+                    # Tính R ở giá hiện tại; phần còn lại theo rem_w. Cho phép cap lỗ ở -0.2R nếu muốn (tắt cap mặc định).
                     R_now = _unrealized_R(t, price_now)
-                    R_cap = max(R_now, -0.2)
-                    new_R = float(t.get("realized_R") or 0.0) + 0.2 * R_cap
-                    perfdb.update_fields(t["sid"], realized_R=new_R)
+                    R_cap = R_now  # nếu muốn cap: max(R_now, -0.2)
+                    rem_w = _remaining_weight(t)
+                    new_R = float(t.get("realized_R") or 0.0) + rem_w * R_cap
+                    # cập nhật close_px/close_pct để KPI % chuẩn
+                    try:
+                        entry = float(t.get("entry") or 0.0)
+                        side  = (t.get("dir") or "").upper()
+                        def _pct(entry_px: float, px: float, _side: str) -> float:
+                            if not entry_px or not px: return 0.0
+                            return ((px - entry_px) / entry_px * 100.0) if _side=="LONG" else ((entry_px - px) / entry_px * 100.0)
+                        close_pct = _pct(entry, float(price_now), side)
+                    except Exception:
+                        close_pct = 0.0
+                    perfdb.update_fields(t["sid"], realized_R=new_R, close_px=float(price_now), close_pct=float(close_pct))
                     perfdb.close(t["sid"], reason="TIME_EXIT")
                     # notify
                     mid = int((t.get("message_id") or 0))
@@ -1349,7 +1394,9 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                         close_pct = float(_pct(entry, close_px, side))
                         risk_pct  = float(_risk_pct(entry, sl, side))
                         R = float(close_pct / risk_pct) if risk_pct > 0 else 0.0
-                        R_weighted = 0.2 * R   # theo convention scale-out 20%
+                        # Scale-out động: phần vị thế chưa chốt tính theo trọng số còn lại
+                        rem_w = _remaining_weight(t)
+                        R_weighted = float(t.get("realized_R", 0.0)) + rem_w * R
 
                         # ĐÓNG & LƯU SỐ LIỆU ĐỂ KPI ĐỌC
                         perf.close(t["sid"], "REVERSAL")   # map -> status="CLOSE"
@@ -1358,7 +1405,7 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                             t["sid"],
                             close_px=close_px,
                             close_pct=close_pct,
-                            realized_R=R_weighted  # đã weighted 20%
+                            realized_R=R_weighted  # đã cộng phần còn lại theo rem_w
                         )
                         note = f"📌 Đóng lệnh sớm do có tín hiệu đảo chiều."
                         extra = {"margin_pct": close_pct}
@@ -1472,11 +1519,33 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                             highest, hit_price = "TP2", float(t.get("tp2") or t.get("tp1") or entry)
                         else:
                             highest, hit_price = "TP1", float(t.get("tp1") or entry)
+
+                        # Tính phần R còn lại tại giá đóng (hit_price)
+                        try:
+                            risk_pct = abs((entry - float(t.get("sl"))) / entry) if entry else 0.0
+                        except Exception:
+                            risk_pct = 0.0
+                        if risk_pct > 0:
+                            if side == "LONG":
+                                close_pct2 = (hit_price - entry) / entry * 100.0
+                            else:
+                                close_pct2 = (entry - hit_price) / entry * 100.0
+                            R2 = (close_pct2 / 100.0) / risk_pct
+                        else:
+                            close_pct2, R2 = 0.0, 0.0
+                        rem_w2 = _remaining_weight(t)
+                        R_weighted2 = float(t.get("realized_R", 0.0)) + rem_w2 * R2
                 
                         perf.close(t["sid"], "TRAIL")   # khác biệt: đóng theo SL động
                         t["status"] = "CLOSE"
                         note = f"📌 Đóng lệnh — Giá quay về SL động sau khi đã đạt {highest}."
                         extra = {"margin_pct": margin_pct(hit_price)}
+                        perf.update_fields(
+                            t["sid"],
+                            close_px=hit_price,
+                            close_pct=close_pct2,
+                            realized_R=R_weighted2
+                        )
                         if tn2:
                             if msg_id:
                                 tn2.send_channel_update(int(msg_id), render_update(t, note, extra))
