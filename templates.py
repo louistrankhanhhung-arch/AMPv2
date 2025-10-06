@@ -239,115 +239,23 @@ def render_kpi_teaser_two_parts(detail_24h: dict,
                 pctW = 0.0
             lev  = _item_leverage(it)
             lev_s = f" • x{int(lev)}" if isinstance(lev,(int,float)) and lev>0 else ""
-            lines.append(f"{icon} <b>{sym}</b> — {status} • <b>{rW:+.2f}R</b> • <b>{pctW:+.2f}%</b>{lev_s}")
+            lines.append(f"{icon} {sym} — {status} • {rW:+.2f}R • {pctW:+.2f}%{lev_s}")
         lines.append("")
         
     # Khối hiệu suất ngày (Today) — hiển thị cả R và % thực nhận
-    lines.append("<b>Hiệu suất ngày (Today)</b>")
+    lines.append("<b>Hiệu suất ngày:</b>")
     try:
         wr = float(kpi_day.get("wr", 0.0) or 0.0)
         avgR = float(kpi_day.get("avgR", 0.0) or 0.0)
         sumR = float(kpi_day.get("sumR", 0.0) or 0.0)
         avgPctW = float(kpi_day.get("avgPctW", 0.0) or 0.0)
         sumPctW = float(kpi_day.get("sumPctW", 0.0) or 0.0)
-        lines.append(f"• Win-rate: {wr:.0%}")
-        lines.append(f"• Avg R: {avgR:.2f}  |  Total R: {sumR:.2f}")
-        lines.append(f"• Avg %: {avgPctW:.2f}%  |  Total %: {sumPctW:.2f}%")
+        lines.append(f"• Tỉ lệ thắng: {wr:.0%}")
+        lines.append(f"• R trung bình: {avgR:.2f}  |  Tổng R: {sumR:.2f}")
+        lines.append(f"• % trung bình: {avgPctW:.2f}%  |  Tổng %: {sumPctW:.2f}%")
     except Exception:
         lines.append("• (thiếu dữ liệu)")
 
-    totals = (detail_24h.get("totals") or {}) if isinstance(detail_24h, dict) else {}
-    n = int(totals.get("n", 0) or 0)
-    sumR_w = float(
-        totals.get("sum_R_weighted") or  # đề xuất back-end: tổng R đã nhân weight
-        totals.get("sum_R_w") or         # alias nếu bạn dùng tên khác
-        totals.get("sum_R", 0.0) or 0.0  # fallback cũ (có thể chưa weighted)
-    )
-    sum_pct_w = float(
-        totals.get("sum_pct_weighted") or
-        totals.get("sum_pct_w") or
-        totals.get("sum_pct", 0.0) or 0.0
-    )
-
-    tp_counts = (totals.get("tp_counts") or {})
-    # Lấy đủ 5TP với fallback 0
-    c5 = int(tp_counts.get("TP5", 0) or 0)
-    c4 = int(tp_counts.get("TP4", 0) or 0)
-    c3 = int(tp_counts.get("TP3", 0) or 0)
-    c2 = int(tp_counts.get("TP2", 0) or 0)
-    c1 = int(tp_counts.get("TP1", 0) or 0)
-    cs = int(tp_counts.get("SL", 0) or 0)
-
-    # Win-rate: số lệnh chạm bất kỳ TP (TP1..TP5) / tổng lệnh đã đóng trong danh sách
-    wins_tp = c1 + c2 + c3 + c4 + c5
-    n_closed = n
-    wr_pct = (wins_tp / n_closed * 100.0) if n_closed else 0.0
-
-    # (KPI 24H) after-leverage calculations — per-signal leverage
-    items_for_lev = detail_24h.get("items") or []
-    sum_R_items_lev = 0.0
-    sum_pct_items_lev = 0.0
-    have_item_level = False
-    lev_list = []
-    for it in items_for_lev:
-        lev_i = _item_leverage(it)
-        if lev_i > 0:
-            lev_list.append(lev_i)
-        # Nếu item có R thì dùng theo item; nếu không, sẽ fallback sau
-        try:
-            Rw_i = float(it.get("R_weighted") or it.get("R_w") or it.get("R") or 0.0)
-            if lev_i > 0 and Rw_i != 0.0:
-                sum_R_items_lev += Rw_i * lev_i
-                have_item_level = True
-        except Exception:
-            pass
-        # % theo item (nếu có)
-        try:
-            pctw_i = float(it.get("pct_weighted") or it.get("pct_w") or it.get("pct") or 0.0)
-            if lev_i > 0 and pctw_i != 0.0:
-                sum_pct_items_lev += pctw_i * lev_i
-        except Exception:
-            pass
-
-    if have_item_level:
-        sum_R_lev = sum_R_items_lev
-        # Nếu không gom được % theo item, fallback theo lev_avg
-        if sum_pct_items_lev != 0.0:
-            sum_pct_lev = sum_pct_items_lev
-        else:
-            lev_avg = (sum(lev_list) / len(lev_list)) if lev_list else 0.0
-            if lev_avg > 0:
-                sum_pct_lev = sum_pct_w * lev_avg
-            else:
-                # Không có lev per-item → fallback ENV
-                LEV = _report_leverage()
-                sum_pct_lev = sum_pct_w * LEV
-                sum_R_lev   = sumR_w   * LEV
-    else:
-        # Không có R per-item → dùng lev_avg nếu có, ngược lại ENV
-        lev_avg = (sum(lev_list) / len(lev_list)) if lev_list else 0.0
-        if lev_avg > 0:
-            sum_R_lev   = sumR_w   * lev_avg
-            sum_pct_lev = sum_pct_w * lev_avg
-        else:
-            LEV = _report_leverage()
-            sum_R_lev   = sumR_w   * LEV
-            sum_pct_lev = sum_pct_w * LEV
-
-    pnl_per_100_lev = sum_R_lev * 100.0
-    avgR_lev        = (sum_R_lev / max(1, n))
-    avg_usd_lev     = avgR_lev * 100.0
-
-    # Build lines (append performance block after the 24H list)
-    lines += [
-        "📊 <b>Hiệu suất giao dịch:</b>",
-        f"- Tổng lệnh đã đóng: {n}",
-        f"- Tỉ lệ thắng: {wr_pct:.2f}%",
-        f"- Tổng R: {sum_R_lev:.2f}R",
-        f"- Lợi nhuận với risk $100/lệnh: ${pnl_per_100_lev:.0f}",
-        f"- Lợi nhuận trung bình/lệnh: {avgR_lev:.2f}R (~${avg_usd_lev:.0f})",
-        f"- TP theo số lệnh: TP5: {c5} / TP4: {c4} / TP3: {c3} / TP2: {c2} / TP1: {c1} / SL: {cs}",
-    ]
     # Lời mời nâng cấp
     if upgrade_url:
         lines.append("🔒 <b>Nâng cấp Plus</b> để xem full tín hiệu & nhận thông báo sớm hơn.")
