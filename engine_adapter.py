@@ -804,6 +804,37 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         "scale_out_weights": scale_weights,
     }
 
+    # --- [NEW] scale-out theo động lượng (profile & weights) ---
+    try:
+        # Ưu tiên profile có sẵn trong meta/core; nếu chưa có thì chọn theo động lượng 1H & regime 4H
+        _meta_in = dec.meta if isinstance(dec.meta, dict) else {}
+        _profile = str((_meta_in.get("profile") or "")).strip().lower()
+        if not _profile:
+            _profile = _choose_scaleout_profile(features_by_tf, dec.side)
+        weights = _scale_out_weights_for_profile(_profile)
+        # TP0 weight (nếu ladder 1H chèn TP0)
+        tp0_w = None
+        try:
+            if isinstance(_meta_in.get("tp0_weight"), (int, float)):
+                tp0_w = float(_meta_in["tp0_weight"])
+        except Exception:
+            tp0_w = None
+        # Lưu xuống plan/meta để main.py & storage.py sử dụng
+        plan["scale_out_weights"] = weights
+        if tp0_w is not None:
+            plan["tp0_weight"] = tp0_w
+        plan["profile"] = _profile
+        # merge vào dec.meta (loại field nặng trước khi log)
+        if isinstance(dec.meta, dict):
+            dec.meta["profile"] = _profile
+            dec.meta["scale_out_weights"] = dict(weights)
+            if tp0_w is not None:
+                dec.meta["tp0_weight"] = tp0_w
+        else:
+            dec.meta = {"profile": _profile, "scale_out_weights": dict(weights), **({"tp0_weight": tp0_w} if tp0_w is not None else {})}
+    except Exception:
+        pass
+
     # ---- ensure locals before logging ----
     decision = dec.decision or "WAIT"
     state = dec.state
@@ -939,5 +970,7 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         "headline": headline,
         "telegram_signal": telegram_signal,
         "strategy": _strategy_label(state, dec.meta),
+        # meta gọn cho caller; tránh DataFrame
+        "meta": _sanitize_meta_for_logs(dec.meta if isinstance(dec.meta, dict) else {}),
     }
     return out
