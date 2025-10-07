@@ -9,6 +9,8 @@ import os
 from evidence_evaluators import _reversal_signal
 import math
 
+
+
 def _last_closed_bar(df):
     """
     Return the last *closed* bar for streaming safety:
@@ -76,6 +78,71 @@ def _rsi_from_features_tf(features_by_tf: Dict[str, Any], tf: str = "1H") -> Opt
     except Exception:
         pass
     return None
+
+def _is_pullback_in_progress(feats: Dict[str, Any], side: str) -> tuple[bool, str]:
+    """
+    Phát hiện *pullback đang diễn tiến* để chặn continuation bắt dao rơi.
+    Long: 4H còn nằm dưới BB-mid/EMA20 và EMA20<EMA50; 1H còn yếu (close<EMA50, RSI<52).
+    Short: đối xứng ngược lại.
+    """
+    try:
+        if side not in ("long","short"):
+            return False, ""
+        # 4H levels
+        df4 = ((feats or {}).get("4H") or {}).get("df")
+        if df4 is None or len(df4) < 3:
+            return False, ""
+        last4 = _last_closed_bar(df4)
+        c4   = float(last4["close"])
+        e20  = float(last4.get("ema20", float("nan")))
+        e50  = float(last4.get("ema50", float("nan")))
+        bmid = float(last4.get("bb_mid", float("nan")))
+        # 1H momentum/structure
+        df1 = ((feats or {}).get("1H") or {}).get("df")
+        last1 = _last_closed_bar(df1) if (df1 is not None and len(df1)) else None
+        rsi1 = None; c1=None; e50_1h=None; 
+        if last1 is not None:
+            c1 = float(last1.get("close", float("nan")))
+            e50_1h = float(last1.get("ema50", float("nan"))) if "ema50" in last1.index else float("nan")
+            for col in ("rsi14","rsi","RSI"):
+                if col in df1.columns:
+                    rsi1 = float(df1.loc[last1.name, col]); break
+        # Long: pullback còn chạy nếu (c4 < bmid or c4 < e20) & (e20 < e50) & (c1<e50_1h or rsi1<52)
+        if side == "long":
+            cond4 = ((c4 < bmid) or (c4 < e20)) and (e20 == e20 and e50 == e50 and e20 < e50)
+            cond1 = ((c1 is not None and e50_1h == e50_1h and c1 < e50_1h) or (rsi1 is not None and rsi1 < 52.0))
+            if cond4 and cond1:
+                return True, "4H below mid/ema20 & ema20<ema50; 1H weak (below ema50 / rsi<52)"
+        # Short: pullback còn chạy nếu (c4 > bmid or c4 > e20) & (e20>e50) & (c1>e50_1h or rsi1>48)
+        if side == "short":
+            cond4 = ((c4 > bmid) or (c4 > e20)) and (e20 == e20 and e50 == e50 and e20 > e50)
+            cond1 = ((c1 is not None and e50_1h == e50_1h and c1 > e50_1h) or (rsi1 is not None and rsi1 > 48.0))
+            if cond4 and cond1:
+                return True, "4H above mid/ema20 & ema20>ema50; 1H strong (above ema50 / rsi>48)"
+    except Exception:
+        pass
+    return False, ""
+
+def _momentum_grade_1h(features_by_tf: Dict[str, Any]) -> str:
+    # (đã có trong file này; giữ nguyên – nếu chưa có ở bản của bạn, dùng bản dưới)
+    try:
+        df1 = ((features_by_tf or {}).get("1H") or {}).get("df")
+        if df1 is None or len(df1) < 5:
+            return "normal"
+        rsi = float(df1["rsi14"].iloc[-2]) if "rsi14" in df1.columns else float("nan")
+        vw  = float(df1["bb_width_pct"].iloc[-2]) if "bb_width_pct" in df1.columns else float("nan")
+        vw_prev = float(df1["bb_width_pct"].iloc[-4]) if "bb_width_pct" in df1.columns and len(df1)>=4 else vw
+        volr = float(df1["vol_ratio"].iloc[-2]) if "vol_ratio" in df1.columns else 1.0
+        widening = (vw == vw) and (vw_prev == vw_prev) and (vw > vw_prev)
+        if (rsi == rsi) and rsi >= 60.0 and widening and volr >= 1.2:
+            return "strong"
+        if (rsi == rsi) and rsi <= 45.0:
+            return "weak"
+        if (vw == vw) and vw < 1.0:
+            return "weak"
+        return "normal"
+    except Exception:
+        return "normal"
 
 def _scale_out_weights_for_profile(profile: str) -> Dict[str, float]:
     """
@@ -542,6 +609,33 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         # Không chặn nếu check reversal lỗi, chỉ log warning
         import logging
         logging.getLogger(__name__).warning(f"Reversal guard check failed for {symbol}: {e}")
+
+    # -------- [NEW] GUARD: pullback-in-progress (tránh bắt dao rơi) --------
+    # Nếu 4H còn đang pullback (đúng mẫu) thì không cho ENTER continuation/break trong chiều ngược pullback.
+    try:
+        if (dec.decision or "WAIT").upper() == "ENTER" and dec.side in ("long","short"):
+            if str(dec.state or "").lower() in ("trend_break", "continuation"):
+                _pb_block, _pb_why = _is_pullback_in_progress(features_by_tf, dec.side)
+                if _pb_block:
+                    dec.decision = "WAIT"
+                    rs = list(dec.reasons or [])
+                    rs.append("guard:pullback_in_progress")
+                    if _pb_why:
+                        rs.append(f"pb:{_pb_why}")
+                    dec.reasons = rs
+    except Exception:
+        pass
+
+    # -------- [NEW] GUARD: continuation cần 1H momentum không 'weak' --------
+    try:
+        if (dec.decision or "WAIT").upper() == "ENTER" and str(dec.state or "").lower() == "continuation":
+            if _momentum_grade_1h(features_by_tf) == "weak":
+                dec.decision = "WAIT"
+                rs = list(dec.reasons or [])
+                rs.append("guard:weak_1h_momentum")
+                dec.reasons = rs
+    except Exception:
+        pass
 
     # ===== [NEW] HẬU XỬ LÝ PROFILE & PROXIMITY (dựa trên dec/setup hiện có) =====
     # Chuyển 'dec' về dict tạm để dùng lại các helper _apply_1h_ladder / _apply_proximity_guard
