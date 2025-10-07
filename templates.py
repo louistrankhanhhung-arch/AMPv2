@@ -239,7 +239,7 @@ def render_kpi_teaser_two_parts(detail_24h: dict,
                 pctW = 0.0
             lev  = _item_leverage(it)
             lev_s = f" • x{int(lev)}" if isinstance(lev,(int,float)) and lev>0 else ""
-            lines.append(f"{icon} {sym}  •  {pctW:+.2f}%{lev_s}")
+            lines.append(f"{icon} {sym}:  {pctW:+.2f}%{lev_s}")
         lines.append("")
         
     # Khối hiệu suất ngày (Today) — hiển thị cả R và % thực nhận
@@ -250,9 +250,12 @@ def render_kpi_teaser_two_parts(detail_24h: dict,
         sumR = float(kpi_day.get("sumR", 0.0) or 0.0)
         avgPctW = float(kpi_day.get("avgPctW", 0.0) or 0.0)
         sumPctW = float(kpi_day.get("sumPctW", 0.0) or 0.0)
+        lines.append(f"• Tổng %: {sumPctW:.2f}%")
+        lines.append(f"• % trung bình: {avgPctW:.2f}%")
         lines.append(f"• Tỉ lệ thắng: {wr:.0%}")
-        lines.append(f"• R trung bình: {avgR:.2f}  |  Tổng R: {sumR:.2f}")
-        lines.append(f"• % trung bình: {avgPctW:.2f}%  |  Tổng %: {sumPctW:.2f}%")
+        lines.append(f"• Tổng R: {sumR:.2f}")
+        lines.append(f"• R trung bình: {avgR:.2f}")
+        
     except Exception:
         lines.append("• (thiếu dữ liệu)")
 
