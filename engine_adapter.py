@@ -26,6 +26,82 @@ def _last_closed_bar(df):
         pass
     return None
 
+def _guard_intraday_reversal_shock(feats: Dict[str, Any], side: str) -> Dict[str, Any]:
+    """
+    Chặn ENTER khi nến 1H vừa đóng có 'volatility shock' mang tính đảo chiều:
+      - range nến 1H >= SHOCK_RANGE_ATR * ATR1H
+      - và (bearish/bullish engulfing hoặc wick dài theo hướng đảo chiều hoặc ΔRSI mạnh)
+      - và yếu thêm: close cắt qua EMA20 theo chiều bất lợi hoặc vol_ratio spike
+    Có van an toàn cho continuation mạnh thật (marubozu/thân lớn + RSI tăng/giảm mạnh).
+    ENV:
+      SHOCK_RANGE_ATR(1.3) SHOCK_WICK_FRAC(0.6) SHOCK_VOLR(1.8) SHOCK_RSI_DROP(8)
+      SHOCK_ALLOW_STRONG(1)
+    """
+    try:
+        if side not in ("long","short"):
+            return {"block": False, "why": ""}
+        df1 = ((feats or {}).get("1H") or {}).get("df")
+        if df1 is None or len(df1) < 3:
+            return {"block": False, "why": ""}
+        last = _last_closed_bar(df1)
+        prev = df1.iloc[-3] if len(df1) >= 3 else None
+        if last is None or prev is None:
+            return {"block": False, "why": ""}
+        o, h, l, c = float(last["open"]), float(last["high"]), float(last["low"]), float(last["close"])
+        atr1 = float(df1.loc[last.name, "atr14"]) if "atr14" in df1.columns else float("nan")
+        e20  = float(last.get("ema20", float("nan")))
+        e50  = float(last.get("ema50", float("nan"))) if "ema50" in last.index else float("nan")
+        volr = float(last.get("vol_ratio", 1.0)) if "vol_ratio" in df1.columns else 1.0
+        rsi  = None; rsi_prev = None
+        for col in ("rsi14","rsi","RSI"):
+            if col in df1.columns:
+                rsi      = float(df1.loc[last.name, col])
+                rsi_prev = float(prev[col])
+                break
+        rng = max(1e-12, h - l)
+        up_wick   = max(0.0, h - max(o, c))
+        down_wick = max(0.0, min(o, c) - l)
+        body = abs(c - o)
+        body_frac = body / rng if rng > 0 else 0.0
+        # ENV thresholds
+        import os as _os
+        K_atr    = float(_os.getenv("SHOCK_RANGE_ATR",   "1.3"))
+        K_wick   = float(_os.getenv("SHOCK_WICK_FRAC",   "0.6"))
+        K_volr   = float(_os.getenv("SHOCK_VOLR",        "1.8"))
+        K_rsidd  = float(_os.getenv("SHOCK_RSI_DROP",    "8"))
+        ALLOW_ST = str(_os.getenv("SHOCK_ALLOW_STRONG",  "1")).lower() in ("1","true","yes")
+        # patterns
+        bearish_engulf = (c < o) and (float(prev["close"]) > float(prev["open"])) and (o >= float(prev["close"])) and (c <= float(prev["open"]))
+        bull_engulf    = (c > o) and (float(prev["close"]) < float(prev["open"])) and (o <= float(prev["close"])) and (c >= float(prev["open"]))
+        big_range      = (atr1 == atr1) and (rng >= K_atr * atr1)
+        vol_spike      = (volr is not None) and (volr >= K_volr)
+        rsi_drop       = (rsi is not None and rsi_prev is not None and (rsi_prev - rsi) >= K_rsidd)
+        rsi_pop        = (rsi is not None and rsi_prev is not None and (rsi - rsi_prev) >= K_rsidd)
+        marubozu_up    = (c > o) and (up_wick/rng <= 0.20) and (down_wick/rng <= 0.10)
+        marubozu_down  = (c < o) and (down_wick/rng <= 0.20) and (up_wick/rng <= 0.10)
+        if side == "long":
+            wick_reversal = (rng > 0 and (up_wick / rng) >= K_wick)
+            weak_filter   = ((e20 == e20) and (c < e20)) or vol_spike
+            # Allow continuation mạnh thật
+            if ALLOW_ST:
+                strong_trend = (c > e20 > e50) and rsi_pop and (body_frac >= 0.55)
+                if big_range and (marubozu_up or strong_trend):
+                    return {"block": False, "why": "allow_strong_trend_after_shock"}
+            if big_range and weak_filter and (bearish_engulf or wick_reversal or rsi_drop):
+                return {"block": True, "why": f"1H shock-down: rng>={K_atr}*ATR, wick≥{K_wick}, volr≥{K_volr} or ΔRSI≤-{K_rsidd}"}
+        else:
+            wick_reversal = (rng > 0 and (down_wick / rng) >= K_wick)
+            weak_filter   = ((e20 == e20) and (c > e20)) or vol_spike
+            if ALLOW_ST:
+                strong_trend = (c < e20 < e50) and rsi_drop and (body_frac >= 0.55)
+                if big_range and (marubozu_down or strong_trend):
+                    return {"block": False, "why": "allow_strong_trend_after_shock"}
+            if big_range and weak_filter and (bull_engulf or wick_reversal or rsi_pop):
+                return {"block": True, "why": f"1H shock-up: rng>={K_atr}*ATR, wick≥{K_wick}, volr≥{K_volr} or ΔRSI≥{K_rsidd}"}
+    except Exception:
+        pass
+    return {"block": False, "why": ""}
+
 def _atr_from_features_tf(features_by_tf: Dict[str, Any], tf: str = "4H") -> float:
     """Use ATR at the last *closed* bar to avoid partial-candle drift."""
     try:
@@ -679,6 +755,18 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
             pass
         # 2) Guard proximity 1H+4H ngay trước khi phát hành; rr_ok được tính nội bộ theo TP list
         tmp_decision = _apply_proximity_guard(tmp_decision)
+        # 2.1) Guard intraday reversal shock (đảo chiều 1H kiểu FET)
+        try:
+            _side  = (tmp_decision.get("side") or "").lower()
+            _feats = (tmp_decision.get("meta") or {}).get("features_by_tf") or {}
+            _g = _guard_intraday_reversal_shock(_feats, _side)
+            if _g.get("block"):
+                _logs = tmp_decision.get("logs") or {}
+                _logs["WAIT"] = {"reasons": ["intraday_reversal_shock"], "details": _g.get("why")}
+                tmp_decision["logs"] = _logs
+                tmp_decision["decision"] = "WAIT"
+        except Exception:
+            pass
         # Ghi ngược lại về object 'dec'
         dec.decision = tmp_decision.get("decision", dec.decision)
         # cập nhật setup nếu có thay đổi từ 1H-ladder
@@ -696,10 +784,15 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
             rs = list(dec.reasons or [])
             wlog = (tmp_decision.get("logs") or {}).get("WAIT") or {}
             det = wlog.get("details") or ""
-            if "near_soft_level" not in rs and "soft_proximity" not in rs:
+            # Gộp toàn bộ reasons từ guard hậu xử lý
+            for r in (wlog.get("reasons") or []):
+                if r not in rs:
+                    rs.append(r)
+            # Giữ tương thích cũ: thêm soft_proximity nếu có proximity guard
+            if "near_soft_level" in (wlog.get("reasons") or []) and "soft_proximity" not in rs:
                 rs.append("soft_proximity")
             if det:
-                rs.append(f"prox:{det}")
+                rs.append(det)
             dec.reasons = rs
         # merge meta nhưng KHÔNG giữ features_by_tf (có DataFrame)
         try:
@@ -1082,6 +1175,8 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         notes.append("RR min not satisfied")
     if "soft_proximity" in dec.reasons:
         notes.append(f"Soft proximity (BB/EMA): {prox.get('why','')}")
+    if "intraday_reversal_shock" in dec.reasons:
+        notes.append("1H volatility shock — chờ reclaim/ổn định rồi mới vào")
 
     # Build humanized strategy label for templates/teaser
     def _strategy_label(state: str, meta: Dict[str, Any] | None) -> str:
