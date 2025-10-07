@@ -40,6 +40,64 @@ log = logging.getLogger("worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
                     format="%(asctime)s %(levelname)s %(message)s")
 
+# ============ BE tại nửa đường tới TP1 ============
+def _breakeven_half_to_tp1(perf: SignalPerfDB, t: dict, hi: float | None, lo: float | None, tn2: TelegramNotifier | None):
+    """
+    Khi giá đi được nửa khoảng cách từ Entry đến TP1 (trước khi TP1 hit),
+    thì dời SL động về Entry (BE), thông báo và ghi nhận để không spam.
+    """
+    try:
+        if str(os.getenv("DISABLE_BE_AT_HALF", "0")) == "1":
+            return
+        # Chỉ áp dụng khi lệnh còn OPEN, chưa hit TP1
+        if (t.get("status") or "OPEN") != "OPEN":
+            return
+        hits = t.get("hits") or {}
+        if hits.get("TP1"):
+            return
+        # Tránh lặp thông báo
+        if t.get("be_half") or t.get("be_half_notify_ts"):
+            return
+        side = str(t.get("dir") or t.get("direction") or "").upper()
+        entry = t.get("entry")
+        tp1   = t.get("tp1")
+        if entry is None or tp1 is None or side not in ("LONG","SHORT"):
+            return
+        entry = float(entry); tp1 = float(tp1)
+        # midpoint giữa Entry và TP1
+        mid = (entry + tp1) / 2.0
+        # Điều kiện đã "đi qua" midpoint theo mỗi side
+        crossed_half = False
+        if side == "LONG":
+            # nến hiện tại có high chạm/qua midpoint
+            crossed_half = (hi is not None) and (float(hi) >= mid)
+        else:
+            crossed_half = (lo is not None) and (float(lo) <= mid)
+        if not crossed_half:
+            return
+        # Arm BE: dời SL động -> Entry và đánh dấu
+        t["sl_dyn"] = float(entry)
+        t["be_half"] = True
+        t["be_half_notify_ts"] = int(time.time())
+        perf.update_fields(t["sid"], sl_dyn=float(entry), be_half=True, be_half_notify_ts=int(time.time()))
+        # Thông báo lên kênh (cập nhật bài gốc nếu có)
+        note = "📌 Dời SL lên Entry để bảo toàn vốn."
+        def margin_pct(px: float) -> float:
+            try:
+                e = float(entry); return (px - e)/e*100.0 if side=="LONG" else (e - px)/e*100.0
+            except Exception:
+                return 0.0
+        extra = {"margin_pct": margin_pct(mid)}
+        msg_id = t.get("message_id") or t.get("telegram_message_id")
+        if tn2:
+            if msg_id:
+                tn2.send_channel_update(int(msg_id), render_update(t, note, extra))
+            else:
+                tn2.send_channel(render_update(t, note, extra))
+    except Exception as _e:
+        logging.getLogger("worker").warning(f"be-half check failed: {_e}")
+
+
 # ============================================================
 # Portfolio Risk Governance (Pre-entry + Rolling Drawdown)
 # ============================================================
@@ -1429,6 +1487,10 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                             tn2.send_channel_update(int(msg_id), render_update(t, note, extra))
                         else:
                             tn2.send_channel(render_update(t, note, extra))
+
+                else:
+                    # Trước khi TP1 hit, kiểm tra BE nửa đường → Entry–TP1
+                    _breakeven_half_to_tp1(perf, t, hi, lo, tn2)
                         
                 # TP2
                 if t.get("status") in ("OPEN","TP1") and not hits.get("TP2") and t.get("tp2") and crossed(side, t["tp2"]):
