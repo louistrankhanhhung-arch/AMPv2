@@ -57,7 +57,7 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 MAX_OPEN_PER_SIDE = _env_int("MAX_OPEN_PER_SIDE", 4)         # không tính lệnh đã TP1
-MAX_RISK_EXPOSURE_R = _env_float("MAX_RISK_EXPOSURE_R", 6.0) # tổng R đang treo
+MAX_RISK_EXPOSURE_R = _env_float("MAX_RISK_EXPOSURE_R", 8.0) # tổng R đang treo
 DD_60M_CAP = _env_float("DD_60M_CAP", -1.5)                   # R
 LOSING_STREAK_N = _env_int("LOSING_STREAK_N", 3)              # 3 SL liên tiếp
 COOLDOWN_2H = 2 * 3600
