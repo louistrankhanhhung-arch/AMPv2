@@ -213,6 +213,46 @@ def render_summary(kpi: dict, scope: str="Daily") -> str:
       f"• Avg R: {kpi['avgR']:.2f}\n"
       f"• Total R: {kpi['sumR']:.2f}"
     )
+# ---------- helpers: danh sách lệnh đã đóng 2 cột (giữ icon) ----------
+def _fmt_closed_cell(sym: str, pct: float, icon: str = "⚪",
+                     width_sym: int = 12, width_pct: int = 7) -> str:
+    """
+    Trả về một “ô” dạng: ICON + SYMBOL (căn trái, độ rộng cố định) + PCT (căn phải).
+    Dùng cho block <pre> để giữ lề trên Telegram/HTML.
+    """
+    sym = (sym or "?").upper()
+    pct_str = f"{pct:+.2f}%"
+    left  = f"{sym[:width_sym]:<{width_sym}}"
+    right = f"{pct_str:>{width_pct}}"
+    return f"{icon} {left} {right}"
+
+def _format_closed_two_cols(items: list, gap: int = 4) -> str:
+    """
+    Ghép các ô thành 2 cột, mỗi dòng gồm 2 ô. Trả về chuỗi <pre>…</pre>.
+    """
+    icons = {
+        "TP1": "🟢", "TP2": "🟢", "TP3": "🟢", "TP4": "🟢", "TP5": "🟢",
+        "SL": "⛔", "CLOSE": "⚪"
+    }
+    cells = []
+    for it in (items or []):
+        sym = it.get("symbol") or "?"
+        status = str(it.get("status") or "").upper()
+        icon = icons.get(status, "⚪")
+        try:
+            pct = float(it.get("pct_weighted") or it.get("pct") or 0.0)
+        except Exception:
+            pct = 0.0
+        cells.append(_fmt_closed_cell(sym, pct, icon))
+    if not cells:
+        return "<pre>(trống)</pre>"
+    lines = []
+    pad = " " * gap
+    for i in range(0, len(cells), 2):
+        left = cells[i]
+        right = cells[i+1] if i+1 < len(cells) else ""
+        lines.append(left + (pad + right if right else ""))
+    return "<pre>" + "\n".join(lines) + "</pre>"
 
 # NEW: Teaser 2 phần — Header + danh sách 24H, rồi khối hiệu suất NGÀY (today)
 def render_kpi_teaser_two_parts(detail_24h: dict,
@@ -225,21 +265,9 @@ def render_kpi_teaser_two_parts(detail_24h: dict,
     if not items:
         lines += ["Không có tín hiệu nào phù hợp.", ""]
     else:
-        # Danh sách lệnh đã đóng (24H) — dùng số THỰC NHẬN
-        lines.append("<b>Danh sách lệnh đã đóng (24H):</b>")
-        icons = {"TP1": "🟢", "TP2": "🟢", "TP3": "🟢", "TP4": "🟢", "TP5": "🟢", "SL": "⛔", "CLOSE": "⚪"}
-        for it in items:
-            status = str(it.get("status") or "").upper()
-            icon = icons.get(status, "⚪")
-            sym  = it.get("symbol") or "?"
-            rW   = float(it.get("R_weighted") or it.get("R") or 0.0)
-            try:
-                pctW = float(it.get("pct_weighted") or 0.0)
-            except Exception:
-                pctW = 0.0
-            lev  = _item_leverage(it)
-            lev_s = f" • x{int(lev)}" if isinstance(lev,(int,float)) and lev>0 else ""
-            lines.append(f"{icon} {sym}:  {pctW:+.2f}%{lev_s}")
+        # Danh sách lệnh đã đóng (24H) — hiển thị 2 cột, giữ icon
+        lines.append("<b>Danh sách lệnh đã đóng:</b>")
+        lines.append(_format_closed_two_cols(items))
         lines.append("")
         
     # Khối hiệu suất ngày (Today) — hiển thị cả R và % thực nhận
@@ -250,8 +278,14 @@ def render_kpi_teaser_two_parts(detail_24h: dict,
         sumR = float(kpi_day.get("sumR", 0.0) or 0.0)
         avgPctW = float(kpi_day.get("avgPctW", 0.0) or 0.0)
         sumPctW = float(kpi_day.get("sumPctW", 0.0) or 0.0)
-        lines.append(f"• Tổng %: {sumPctW:.2f}%")
-        lines.append(f"• % trung bình: {avgPctW:.2f}%")
+        # Tổng lệnh đã đóng trong ngày (ưu tiên detail_day['n'])
+        try:
+            n_day = int(detail_day.get("n") or len(detail_day.get("items") or []))
+        except Exception:
+            n_day = len(detail_day.get("items") or [])
+        lines.append(f"• Tổng lệnh đã đóng: {n_day}")
+        lines.append(f"• Tổng lợi nhuận: {sumPctW:.2f}%")
+        lines.append(f"• Lợi nhuận trung bình: {avgPctW:.2f}%")
         lines.append(f"• Tỉ lệ thắng: {wr:.0%}")
         lines.append(f"• Tổng R: {sumR:.2f}")
         lines.append(f"• R trung bình: {avgR:.2f}")
