@@ -26,6 +26,184 @@ def _last_closed_bar(df):
         pass
     return None
 
+def _guard_recent_1h_opposite(feats: Dict[str, Any], side: str) -> Dict[str, Any]:
+    """
+    Guard: Trong N (=3) nến 1H *đã đóng* gần nhất, nếu xuất hiện:
+      - Engulfing NGƯỢC CHIỀU so với 'side', HOẶC
+      - Marubozu/WRB ngược chiều (thân rất lớn, râu ngắn, range ≥ k*ATR)
+      - (Tùy chọn) tần suất nến ngược chiều cao (>= FREQ_MIN) với thân đủ lớn (BODY_MIN%)
+        và/hoặc vol_ratio spike
+    → Ép WAIT để tránh vào lệnh sau cú impulse ngược chiều.
+    ENV:
+      OPP_1H_LOOKBACK (3)       – số nến 1H đã đóng để xét
+      OPP_1H_BODY_MIN (30)      – % thân tối thiểu để tính là nến ngược chiều
+      OPP_1H_FREQ_MIN (2)       – số lượng tối thiểu nến ngược chiều trong N nến
+      OPP_1H_USE_VOL  (1)       – bật lọc volume cho nến ngược chiều
+      OPP_1H_VOLR_THR (1.4)     – ngưỡng vol_ratio
+      MARU_BODY_MIN   (70)      – % thân coi là marubozu
+      MARU_WICK_MAX   (15)      – % mỗi râu tối đa
+      MARU_ATR_MULT   (1.2)     – (high-low) ≥ k*ATR
+      OPP_4H_CONFIRM  (0/1)     – nếu 1: yêu cầu nến 4H vừa đóng cũng là impulse cùng chiều để block mạnh
+    """
+    out = {"block": False, "why": ""}
+    try:
+        if side not in ("long", "short"):
+            return out
+        df1 = ((feats or {}).get("1H") or {}).get("df")
+        if df1 is None or len(df1) < 4:
+            return out
+        import os as _os
+        N        = int(_os.getenv("OPP_1H_LOOKBACK", "3"))
+        BODYMIN  = float(_os.getenv("OPP_1H_BODY_MIN", "30"))
+        FREQMIN  = int(_os.getenv("OPP_1H_FREQ_MIN", "2"))
+        USEVOL   = str(_os.getenv("OPP_1H_USE_VOL", "1")).lower() in ("1","true","yes")
+        VOLTHR   = float(_os.getenv("OPP_1H_VOLR_THR", "1.4"))
+        MARU_BODY= float(_os.getenv("MARU_BODY_MIN", "70"))
+        MARU_WICK= float(_os.getenv("MARU_WICK_MAX", "15"))
+        MARU_K   = float(_os.getenv("MARU_ATR_MULT", "1.2"))
+        CONFIRM4H= str(_os.getenv("OPP_4H_CONFIRM", "0")).lower() in ("1","true","yes")
+
+        # Lấy N nến 1H đã đóng: [-2-N+1 : -1]
+        end_idx   = -1
+        start_idx = max(-1 - N, -len(df1))
+        window = df1.iloc[start_idx:end_idx]
+        if window is None or len(window) < max(2, N):
+            return out
+
+        def _engulf(curr, prev, want_bearish: bool) -> bool:
+            try:
+                co, cc = float(curr["open"]), float(curr["close"])
+                po, pc = float(prev["open"]), float(prev["close"])
+                if want_bearish:
+                    return (cc < co) and (co >= pc) and (cc <= po)
+                else:
+                    return (cc > co) and (co <= pc) and (cc >= po)
+            except Exception:
+                return False
+
+        def _is_marubozu(cur, want_bearish: bool, atr_val: float) -> bool:
+            try:
+                o, c = float(cur.open), float(cur.close)
+                h, l = float(cur.high), float(cur.low)
+                rng = max(1e-12, h - l)
+                body = abs(c - o)
+                body_pct = body / rng * 100.0
+                upper = (h - max(o, c)) / rng * 100.0
+                lower = (min(o, c) - l) / rng * 100.0
+                dir_ok = (c < o) if want_bearish else (c > o)
+                atr_ok = True
+                if atr_val and atr_val > 0:
+                    atr_ok = (rng >= MARU_K * atr_val)
+                return dir_ok and (body_pct >= MARU_BODY) and (upper <= MARU_WICK) and (lower <= MARU_WICK) and atr_ok
+            except Exception:
+                return False
+
+        opp_hits = 0
+        has_opp_engulf = False
+        has_opp_maru   = False
+        for i in range(len(window)):
+            cur = window.iloc[i]
+            prev = window.iloc[i - 1] if i - 1 >= 0 else None
+            try:
+                o, c = float(cur.open), float(cur.close)
+                h, l = float(cur.high), float(cur.low)
+            except Exception:
+                continue
+            rng = max(1e-12, h - l)
+            # body %
+            try:
+                body_pct = float(cur.body_pct) if "body_pct" in window.columns else abs(c - o) / rng * 100.0
+            except Exception:
+                body_pct = abs(c - o) / rng * 100.0
+            is_red, is_green = (c < o), (c > o)
+            vol_ok = True
+            if USEVOL:
+                try:
+                    vr = float(cur.vol_ratio) if "vol_ratio" in window.columns else 1.0
+                except Exception:
+                    vr = 1.0
+                vol_ok = (vr >= VOLTHR)
+            # nến ngược chiều đủ lớn
+            opp_candle = (is_red if side == "long" else is_green) and (body_pct >= BODYMIN) and vol_ok
+            if opp_candle:
+                opp_hits += 1
+            # engulf ngược chiều
+            if prev is not None:
+                if side == "long" and _engulf(cur, prev, want_bearish=True):
+                    has_opp_engulf = True
+                if side == "short" and _engulf(cur, prev, want_bearish=False):
+                    has_opp_engulf = True
+            # marubozu/WRB ngược chiều
+            try:
+                atr_val = float(cur.atr14) if "atr14" in window.columns else (float(cur.atr) if "atr" in window.columns else None)
+            except Exception:
+                atr_val = None
+            if side == "long" and _is_marubozu(cur, want_bearish=True, atr_val=atr_val):
+                has_opp_maru = True
+            if side == "short" and _is_marubozu(cur, want_bearish=False, atr_val=atr_val):
+                has_opp_maru = True
+
+        # Tùy chọn xác nhận 4H
+        confirm4h_ok = True
+        if CONFIRM4H:
+            try:
+                df4 = ((feats or {}).get("4H") or {}).get("df")
+                if df4 is not None and len(df4) >= 2:
+                    last4 = df4.iloc[-2]
+                    try:
+                        atr4 = float(last4.atr14 if "atr14" in df4.columns else last4.atr)
+                    except Exception:
+                        atr4 = None
+                    if side == "long":
+                        confirm4h_ok = _is_marubozu(last4, want_bearish=True, atr_val=atr4)
+                    else:
+                        confirm4h_ok = _is_marubozu(last4, want_bearish=False, atr_val=atr4)
+                else:
+                    confirm4h_ok = False
+            except Exception:
+                confirm4h_ok = False
+
+        if has_opp_engulf or has_opp_maru or (opp_hits >= FREQMIN):
+            reason = []
+            if has_opp_engulf: reason.append("opp_engulf_1H")
+            if has_opp_maru:   reason.append("opp_marubozu_1H")
+            if opp_hits >= FREQMIN: reason.append(f"opp_freq_1H={opp_hits}/{N}(body>={BODYMIN}%)")
+            if CONFIRM4H:
+                out["block"] = bool(confirm4h_ok)
+                if not out["block"]:
+                    reason.append("4H_no_confirm")
+            else:
+                out["block"] = True
+            out["why"] = ", ".join(reason)
+            return out
+    except Exception:
+        pass
+    return out
+
+def _apply_recent_1h_guard(bundle: Dict[str, Any], side: str, decision_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Nếu decision là ENTER thì chạy guard 1H 3 nến ngược chiều.
+    Khớp → chuyển quyết định thành WAIT và gắn lý do vào meta/reasons/logs.
+    """
+    try:
+        if (decision_dict or {}).get("decision") != "ENTER":
+            return decision_dict
+        g = _guard_recent_1h_opposite(bundle.get("features_by_tf") or {}, side)
+        if g.get("block"):
+            decision_dict["decision"] = "WAIT"
+            meta = dict(decision_dict.get("meta") or {})
+            meta.update({"guard": "opp_candle_1h_recent", "guard_detail": g.get("why","")})
+            decision_dict["meta"] = meta
+            rs = list(decision_dict.get("reasons") or [])
+            rs.append(f"guard_1h_recent_opposite: {g.get('why','')}")
+            decision_dict["reasons"] = rs
+            lg = dict(decision_dict.get("logs") or {})
+            lg["WAIT"] = {"reasons": ["recent_1h_opposite"], "details": g.get("why","")}
+            decision_dict["logs"] = lg
+        return decision_dict
+    except Exception:
+        return decision_dict
+
 def _guard_intraday_reversal_shock(feats: Dict[str, Any], side: str) -> Dict[str, Any]:
     """
     Chặn ENTER khi nến 1H vừa đóng có 'volatility shock' mang tính đảo chiều:
@@ -200,7 +378,13 @@ def _is_pullback_in_progress(feats: Dict[str, Any], side: str) -> tuple[bool, st
     return False, ""
 
 def _momentum_grade_1h(features_by_tf: Dict[str, Any]) -> str:
-    # (đã có trong file này; giữ nguyên – nếu chưa có ở bản của bạn, dùng bản dưới)
+    """
+    Đánh giá nhanh động lượng 1H dựa trên RSI, BB width, và vol_ratio.
+    - strong: rsi>=60, bb_width_pct tăng và vol_ratio>=1.2
+    - weak:   rsi<=45 hoặc bb_width_pct rất hẹp
+    - normal: còn lại
+    (bb_width_pct & vol_ratio được enrich trong indicators.py)
+    """
     try:
         df1 = ((features_by_tf or {}).get("1H") or {}).get("df")
         if df1 is None or len(df1) < 5:
@@ -767,6 +951,17 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
                 tmp_decision["decision"] = "WAIT"
         except Exception:
             pass
+        # 2.2) Guard 1H: 3 nến gần nhất có engulfing/marubozu ngược chiều (tùy chọn xác nhận 4H)
+        try:
+            _side  = (tmp_decision.get("side") or "").lower()
+            if _side in ("long","short"):
+                tmp_decision = _apply_recent_1h_guard(
+                    {"features_by_tf": features_by_tf},
+                    _side,
+                    tmp_decision
+                )
+        except Exception:
+            pass
         # Ghi ngược lại về object 'dec'
         dec.decision = tmp_decision.get("decision", dec.decision)
         # cập nhật setup nếu có thay đổi từ 1H-ladder
@@ -1177,6 +1372,8 @@ def decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Dict[str, Any]
         notes.append(f"Soft proximity (BB/EMA): {prox.get('why','')}")
     if "intraday_reversal_shock" in dec.reasons:
         notes.append("1H volatility shock — chờ reclaim/ổn định rồi mới vào")
+    if any("guard_1h_recent_opposite" in r for r in dec.reasons or []):
+        notes.append("1H opposite impulse (engulf/marubozu) — đợi hấp thụ xong")
 
     # Build humanized strategy label for templates/teaser
     def _strategy_label(state: str, meta: Dict[str, Any] | None) -> str:
