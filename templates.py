@@ -231,19 +231,22 @@ def _format_closed_single_col(items: list) -> str:
     Hiển thị danh sách đóng theo 1 cột (icon + mã + %), mỗi dòng 1 lệnh.
     Phù hợp giao diện mobile, tránh gãy hàng.
     """
-    icons = {
-        "TP1": "🟢", "TP2": "🟢", "TP3": "🟢", "TP4": "🟢", "TP5": "🟢",
-        "SL": "⛔", "CLOSE": "⚪"
-    }
     lines = []
     for it in (items or []):
         sym = (it.get("symbol") or "?").upper()
-        status = str(it.get("status") or "").upper()
-        icon = icons.get(status, "⚪")
         try:
             pct = float(it.get("pct_weighted") or it.get("pct") or 0.0)
         except Exception:
             pct = 0.0
+
+        # Icon theo lợi nhuận
+        if pct > 0:
+            icon = "🟢"
+        elif pct < 0:
+            icon = "⛔"
+        else:
+            icon = "⚪"
+
         lines.append(_fmt_closed_cell(sym, pct, icon))
     return "<pre>" + ("\n".join(lines) if lines else "(trống)") + "</pre>"
 
