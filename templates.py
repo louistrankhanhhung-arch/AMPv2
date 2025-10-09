@@ -231,20 +231,43 @@ def _format_closed_single_col(items: list) -> str:
     Hiển thị danh sách đóng theo 1 cột (icon + mã + %), mỗi dòng 1 lệnh.
     Phù hợp giao diện mobile, tránh gãy hàng.
     """
-    icons = {
-        "TP1": "🟢", "TP2": "🟢", "TP3": "🟢", "TP4": "🟢", "TP5": "🟢",
-        "SL": "⛔", "CLOSE": "⚪"
-    }
+    def _choose_icon(status: str, pct: float) -> str:
+        """
+        Quy tắc icon:
+        🟢: TP (bao gồm CLOSE/SL động có TP, chắc chắn >0)
+        ⚪: CLOSE/SL động không có TP (lợi nhuận =0 hoặc <0)
+        ⛔: SL gốc (chắc chắn <0)
+        """
+        s = (status or "").upper()
+        # Trường hợp TP rõ ràng
+        if s.startswith("TP"):
+            return "🟢"
+        # SL có thể là gốc hoặc SL động
+        if s == "SL":
+            # Nếu pct > 0 nghĩa là SL động có TP => thắng nhỏ
+            if pct > 0:
+                return "🟢"
+            # Nếu pct < 0 là SL gốc => thua
+            return "⛔"
+        # CLOSE có thể là BE hoặc CLOSE động
+        if s == "CLOSE":
+            if pct > 0:
+                return "🟢"
+            return "⚪"
+        # Mặc định
+        return "⚪"
+
     lines = []
     for it in (items or []):
         sym = (it.get("symbol") or "?").upper()
         status = str(it.get("status") or "").upper()
-        icon = icons.get(status, "⚪")
         try:
             pct = float(it.get("pct_weighted") or it.get("pct") or 0.0)
         except Exception:
             pct = 0.0
+        icon = _choose_icon(status, pct)
         lines.append(_fmt_closed_cell(sym, pct, icon))
+
     return "<pre>" + ("\n".join(lines) if lines else "(trống)") + "</pre>"
 
 # NEW: Teaser 2 phần — Header + danh sách 24H, rồi khối hiệu suất NGÀY (today)
