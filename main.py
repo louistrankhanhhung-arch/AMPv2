@@ -608,7 +608,7 @@ def _time_exit_and_breakeven_checks(symbol: str,
     1) Time-based exit khi LOW/NORMAL:
        - Sau >=3 nến 4H kể từ open mà MFE_R < +0.3R ⇒ CLOSE sớm (cap −0.2R).
     2) Breakeven turbo TẤT CẢ regime:
-       - Chưa TP1; nếu R_now ≥ 0.3R ⇒ dời SL về Entry (sl_dyn=entry).
+       - Chưa TP1; nếu R_now ≥ 0.2R ⇒ dời SL về Entry (sl_dyn=entry).
     Gửi thông báo qua Telegram bằng format chung.
     """
     try:
@@ -628,8 +628,8 @@ def _time_exit_and_breakeven_checks(symbol: str,
             # -------- Breakeven Turbo (áp dụng khi chưa TP1) --------
             if status == "OPEN":
                 R_now = _unrealized_R(t, price_now)
-                # BE turbo bất kể regime (có thể chỉnh qua ENV BE_TURBO_R; mặc định 0.3)
-                thr = float(os.getenv("BE_TURBO_R", "0.3"))
+                # BE turbo bất kể regime (có thể chỉnh qua ENV BE_TURBO_R; mặc định 0.2)
+                thr = float(os.getenv("BE_TURBO_R", "0.2"))
                 be_flag = bool(t.get("breakeven_turbo"))
                 # chống trùng lặp: đã từng gửi thông báo BE cho lệnh này?
                 be_notified = bool(t.get("be_notify_ts"))
