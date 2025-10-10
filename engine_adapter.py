@@ -33,6 +33,7 @@ def _guard_recent_1h_opposite(feats: Dict[str, Any], side: str) -> Dict[str, Any
       - Marubozu/WRB ngược chiều (thân rất lớn, râu ngắn, range ≥ k*ATR)
       - (Tùy chọn) tần suất nến ngược chiều cao (>= FREQ_MIN) với thân đủ lớn (BODY_MIN%)
         và/hoặc vol_ratio spike
+        Và tại THỜI ĐIỂM QUÉT, nến 1H đang chạy (chưa đóng) cũng KHÔNG được là Marubozu/WRB ngược chiều.
     → Ép WAIT để tránh vào lệnh sau cú impulse ngược chiều.
     ENV:
       OPP_1H_LOOKBACK (3)       – số nến 1H đã đóng để xét
@@ -44,6 +45,7 @@ def _guard_recent_1h_opposite(feats: Dict[str, Any], side: str) -> Dict[str, Any
       MARU_WICK_MAX   (15)      – % mỗi râu tối đa
       MARU_ATR_MULT   (1.2)     – (high-low) ≥ k*ATR
       OPP_4H_CONFIRM  (0/1)     – nếu 1: yêu cầu nến 4H vừa đóng cũng là impulse cùng chiều để block mạnh
+      OPP_CHECK_PARTIAL_1H (1)  – nếu 1: kiểm tra thêm nến 1H chưa đóng có phải marubozu/WRB ngược chiều không
     """
     out = {"block": False, "why": ""}
     try:
@@ -62,6 +64,7 @@ def _guard_recent_1h_opposite(feats: Dict[str, Any], side: str) -> Dict[str, Any
         MARU_WICK= float(_os.getenv("MARU_WICK_MAX", "15"))
         MARU_K   = float(_os.getenv("MARU_ATR_MULT", "1.2"))
         CONFIRM4H= str(_os.getenv("OPP_4H_CONFIRM", "0")).lower() in ("1","true","yes")
+        CHECK_PARTIAL = str(_os.getenv("OPP_CHECK_PARTIAL_1H", "1")).lower() in ("1","true","yes")
 
         # Lấy N nến 1H đã đóng: [-2-N+1 : -1]
         end_idx   = -1
@@ -176,6 +179,51 @@ def _guard_recent_1h_opposite(feats: Dict[str, Any], side: str) -> Dict[str, Any
                 out["block"] = True
             out["why"] = ", ".join(reason)
             return out
+
+        # -------------------------------
+        # (MỚI) Kiểm tra nến 1H hiện tại
+        # -------------------------------
+        if CHECK_PARTIAL and len(df1) >= 2:
+            try:
+                cur_partial = df1.iloc[-1]          # nến đang chạy
+                last_closed = df1.iloc[-2]          # nến đã đóng gần nhất
+                # Tránh double-check khi data source không stream (2 cái trùng nhau)
+                is_same_bar = bool(cur_partial.name == last_closed.name)
+                if not is_same_bar:
+                    # ATR ưu tiên ngay trên nến hiện tại; fallback về cột khác nếu thiếu
+                    try:
+                        atr_p = float(cur_partial.atr14 if "atr14" in df1.columns else cur_partial.atr)
+                    except Exception:
+                        # fallback nhẹ: dùng ATR của nến đã đóng nếu hiện tại thiếu
+                        try:
+                            atr_p = float(last_closed.atr14 if "atr14" in df1.columns else last_closed.atr)
+                        except Exception:
+                            atr_p = None
+                    want_bearish = (side == "long")
+                    if _is_marubozu(cur_partial, want_bearish=want_bearish, atr_val=atr_p):
+                        # Nếu yêu cầu xác nhận 4H, tôn trọng confirm4h_ok
+                        if "confirm4h_ok" not in locals():
+                            confirm4h_ok = True
+                            if CONFIRM4H:
+                                try:
+                                    df4 = ((feats or {}).get("4H") or {}).get("df")
+                                    if df4 is not None and len(df4) >= 2:
+                                        last4 = df4.iloc[-2]
+                                        try:
+                                            atr4 = float(last4.atr14 if "atr14" in df4.columns else last4.atr)
+                                        except Exception:
+                                            atr4 = None
+                                        confirm4h_ok = _is_marubozu(last4, want_bearish=want_bearish, atr_val=atr4)
+                                    else:
+                                        confirm4h_ok = False
+                                except Exception:
+                                    confirm4h_ok = False
+                        out["block"] = True if not CONFIRM4H else bool(confirm4h_ok)
+                        out["why"] = "opp_marubozu_1H_partial" + ("" if out["block"] else ", 4H_no_confirm")
+                        return out
+            except Exception:
+                # im lặng nếu không đủ dữ liệu của cột anatomy / atr
+                pass
     except Exception:
         pass
     return out
