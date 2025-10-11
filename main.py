@@ -65,6 +65,101 @@ COOLDOWN_2H = 2 * 3600
 COOLDOWN_3H = 3 * 3600
 MAX_PER_TRADE_R = _env_float("MAX_PER_TRADE_R", 2.0)          # trần R mỗi lệnh để chống dữ liệu lỗi
 
+# ---- Notional guards (theo tỷ lệ trên vốn E) --------------------------------
+# Tổng notional/E cho toàn danh mục và theo side
+CAP_NOTIONAL_TOTAL_E = _env_float("CAP_NOTIONAL_TOTAL_E", 2.0)     # GrossNotional_total ≤ 2.0E
+CAP_NOTIONAL_SIDE_E  = _env_float("CAP_NOTIONAL_SIDE_E",  0.75)    # GrossNotional_side  ≤ 0.75E
+# Ước lượng mức risk mỗi lệnh theo % vốn (nếu không có size cụ thể)
+RISK_PCT_PER_TRADE   = _env_float("RISK_PCT_PER_TRADE", 0.005)     # =0.5% vốn mặc định
+# Leverage mặc định khi record không nêu rõ
+REPORT_LEVERAGE_DEF  = _env_float("REPORT_LEVERAGE", 2.0)
+
+def _move_pct_to_sl(t: dict) -> float:
+    """% move tới SL theo spot (0..1). Trả 0 nếu thiếu dữ liệu."""
+    try:
+        e = float(t.get("entry") or 0.0)
+        s = float(t.get("sl") or 0.0)
+        if not e or not s:
+            return 0.0
+        return abs(e - s) / e
+    except Exception:
+        return 0.0
+
+def _effective_leverage_for_item_local(t: dict) -> float:
+    """
+    Leverage hiệu dụng ưu tiên từ record (risk_size_hint/leverage/lev),
+    fallback ENV REPORT_LEVERAGE.
+    """
+    for k in ("leverage", "lev", "risk_size_hint"):
+        try:
+            v = float(t.get(k))
+            if v and v > 0:
+                return v
+        except Exception:
+            pass
+    return float(REPORT_LEVERAGE_DEF)
+
+def _notional_ratio_contrib(t: dict) -> float:
+    """
+    Ứơc lượng S/E cho một lệnh đang mở chưa TP:
+      S/E ≈ RISK_PCT_PER_TRADE * leverage / move_pct * risk_fraction
+    Trong đó risk_fraction lấy từ risk_R_remaining (≤1), fallback 1.0.
+    """
+    try:
+        move_pct = _move_pct_to_sl(t)
+        if move_pct <= 0:
+            return 0.0
+        lev = _effective_leverage_for_item_local(t)
+        rf = t.get("risk_R_remaining")
+        if rf is None: rf = t.get("risk_R")
+        if rf is None: rf = t.get("R")
+        try:
+            rf = float(rf)
+        except Exception:
+            rf = 1.0
+        # chặn rf trong [0,1] để tránh ghi dữ liệu lỗi
+        if not (rf == rf) or rf <= 0:
+            rf = 0.0
+        elif rf > 1.0:
+            rf = 1.0
+        return float(RISK_PCT_PER_TRADE) * float(lev) / float(move_pct) * float(rf)
+    except Exception:
+        return 0.0
+
+def _notional_ratio_caps(perf: "SignalPerfDB") -> tuple[float, dict[str,float], list[tuple[str,str,float]]]:
+    """
+    Tính tổng S/E và S/E theo side cho các lệnh OPEN chưa từng chạm TP.
+    Trả về: (total_ratio, per_side_dict, top_contrib_list)
+    """
+    tot = 0.0
+    per_side = {"LONG": 0.0, "SHORT": 0.0}
+    contrib = []  # [(symbol, side, ratio)]
+    try:
+        opens = perf.list_open_status()
+        for it in opens or []:
+            st = (it.get("status") or it.get("STATUS") or "").upper()
+            if st != "OPEN":
+                continue
+            # bỏ qua lệnh đã từng chạm TP
+            if _has_any_tp_hit(it):
+                continue
+            side = (it.get("side") or it.get("DIRECTION") or "").upper()
+            if side not in ("LONG","SHORT"):
+                continue
+            r = _notional_ratio_contrib(it)
+            if r <= 0:
+                continue
+            tot += r
+            per_side[side] = per_side.get(side, 0.0) + r
+            if len(contrib) < 24:
+                sym = it.get("symbol") or it.get("SYMBOL") or "?"
+                contrib.append((str(sym), side, float(r)))
+    except Exception as e:
+        log.warning(f"notional_ratio_caps fallback due to {e}")
+    # sort top contributors để debug khi chặn
+    contrib = sorted(contrib, key=lambda x: x[2], reverse=True)[:6]
+    return float(tot), per_side, contrib
+
 # Cụm beta cao (đơn giản, có thể tinh chỉnh sau). So khớp theo BASE (trước "/USDT")
 _CLUSTERS = [
     {"name": "SOL-AVAX-NEAR", "members": {"SOL","AVAX","NEAR"}},
@@ -1229,6 +1324,18 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 if exposureR >= MAX_RISK_EXPOSURE_R:
                     log.info(f"[{symbol}] skip ENTER: exposureR {exposureR:.2f} ≥ {MAX_RISK_EXPOSURE_R}")
                     return
+                # NEW: Giới hạn notional theo tỷ lệ trên vốn (S/E)
+                total_ratio, per_side_ratio, topc = _notional_ratio_caps(perf)
+                if total_ratio >= CAP_NOTIONAL_TOTAL_E:
+                    dbg = ", ".join([f"{s}/{sd}:{r:.2f}E" for s,sd,r in topc]) or "n/a"
+                    log.info(f"[{symbol}] skip ENTER: GrossNotional_total {total_ratio:.2f}E ≥ {CAP_NOTIONAL_TOTAL_E}E (top: {dbg})")
+                    return
+                if side_up in ("LONG","SHORT"):
+                    side_ratio = per_side_ratio.get(side_up, 0.0)
+                    if side_ratio >= CAP_NOTIONAL_SIDE_E:
+                        dbg = ", ".join([f"{s}/{sd}:{r:.2f}E" for s,sd,r in topc if sd==side_up]) or "n/a"
+                        log.info(f"[{symbol}] skip ENTER: GrossNotional_{side_up} {side_ratio:.2f}E ≥ {CAP_NOTIONAL_SIDE_E}E (top {side_up}: {dbg})")
+                        return
                 # Lọc tương quan/beta theo cụm trong 60 phút
                 base = _base_from_symbol(symbol)
                 cluster = _cluster_of(base)
