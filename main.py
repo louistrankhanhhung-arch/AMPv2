@@ -57,6 +57,7 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 MAX_OPEN_PER_SIDE = _env_int("MAX_OPEN_PER_SIDE", 4)         # không tính lệnh đã TP1
+MAX_OPEN_TOTAL     = _env_int("MAX_OPEN_TOTAL", 8)           # tổng số lệnh OPEN chưa TP
 MAX_RISK_EXPOSURE_R = _env_float("MAX_RISK_EXPOSURE_R", 8.0) # tổng R đang treo
 DD_60M_CAP = _env_float("DD_60M_CAP", -1.5)                   # R
 LOSING_STREAK_N = _env_int("LOSING_STREAK_N", 3)              # 3 SL liên tiếp
@@ -176,6 +177,21 @@ def _count_open_by_side(perf: "SignalPerfDB") -> dict:
     except Exception as e:
         log.warning(f"count_open_by_side fallback due to {e}")
     return res
+
+def _count_open_total(perf: "SignalPerfDB") -> int:
+    """Tổng số lệnh đang OPEN, loại trừ mọi lệnh đã có TP."""
+    try:
+        n = 0
+        for it in perf.list_open_status() or []:
+            st = (it.get("status") or it.get("STATUS") or "").upper()
+            if st != "OPEN":
+                continue
+            if _has_any_tp_hit(it):
+                continue
+            n += 1
+        return n
+    except Exception:
+        return 0
 
 def _total_risk_exposure_R(perf: "SignalPerfDB") -> float:
     """
@@ -1199,6 +1215,10 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
             # 0.1) Pre-entry guards — đếm lệnh/ R đang treo / tương quan-beta
             try:
                 counts = _count_open_by_side(perf)
+                total_open = _count_open_total(perf)
+                if total_open >= MAX_OPEN_TOTAL:
+                    log.info(f"[{symbol}] skip ENTER: MAX_OPEN_TOTAL reached ({total_open} ≥ {MAX_OPEN_TOTAL})")
+                    return
                 side_up = (plan_for_teaser.get("DIRECTION") or "").upper()
                 if side_up in ("LONG","SHORT"):
                     if counts.get(side_up, 0) >= MAX_OPEN_PER_SIDE:
