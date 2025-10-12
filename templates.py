@@ -136,7 +136,6 @@ def render_teaser(plan: Dict[str, Any]) -> str:
         f"<b>Entry:</b> —    <b>SL:</b> —\n"
         f"<b>TP:</b> — • — • — • — • —\n"
         f"<b>Scale-out:</b> {_weights_line(plan)}\n"
-        f"<b>Chiến lược:</b> {strategy}"
     )
 
 def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bool = True) -> str:
@@ -179,7 +178,6 @@ def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bo
         
         f"<b>Entry:</b> {entry}",
         f"<b>SL:</b> {sl}",
-        f"<b>Chiến lược:</b> {strategy}",
         "",  # dòng trống sau Entry/SL
         
         f"<b>TP1:</b> {tp1}",
