@@ -247,6 +247,23 @@ class SignalPerfDB:
         t["status"] = level.upper()
         w = float((t.get("weights") or {}).get(level.lower(), 0.2))
         t["realized_R"] = float(t.get("realized_R", 0.0) + w * (R or 0.0))
+
+        # --- NEW: Chuẩn hóa PnL theo công thức Playbook ---
+        try:
+            e = float(t.get("entry") or 0.0)
+            px = float(t.get(level.lower()) or 0.0)   # giá TP/SL thực tế
+            if e > 0 and px > 0:
+                side = str(t.get("dir") or t.get("DIRECTION") or "").upper()
+                lev = float(t.get("risk_size_hint") or t.get("leverage") or t.get("lev") or 1.0)
+                if side == "SHORT":
+                    pct = (e - px) / e * 100.0
+                else:
+                    pct = (px - e) / e * 100.0
+                pct_realized = pct * lev * w
+                t["realized_pct"] = float(t.get("realized_pct", 0.0) + pct_realized)
+        except Exception:
+            pass
+
         data[sid] = t
         self._write(data)
         return t
@@ -302,7 +319,8 @@ class SignalPerfDB:
             r_w = float(t.get("realized_R") or 0.0)  # đã scale-out 20%
             risk_pct_1R = _risk_pct_of_one_R(t)      # % / R (spot)
             lev = _effective_leverage_for_item(t)    # leverage hiệu dụng
-            pct_w = float(r_w * risk_pct_1R * lev)   # % thực nhận
+            # --- NEW: Ưu tiên PnL thực tế ghi từ playbook (realized_pct) ---
+            pct_w = float(t.get("realized_pct") or (r_w * risk_pct_1R * lev))
 
             items.append({
                 "sid": t.get("sid"),
