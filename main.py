@@ -1424,7 +1424,10 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                 )
 
                 # Sau khi mở lệnh thành công → kiểm tra có phải lệnh đầu tiên sau 7:00 sáng hôm nay không
-                _try_post_free_signal_if_first_today(plan_for_teaser)
+                try:
+                    _try_post_free_signal_if_first_today(plan_for_teaser)
+                except Exception as e:
+                    log.warning(f"[FreeSignal] check/post failed: {e}")
                 
     # --- end teaser post ---
 
