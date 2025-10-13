@@ -131,13 +131,14 @@ def render_teaser(plan: Dict[str, Any]) -> str:
                 return f"TP0: {pct(tp0w)} • " + " / ".join(parts) + (f"  ({prof})" if prof else "")
             return " / ".join(parts) + (f"  ({prof})" if prof else "")
         return "20% mỗi mốc TP"
-    return (
-        f"🧭 <b>{sym} | {direction}</b>\n"
+    lines = [
+        f"🧭 <b>{sym} | {direction}</b>",
         "",  # dòng trống sau tiêu đề
-        f"<b>Entry:</b> —    <b>SL:</b> —\n"
-        f"<b>TP:</b> — • — • — • — • —\n"
-        f"<b>Scale-out:</b> {_weights_line(plan)}\n"
-    )
+        f"<b>Entry:</b> —    <b>SL:</b> —",
+        f"<b>TP:</b> — • — • — • — • —",
+        f"<b>Scale-out:</b> {_weights_line(plan)}",
+    ]
+    return "\n".join(lines)
 
 def render_full(plan: Dict[str, Any], username: str | None = None, watermark: bool = True) -> str:
     sym = plan.get("symbol", "")
