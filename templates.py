@@ -303,83 +303,34 @@ def render_kpi_teaser_two_parts(detail_24h: dict,
         lines.append(f'<a href="{upgrade_url}">👉 Nâng cấp ngay</a>')
     return "\n".join(lines)
 
-# NEW: KPI tuần (8:16 thứ 7)
+# KPI WEEK
 def render_kpi_week(detail: dict,
                     week_label: str,
-                    risk_per_trade_usd: float = 100.0,
+                    *_,
                     upgrade_url: str | None = None) -> str:
-    totals = detail.get("totals") or {}
-    n   = int(totals.get("n") or 0)
-    wr  = float(totals.get("win_rate") or 0.0) * 100.0
-    sum_pct = float(totals.get("sum_pct_weighted") or totals.get("sum_pct_w") or totals.get("sum_pct") or 0.0)
-    sum_R   = float(totals.get("sum_R_weighted") or totals.get("sum_R") or 0.0)
-    pnl_real = sum_R * risk_per_trade_usd
-    avg_real = (pnl_real / n) if n else 0.0
-    tpc = totals.get("tp_counts") or {}
-    def _i(x): return int(tpc.get(x) or 0)
-    # (KPI TUẦN) after-leverage calculations — per-signal leverage
-    items_for_lev = detail.get("items") or []
-    sum_R_items_lev = 0.0
-    sum_pct_items_lev = 0.0
-    have_item_level = False
-    lev_list = []
-    for it in items_for_lev:
-        lev_i = _item_leverage(it)
-        if lev_i > 0:
-            lev_list.append(lev_i)
-        try:
-            Rw_i = float(it.get("R_weighted") or it.get("R_w") or it.get("R") or 0.0)
-            if lev_i > 0 and Rw_i != 0.0:
-                sum_R_items_lev += Rw_i * lev_i
-                have_item_level = True
-        except Exception:
-            pass
-        try:
-            pctw_i = float(it.get("pct_weighted") or it.get("pct_w") or it.get("pct") or 0.0)
-            if lev_i > 0 and pctw_i != 0.0:
-                sum_pct_items_lev += pctw_i * lev_i
-        except Exception:
-            pass
+    """
+    KPI tuần — format giống block 'Hiệu suất ngày' của KPI 24H:
+    - Không liệt kê danh sách lệnh đóng
+    - Chỉ hiển thị các chỉ số tổng hợp: n, sumPctW, avgPctW, win-rate, sumR, avgR
+    """
+    totals   = detail.get("totals") or {}
+    n        = int(totals.get("n") or 0)
+    wr       = float(totals.get("win_rate") or 0.0)          # 0..1
+    sumR     = float(totals.get("sum_R_weighted") or totals.get("sum_R") or 0.0)
+    avgR     = float(totals.get("avg_R") or (sumR / n if n else 0.0))
+    sumPctW  = float(totals.get("sum_pct_weighted") or totals.get("sum_pct_w") or totals.get("sum_pct") or 0.0)
+    avgPctW  = float(totals.get("avg_pct_weighted") or (sumPctW / n if n else 0.0))
 
-    if have_item_level:
-        sum_R_lev = sum_R_items_lev
-        if sum_pct_items_lev != 0.0:
-            sum_pct_lev = sum_pct_items_lev
-        else:
-            lev_avg = (sum(lev_list) / len(lev_list)) if lev_list else 0.0
-            if lev_avg > 0:
-                sum_pct_lev = sum_pct * lev_avg
-            else:
-                LEV = _report_leverage()
-                sum_pct_lev = sum_pct * LEV
-                sum_R_lev   = sum_R   * LEV
-    else:
-        lev_avg = (sum(lev_list) / len(lev_list)) if lev_list else 0.0
-        if lev_avg > 0:
-            sum_R_lev   = sum_R   * lev_avg
-            sum_pct_lev = sum_pct * lev_avg
-        else:
-            LEV = _report_leverage()
-            sum_R_lev   = sum_R   * LEV
-            sum_pct_lev = sum_pct * LEV
+    lines = [f"🧭 <b>Kết quả giao dịch tuần qua — {week_label}</b>", ""]
+    lines.append(f"• Tổng lệnh đã đóng: {n}")
+    lines.append(f"• Tổng lợi nhuận: {sumPctW:.2f}%")
+    lines.append(f"• Lợi nhuận trung bình: {avgPctW:.2f}%")
+    lines.append(f"• Tỉ lệ thắng: {wr:.0%}")
+    lines.append(f"• Tổng R: {sumR:.2f}")
+    lines.append(f"• R trung bình: {avgR:.2f}")
 
-    pnl_real_lev  = sum_R_lev * 100.0           # risk $100/lệnh
-    avgR_lev      = (sum_R_lev / max(1, n))
-    avg_real_lev  = avgR_lev * 100.0
-
-    # Build lines (new format/order)
-    lines = [
-        f"<b>🧭 Kết quả giao dịch tuần qua - {week_label}</b>",
-        f"- Tổng lệnh đã đóng: {n}",
-        f"- Tỉ lệ thắng: {wr:.2f}%",
-        f"- Tổng R: {sum_R_lev:.2f}R",
-        f"- Lợi nhuận với risk $100/lệnh: ${pnl_real_lev:.0f}",
-        f"- Lợi nhuận trung bình/lệnh: {avgR_lev:.2f}R (~${avg_real_lev:.0f})",
-        f"- TP theo số lệnh: TP5: {_i('TP5')} / TP4: {_i('TP4')} / TP3: {_i('TP3')} / TP2: {_i('TP2')} / TP1: {_i('TP1')} / SL: {_i('SL')}",
-    ]
-    # Lời mời nâng cấp
     if upgrade_url:
-        lines.append("🔒 <b>Nâng cấp Plus</b> để xem full tín hiệu & nhận báo cáo sớm hơn.")
+        lines.append("🔒 <b>Nâng cấp Plus</b> để xem full tín hiệu & nhận thông báo sớm hơn.")
         lines.append(f'<a href="{upgrade_url}">👉 Nâng cấp ngay</a>')
     return "\n".join(lines)
 
