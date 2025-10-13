@@ -1380,21 +1380,6 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     hl0_4h_hi=hi4, hl0_4h_lo=lo4,
                     hl0_1h_hi=hi1, hl0_1h_lo=lo1,
                 )
-                # 5) Đăng lên Fanpage (độc lập với Telegram)
-                try:
-                    if fb:
-                        html_teaser = render_teaser(plan_for_teaser)
-                        origin_url = None
-                        try:
-                            if msg_id and hasattr(tn, "_build_origin_link"):
-                                origin_url = tn._build_origin_link(int(msg_id))
-                        except Exception:
-                            origin_url = None
-                        fb.post_teaser(html_teaser, origin_url=origin_url)
-                except Exception as e:
-                    log.warning(f"[{symbol}] fanpage teaser failed: {e}")
-        except Exception as e:
-            log.warning(f"[{symbol}] ENTER flow failed: {e}")
                 
     # --- end teaser post ---
 
