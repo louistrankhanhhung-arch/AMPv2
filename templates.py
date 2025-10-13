@@ -259,7 +259,7 @@ def render_kpi_teaser_two_parts(detail_24h: dict,
     lines = [f"🧭 <b>AMP - Kết quả giao dịch 24H — {report_date_str}</b>", ""]
     items = detail_24h.get("items", []) or []
     if not items:
-        lines += ["Không có tín hiệu nào phù hợp.", ""]
+        lines += ["Không có tín hiệu đóng trong ngày.", ""]
     else:
         # Danh sách lệnh đã đóng (24H) — hiển thị 2 cột, giữ icon
         lines.append("<b>Danh sách lệnh đã đóng:</b>")
