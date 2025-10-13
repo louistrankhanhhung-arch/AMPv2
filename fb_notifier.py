@@ -96,10 +96,20 @@ class FBNotifier:
         return self.post_text(kpi_html)
 
 if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO)
     from fb_notifier import FBNotifier
     fb = FBNotifier()
-    if not fb.enabled:
-        print("❌ FB Notifier is disabled (check FB_ENABLED, FB_PAGE_ID, FB_PAGE_TOKEN).")
+    print("FB Notifier enabled:", fb.enabled)
+    print("Page ID:", getattr(fb, "page_id", None))
+    print("Token starts with:", str(getattr(fb, "page_token", ""))[:8])
+    if fb.enabled:
+        print("Testing post_text...")
+        try:
+            fb.post_text("🔧 Test kết nối Fanpage IMP thành công (bỏ qua nếu thấy trên feed).")
+            print("✅ Test post sent, kiểm tra fanpage.")
+        except Exception as e:
+            print("❌ Error posting:", e)
     else:
-        print("✅ FB Notifier initialized OK, testing post...")
-        fb.post_text("🔧 Test kết nối Fanpage IMP thành công (bỏ qua nếu thấy trên feed).")
+        print("⚠️ FB Notifier chưa được kích hoạt.")
+
