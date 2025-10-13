@@ -94,3 +94,12 @@ class FBNotifier:
 
     def post_kpi_week(self, kpi_html: str) -> bool:
         return self.post_text(kpi_html)
+
+if __name__ == "__main__":
+    from fb_notifier import FBNotifier
+    fb = FBNotifier()
+    if not fb.enabled:
+        print("❌ FB Notifier is disabled (check FB_ENABLED, FB_PAGE_ID, FB_PAGE_TOKEN).")
+    else:
+        print("✅ FB Notifier initialized OK, testing post...")
+        fb.post_text("🔧 Test kết nối Fanpage IMP thành công (bỏ qua nếu thấy trên feed).")
