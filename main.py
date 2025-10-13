@@ -1809,13 +1809,13 @@ def loop_scheduler():
                         fb.post_kpi_24h(html)
                     except Exception as e:
                         log.warning(f"KPI-24H fanpage failed: {e}")
-            # NEW: KPI TUẦN — 08:16 sáng Thứ Bảy (Asia/Ho_Chi_Minh) — Telegram & Fanpage độc lập
-            if now.weekday() == 5 and now.hour == 8 and now.minute == 16:
+            # NEW: KPI TUẦN — 09:00 sáng Chủ nhật (Asia/Ho_Chi_Minh) — Telegram & Fanpage độc lập
+            if now.weekday() == 6 and now.hour == 9 and now.minute == 0:
                 wk_key = (now.isocalendar().year, now.isocalendar().week)
                 if last_kpi_week != wk_key:
                     last_kpi_week = wk_key
-                    # cửa sổ tuần: từ 00:00 thứ Bảy tuần trước đến thời điểm chạy hiện tại
-                    today_00 = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                    # Cửa sổ tuần: từ 00:00 Chủ nhật tuần trước đến thời điểm chạy hiện tại
+                    today_00   = now.replace(hour=0, minute=0, second=0, microsecond=0)
                     week_start = today_00 - timedelta(days=7)
                     start_ts = int(week_start.timestamp())
                     end_ts   = int(now.timestamp())
