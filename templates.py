@@ -133,6 +133,7 @@ def render_teaser(plan: Dict[str, Any]) -> str:
         return "20% mỗi mốc TP"
     return (
         f"🧭 <b>{sym} | {direction}</b>\n"
+        "",  # dòng trống sau tiêu đề
         f"<b>Entry:</b> —    <b>SL:</b> —\n"
         f"<b>TP:</b> — • — • — • — • —\n"
         f"<b>Scale-out:</b> {_weights_line(plan)}\n"
