@@ -1800,15 +1800,15 @@ def loop_scheduler():
                 fb = _get_fb_notifier()
                 from templates import render_kpi_teaser_two_parts
                 html = render_kpi_teaser_two_parts(detail_24h, kpi_day, detail_day, report_date_str)
-                # Telegram (nếu bật)
-                if tn:
-                    tn.send_kpi24(html)
-                # Fanpage (độc lập)
-                if fb:
-                    try:
+                # --- GỬI KPI 24H ---
+                try:
+                    if tn:
+                        tn.send_kpi24(html)
+                    if fb:
                         fb.post_kpi_24h(html)
-                    except Exception as e:
-                        log.warning(f"KPI-24H fanpage failed: {e}")
+                    log.info("✅ KPI 24H posted to Telegram & Fanpage")
+                except Exception as e:
+                    log.warning(f"KPI 24H post failed: {e}")
             # NEW: KPI TUẦN — 09:00 sáng Chủ nhật (Asia/Ho_Chi_Minh) — Telegram & Fanpage độc lập
             if now.weekday() == 6 and now.hour == 9 and now.minute == 0:
                 wk_key = (now.isocalendar().year, now.isocalendar().week)
@@ -1826,16 +1826,15 @@ def loop_scheduler():
                     html_w = render_kpi_week(detail_week, week_label)
                     tn = _get_notifier()
                     fb = _get_fb_notifier()
-                    if tn:
-                        try:
-                            tn.send_kpi24(html_w)  # tái dùng sender (hoặc tạo send_kpi_week nếu bạn muốn tách)
-                        except Exception as e:
-                            log.warning(f"KPI-week telegram failed: {e}")
-                    if fb:
-                        try:
+                    # --- GỬI KPI TUẦN ---
+                    try:
+                        if tn:
+                            tn.send_kpi24(html_w)
+                        if fb:
                             fb.post_kpi_week(html_w)
-                        except Exception as e:
-                            log.warning(f"KPI-week fanpage failed: {e}")
+                        log.info("✅ KPI Week posted to Telegram & Fanpage")
+                    except Exception as e:
+                        log.warning(f"KPI Week post failed: {e}")
                     # label như ví dụ: 20-27/9/2025
                     def _ds(d):
                         dd = d.strftime("%d").lstrip("0")
