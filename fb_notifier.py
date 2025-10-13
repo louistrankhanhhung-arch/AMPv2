@@ -24,13 +24,13 @@ def _append_cta(msg: str) -> str:
     Gắn CTA mặc định vào cuối bài viết nếu bật FB_CTA_ENABLED (mặc định: on).
     ENV:
       - FB_CTA_ENABLED=1|0
-      - FB_CTA_TEXT="..."  (mặc định: '👉 Tham gia kênh nhận signal ngay:')
+      - FB_CTA_TEXT="..."  (mặc định: '👉 Tham gia kênh để nhận signal ngay:')
       - FB_CTA_URL="https://t.me/altcoin_map_pro"
     """
     enabled = os.getenv("FB_CTA_ENABLED", "1") != "0"
     if not enabled:
         return msg
-    cta_text = os.getenv("FB_CTA_TEXT", "👉 Tham gia kênh nhận signal ngay:")
+    cta_text = os.getenv("FB_CTA_TEXT", "👉 Tham gia kênh để nhận signal ngay:")
     cta_url  = os.getenv("FB_CTA_URL", "https://t.me/altcoin_map_pro")
     suffix = f"\n\n{cta_text}\n{cta_url}".strip()
     if not msg:
@@ -95,21 +95,4 @@ class FBNotifier:
     def post_kpi_week(self, kpi_html: str) -> bool:
         return self.post_text(kpi_html)
 
-if __name__ == "__main__":
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    from fb_notifier import FBNotifier
-    fb = FBNotifier()
-    print("FB Notifier enabled:", fb.enabled)
-    print("Page ID:", getattr(fb, "page_id", None))
-    print("Token starts with:", str(getattr(fb, "page_token", ""))[:8])
-    if fb.enabled:
-        print("Testing post_text...")
-        try:
-            fb.post_text("🔧 Test kết nối Fanpage IMP thành công (bỏ qua nếu thấy trên feed).")
-            print("✅ Test post sent, kiểm tra fanpage.")
-        except Exception as e:
-            print("❌ Error posting:", e)
-    else:
-        print("⚠️ FB Notifier chưa được kích hoạt.")
 
