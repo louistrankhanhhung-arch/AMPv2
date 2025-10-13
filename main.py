@@ -1428,7 +1428,8 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     _try_post_free_signal_if_first_today(plan_for_teaser)
                 except Exception as e:
                     log.warning(f"[FreeSignal] check/post failed: {e}")
-                
+        except Exception as e:
+            log.warning(f"[{symbol}] ENTER flow failed: {e}")        
     # --- end teaser post ---
 
     # Sau khi có dữ liệu df4 và price hiện tại, chạy các check thoát sớm/BE
