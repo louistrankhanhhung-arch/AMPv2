@@ -33,6 +33,48 @@ from storage import SignalPerfDB, JsonStore, UserDB
 from templates import render_update, render_teaser
 from fb_notifier import FBNotifier
 
+# ============================================================
+# FREE FULL SIGNAL (đăng 1 lệnh đầu tiên sau 7:00 sáng mỗi ngày)
+# ============================================================
+from datetime import date
+
+def _should_post_free_signal_today(store: "JsonStore") -> bool:
+    """
+    Kiểm tra hôm nay đã có Free Full Signal chưa.
+    Nếu chưa, lưu dấu và trả True.
+    """
+    data = store.read("free_signal_state") or {}
+    today_str = str(date.today())
+    if data.get("last_post_date") == today_str:
+        return False
+    data["last_post_date"] = today_str
+    store.write("free_signal_state", data)
+    return True
+
+def _try_post_free_signal_if_first_today(plan: dict):
+    """
+    Mỗi ngày chỉ post 1 lệnh free đầu tiên sau 7:00 sáng.
+    """
+    try:
+        now = datetime.now(TZ)
+        if now.hour < 7:
+            return
+        store = JsonStore(os.getenv("DATA_DIR","./data"))
+        if not _should_post_free_signal_today(store):
+            return
+        tn = _get_notifier()
+        fb = _get_fb_notifier()
+        from templates import render_full
+        html = render_full(plan)
+        msg = f"🎁 <b>Free Full Signal hôm nay</b>\n\n{html}"
+        if tn:
+            tn.send_channel(msg)
+        if fb:
+            fb.post_text(msg)
+        log.info(f"[FreeSignal] Posted free full signal for {plan.get('symbol')}")
+    except Exception as e:
+        log.warning(f"[FreeSignal] failed: {e}")
+
 TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 TIMEFRAMES = ("1H", "4H", "1D")
 
@@ -1380,6 +1422,9 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
                     hl0_4h_hi=hi4, hl0_4h_lo=lo4,
                     hl0_1h_hi=hi1, hl0_1h_lo=lo1,
                 )
+
+                # Sau khi mở lệnh thành công → kiểm tra có phải lệnh đầu tiên sau 7:00 sáng hôm nay không
+                _try_post_free_signal_if_first_today(plan_for_teaser)
                 
     # --- end teaser post ---
 
