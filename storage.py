@@ -248,21 +248,20 @@ class SignalPerfDB:
         w = float((t.get("weights") or {}).get(level.lower(), 0.2))
         t["realized_R"] = float(t.get("realized_R", 0.0) + w * (R or 0.0))
 
-        # --- NEW: Chuẩn hóa PnL theo công thức Playbook ---
+        # --- FIX: chuẩn hóa PnL thực tế cho cả TP và SL ---
         try:
             e = float(t.get("entry") or 0.0)
-            px = float(t.get(level.lower()) or 0.0)   # giá TP/SL thực tế
-            if e > 0 and px > 0:
-                side = str(t.get("dir") or t.get("DIRECTION") or "").upper()
-                lev = float(t.get("risk_size_hint") or t.get("leverage") or t.get("lev") or 1.0)
-                if side == "SHORT":
-                    pct = (e - px) / e * 100.0
-                else:
-                    pct = (px - e) / e * 100.0
-                pct_realized = pct * lev * w
+            # Ưu tiên giá mốc TPx/SL, nếu không có thì dùng entry làm fallback
+            px = float(t.get(level.lower()) or t.get("sl") or t.get("tp1") or 0.0)
+            side = str(t.get("dir") or t.get("DIRECTION") or "").upper()
+            lev = float(t.get("risk_size_hint") or t.get("leverage") or t.get("lev") or 1.0)
+            if e > 0 and px > 0 and lev > 0:
+                pct_move = ((px - e) / e * 100.0) if side == "LONG" else ((e - px) / e * 100.0)
+                # SL thì pct_move âm → giữ nguyên dấu để KPI hiển thị đúng
+                pct_realized = pct_move * lev * w
                 t["realized_pct"] = float(t.get("realized_pct", 0.0) + pct_realized)
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[WARN:set_hit] fail calc realized_pct: {ex}")
 
         data[sid] = t
         self._write(data)
@@ -390,6 +389,40 @@ class SignalPerfDB:
             except Exception:
                 return 0.0
 
+        # --- NEW: bổ sung hàm tính % lợi nhuận chuẩn theo PnL thực tế (ưu tiên realized_pct) ---
+        def _realized_pct_weighted(t: dict) -> float:
+            """
+            Ưu tiên dùng realized_pct (tính theo Playbook); nếu thiếu thì tự tính từ entry/px.
+            Áp dụng cho mọi lệnh TP/SL/CLOSE trong KPI tuần.
+            """
+            try:
+                # Nếu có realized_pct đã lưu thì ưu tiên dùng
+                if t.get("realized_pct") not in (None, 0, "0"):
+                    return float(t.get("realized_pct"))
+                e = float(t.get("entry") or 0.0)
+                side = str(t.get("dir") or t.get("DIRECTION") or "").upper()
+                lev = float(t.get("risk_size_hint") or t.get("leverage") or t.get("lev") or 1.0)
+                wsum = 0.0
+                hits = t.get("hits") or {}
+                weights = (t.get("weights") or {})
+                # nếu lệnh TP — lấy giá TP cao nhất đã hit
+                px = None
+                for lv in ("TP5","TP4","TP3","TP2","TP1"):
+                    if hits.get(lv):
+                        px = float(t.get(lv.lower()) or 0.0)
+                        wsum = float(weights.get(lv.lower(), 0.2))
+                        break
+                # nếu là SL hoặc CLOSE chưa TP
+                if not px:
+                    px = float(t.get("sl") or 0.0)
+                    wsum = 1.0
+                if e <= 0 or px <= 0: 
+                    return 0.0
+                move_pct = ((px - e) / e * 100.0) if side == "LONG" else ((e - px) / e * 100.0)
+                return move_pct * lev * wsum
+            except Exception:
+                return 0.0
+
         items = []
         tp_counts = {"TP1":0,"TP2":0,"TP3":0,"TP4":0,"TP5":0,"SL":0}
         sum_pct = 0.0
@@ -412,7 +445,7 @@ class SignalPerfDB:
             )
             if label in tp_counts: tp_counts[label] += 1
             # % lợi nhuận trước đòn bẩy
-            pct = _pct_for_status(t, label if label in ("TP1","TP2","TP3","TP4","TP5","SL") else st)
+            pct = _realized_pct_weighted(t) or _pct_for_status(t, label if label in ("TP1","TP2","TP3","TP4","TP5","SL") else st)
             sum_pct += pct
             # R weighted (đã cộng dồn trong realized_R)
             r_w = float(t.get("realized_R") or 0.0)
