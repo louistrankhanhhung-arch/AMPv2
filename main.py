@@ -66,7 +66,7 @@ def _try_post_free_signal_if_first_today(plan: dict):
         fb = _get_fb_notifier()
         from templates import render_full
         html = render_full(plan)
-        msg = f"🎁 <b>Free Full Signal hôm nay</b>\n\n{html}"
+        msg = f"🎁 <b>AMP - Free Full Signal hôm nay</b>\n\n{html}"
         if tn:
             tn.send_channel(msg)
         if fb:
