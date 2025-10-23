@@ -322,7 +322,13 @@ class SignalPerfDB:
                 elif hits.get("TP2"): label = "TP2"; tp_counts["TP2"] += 1
                 else:                 label = "TP1"; tp_counts["TP1"] += 1
             elif st == "SL":
-                label = "SL"; tp_counts["SL"] += 1
+                # Nếu SL là BE (đã từng đạt TP1 hoặc dời về entry)
+                if t.get("sl_type") == "dyn_entry":
+                    label = "BE"
+                    be_count += 1
+                else:
+                    label = "SL"
+                    tp_counts["SL"] += 1
             else:
                 label = "CLOSE"
 
