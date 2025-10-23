@@ -260,6 +260,17 @@ class SignalPerfDB:
                 # SL thì pct_move âm → giữ nguyên dấu để KPI hiển thị đúng
                 pct_realized = pct_move * lev * w
                 t["realized_pct"] = float(t.get("realized_pct", 0.0) + pct_realized)
+
+                # --- NEW: xác định loại SL (gốc / BE entry) ---
+                if level.lower() == "sl":
+                    # Nếu SL được kích hoạt sau khi đã đạt TP1 hoặc turbo BE
+                    has_tp_hit = any(
+                        str(t.get(k)).lower() in ("true", "1")
+                        or k.upper() in (t.get("hits") or {})
+                        for k in ("hit_tp1", "tp1_hit", "TP1")
+                    )
+                    t["sl_type"] = "dyn_entry" if has_tp_hit or abs(px - e) / e < 0.001 else "orig"
+
         except Exception as ex:
             print(f"[WARN:set_hit] fail calc realized_pct: {ex}")
 
