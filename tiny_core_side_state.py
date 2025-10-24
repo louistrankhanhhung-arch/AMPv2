@@ -78,6 +78,48 @@ class SideCfg:
     # allow fast trigger without 4H when regime == 'high'
     skip_4h_when_high_vol: bool = True
 
+# ===============================================================
+# AdaptiveConfig Extension (auto-tuning regime)
+# ===============================================================
+@dataclass
+class AdaptiveConfig:
+    base_config: SideCfg = field(default_factory=SideCfg)
+
+    def detect_regime(self, features_by_tf: Dict[str, Any]) -> str:
+        """Detect market regime based on ATR% and BB width."""
+        try:
+            df4 = features_by_tf.get("4H", {}).get("df")
+            if df4 is None:
+                return "normal"
+            atr = float(df4["atr14"].iloc[-2]) if "atr14" in df4.columns else 0
+            price = float(df4["close"].iloc[-1])
+            natr = (atr / price) * 100 if price > 0 else 0
+            bbw = float(df4["bb_width_pct"].iloc[-2]) if "bb_width_pct" in df4.columns else 0
+            if natr > 0.08:
+                return "high_volatility"
+            if natr < 0.02:
+                return "low_volatility"
+            if bbw < 1.5:
+                return "ranging"
+        except Exception:
+            pass
+        return "normal"
+
+    def adjust(self, features_by_tf: Dict[str, Any]) -> SideCfg:
+        """Return SideCfg adjusted for regime."""
+        regime = self.detect_regime(features_by_tf)
+        cfg = SideCfg()
+        if regime == "high_volatility":
+            cfg.natr_break_max = 0.08
+            cfg.sl_min_atr_high = 1.5
+        elif regime == "low_volatility":
+            cfg.dist_atr_thr_low = 0.4
+            cfg.sl_min_atr_low = 0.4
+        elif regime == "ranging":
+            cfg.use_continuation_gate = False
+            cfg.retest_long_threshold = 0.6
+            cfg.retest_short_threshold = 0.6
+        return cfg
 
 # Kết quả setup/decision để tương thích engine_adapter.py
 @dataclass
