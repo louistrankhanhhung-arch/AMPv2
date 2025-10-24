@@ -9,7 +9,144 @@ import os
 from evidence_evaluators import _reversal_signal
 import math
 
+# ===============================================================
+# Adaptive Enhancements Patch (Range + Early + AutoConfig)
+# ===============================================================
+from dataclasses import dataclass, field
+from typing import Tuple
 
+# ---------- RANGE DETECTION ----------
+def _detect_ranging_market(features_by_tf: Dict[str, Any]) -> bool:
+    """Detect sustained ranging conditions via BB width + ADX + range size"""
+    try:
+        df4 = features_by_tf.get("4H", {}).get("df")
+        if df4 is None or len(df4) < 20:
+            return False
+        bb_width = float(df4["bb_width_pct"].iloc[-2]) if "bb_width_pct" in df4.columns else float("nan")
+        adx = float(df4["adx"].iloc[-2]) if "adx" in df4.columns else float("nan")
+        recent_high = df4["high"].tail(10).max()
+        recent_low = df4["low"].tail(10).min()
+        range_pct = (recent_high - recent_low) / recent_low * 100
+        return (bb_width < 2.0 and (adx < 25 or not adx == adx) and range_pct < 8.0)
+    except Exception:
+        return False
+
+
+def _range_trading_setup(features_by_tf: Dict[str, Any], side: str) -> Optional[Dict[str, Any]]:
+    """Construct a bounce/rejection setup when market is in range."""
+    try:
+        df1 = features_by_tf.get("1H", {}).get("df")
+        if df1 is None or len(df1) < 20:
+            return None
+        price = float(df1["close"].iloc[-1])
+        atr = float(df1["atr14"].iloc[-2]) if "atr14" in df1.columns else 0
+        hi = df1["high"].tail(20).max()
+        lo = df1["low"].tail(20).min()
+        mid = (hi + lo) / 2
+
+        if side == "long" and price <= lo + 0.3 * atr:
+            return {"entry": price, "sl": lo - 0.5 * atr, "tp1": mid, "tp2": hi - 0.5 * atr, "strategy": "range_bounce"}
+        elif side == "short" and price >= hi - 0.3 * atr:
+            return {"entry": price, "sl": hi + 0.5 * atr, "tp1": mid, "tp2": lo + 0.5 * atr, "strategy": "range_reject"}
+    except Exception:
+        return None
+    return None
+
+
+# ---------- EARLY TREND DETECTION ----------
+def _early_trend_detection(features_by_tf: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """Detect early momentum breakout before confirmation."""
+    try:
+        df1 = features_by_tf.get("1H", {}).get("df")
+        if df1 is None or len(df1) < 5:
+            return None
+        rsi = float(df1["rsi14"].iloc[-2]) if "rsi14" in df1.columns else 50
+        vol = float(df1["vol_ratio"].iloc[-2]) if "vol_ratio" in df1.columns else 1.0
+        close = float(df1["close"].iloc[-1])
+        ema20 = float(df1["ema20"].iloc[-1]) if "ema20" in df1.columns else close
+        atr = float(df1["atr14"].iloc[-2]) if "atr14" in df1.columns else 0.0
+
+        if vol > 1.8:
+            if close > ema20 and 45 < rsi < 70:
+                prev_low = float(df1["low"].iloc[-3])
+                if close > prev_low + 0.2 * atr:
+                    return ("early_trend", "long")
+            if close < ema20 and 30 < rsi < 55:
+                prev_high = float(df1["high"].iloc[-3])
+                if close < prev_high - 0.2 * atr:
+                    return ("early_trend", "short")
+    except Exception:
+        return None
+    return None
+
+
+def _relax_guards_for_early_entries(decision: Dict[str, Any], features_by_tf: Dict[str, Any]) -> Dict[str, Any]:
+    """Loosen WAIT → ENTER for strong early-trend conditions."""
+    try:
+        if decision.get("decision") != "WAIT":
+            return decision
+        early = _early_trend_detection(features_by_tf)
+        if not early:
+            return decision
+        state, side = early
+        decision["decision"] = "ENTER"
+        decision["side"] = side
+        decision["state"] = state
+        meta = dict(decision.get("meta") or {})
+        meta["early_entry"] = True
+        decision["meta"] = meta
+        decision["reasons"] = [r for r in decision.get("reasons", []) if "guard" not in r]
+    except Exception:
+        pass
+    return decision
+
+
+# ---------- ADAPTIVE PRESET CONFIG ----------
+def _auto_select_preset(features_by_tf: Dict[str, Any]) -> str:
+    """Auto choose mode: aggressive / conservative / range_specialist / balanced."""
+    try:
+        df4 = features_by_tf.get("4H", {}).get("df")
+        if df4 is None:
+            return "balanced"
+        atr = float(df4["atr14"].iloc[-2]) if "atr14" in df4.columns else 0
+        price = float(df4["close"].iloc[-1])
+        vol_pct = atr / price * 100 if price > 0 else 0
+        adx = float(df4["adx"].iloc[-2]) if "adx" in df4.columns else 0
+        if vol_pct > 0.1 and adx > 30:
+            return "aggressive"
+        if vol_pct < 0.03:
+            return "range_specialist"
+        if vol_pct < 0.06:
+            return "conservative"
+    except Exception:
+        pass
+    return "balanced"
+
+
+def enhanced_decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Any], evidence_bundle: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Wrapper around decide() that adds:
+    - Range trading overlay
+    - Early entry relaxation
+    - Auto-configuration metadata
+    """
+    from engine_adapter import decide as _base_decide
+    base = _base_decide(symbol, timeframe, features_by_tf, evidence_bundle)
+    base = _relax_guards_for_early_entries(base, features_by_tf)
+
+    if base.get("decision") == "WAIT" and _detect_ranging_market(features_by_tf):
+        rng_long = _range_trading_setup(features_by_tf, "long")
+        rng_short = _range_trading_setup(features_by_tf, "short")
+        chosen = rng_long or rng_short
+        if chosen:
+            base["decision"] = "ENTER"
+            base["side"] = chosen["strategy"].split("_")[-1]
+            base["setup"] = chosen
+            base["meta"]["range_mode"] = True
+
+    base["meta"]["strategy_mode"] = _auto_select_preset(features_by_tf)
+    base["meta"]["auto_optimized"] = True
+    return base
 
 def _last_closed_bar(df):
     """
