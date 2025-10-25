@@ -87,6 +87,9 @@ class SideCfg:
     rsi_short_thr_4h: float = 48.0
     # allow fast trigger without 4H when regime == 'high'
     skip_4h_when_high_vol: bool = True
+    # --- Band-aware TP safety for low-vol/range ---
+    tp1_band_pad_atr: float = 0.15   # đẩy TP1 lọt vào dải ~0.15*ATR
+    enable_tp1_band_snap: bool = True
 
 # ===============================================================
 # AdaptiveConfig Extension (auto-tuning regime)
@@ -290,6 +293,45 @@ def _apply_sl_upgrades(side_meta: Any, side: str, entry: float, sl: float, cfg: 
                     sl_new = sl_ceiling
     return float(sl_new)
 
+def _tp1_inside_band(tp1: float, side: str, bb_lower: float, bb_upper: float, atr: float, pad_mult: float) -> float:
+    """Kéo TP1 vào trong dải Bollinger với phần đệm pad_mult*ATR."""
+    import math
+    if not math.isfinite(tp1) or not math.isfinite(atr):
+        return tp1
+    pad = max(0.0, pad_mult * atr)
+    if side == "short" and math.isfinite(bb_lower):
+        return max(tp1, bb_lower + pad)
+    if side == "long" and math.isfinite(bb_upper):
+        return min(tp1, bb_upper - pad)
+    return tp1
+
+def _postprocess_tp_sl(decision: Decision, features_by_tf: Dict[str, Any], cfg: SideCfg) -> Decision:
+    """
+    Band-aware safety:
+      - Khi ATR% thấp hoặc market range → TP1 kéo vào trong dải.
+      - SL đảm bảo gap tối thiểu theo regime (đã làm ở _apply_sl_upgrades).
+    """
+    try:
+        if decision.decision != "ENTER": 
+            return decision
+        side = decision.side
+        stp  = decision.setup
+        if not side or stp is None:
+            return decision
+        df1 = ((features_by_tf or {}).get("1H") or {}).get("df")
+        if df1 is None or len(df1) < 5:
+            return decision
+        import math
+        atr = float(df1["atr14"].iloc[-2]) if "atr14" in df1.columns else 0.0
+        bb_l = float(df1["bb_lower"].iloc[-2]) if "bb_lower" in df1.columns else float("nan")
+        bb_u = float(df1["bb_upper"].iloc[-2]) if "bb_upper" in df1.columns else float("nan")
+        # TP1 snap
+        if cfg.enable_tp1_band_snap and stp.tps:
+            stp.tps[0] = _tp1_inside_band(float(stp.tps[0]), side, bb_l, bb_u, atr, cfg.tp1_band_pad_atr)
+        decision.setup = stp
+        return decision
+    except Exception:
+        return decision
 
 def _tp_by_rr(entry: float, sl: float, side: str, targets: Tuple[float, ...]) -> List[float]:
     """
