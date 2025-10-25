@@ -1093,10 +1093,28 @@ def _leverage_hint(side: Optional[str], entry: Optional[float], sl: Optional[flo
         if risk_raw <= 0:
             return None
         risk_pct = float(os.getenv("RISK_PCT", "0.05"))
-        lev = risk_pct / risk_raw
+        import math
+        # Cốt lõi: tính leverage sao cho risk thực = risk_pct
+        lev = risk_pct / max(1e-9, risk_raw)
+
+        # Điều chỉnh theo ATR regime (nếu được truyền qua ENV hoặc meta)
+        natr = float(os.getenv("NATR_PCT", "0"))
+        if natr and natr < 2.0:
+            lev *= 1.3   # ATR thấp: cho phép leverage cao hơn
+        elif natr > 5.0:
+            lev *= 0.8   # ATR cao: giảm leverage để an toàn
+
+        # Clamp trong khung 1–8x và làm tròn xuống số nguyên
         lev_min = float(os.getenv("LEVERAGE_MIN", "1.0"))
-        lev_max = float(os.getenv("LEVERAGE_MAX", "5.0"))
-        return float(max(lev_min, min(lev, lev_max)))
+        lev_max = float(os.getenv("LEVERAGE_MAX", "8.0"))
+        lev = max(lev_min, min(lev, lev_max))
+        lev_int = math.floor(lev)
+
+        # Tính risk thực tế sau khi làm tròn
+        real_risk_pct = risk_raw * lev_int
+        os.environ["RISK_REAL_PCT"] = f"{real_risk_pct:.4f}"
+
+        return float(lev_int)
     except Exception:
         return None
 
