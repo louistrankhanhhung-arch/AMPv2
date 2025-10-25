@@ -67,6 +67,16 @@ class SideCfg:
     sl_min_atr_normal: float = 0.80
     sl_min_atr_high: float = 1.20
 
+    # --- Adaptive aggressiveness (mới) ---
+    allow_aggressive_continuation: bool = True   # cho phép nới continuation gate khi trend mạnh
+    aggressive_rsi_thr: float = 65.0             # RSI >65 coi là momentum mạnh
+    fastlane_natr_thr: float = 0.05              # NATR >5% => high-vol regime
+    fastlane_sl_min_atr: float = 0.50            # SL min giảm khi high-vol
+    fastlane_rr_boost: float = 1.30              # tăng 30% RR target
+    leverage_normal: Tuple[int, int] = (3, 5)
+    leverage_aggressive: Tuple[int, int] = (7, 8)
+    use_trailing_half: bool = True               # scale-out TP0/TP1 thành trailing 50%
+
     # EMA50 4H cushion for SL
     use_ema50_sl_cushion: bool = True
     ema50_sl_cushion_atr_frac: float = 0.30
@@ -705,10 +715,22 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         # vẫn cho qua tiếp (đánh dấu bypass) — bước guard phía sau sẽ yêu cầu RR>=1.2.
         bypass_long  = (tr > 0 and momo > 0 and vdir >= 0) and need_candle and (not (inside or mini_ok_long))
         bypass_short = (tr < 0 and momo < 0 and vdir >= 0) and need_candle and (not (inside or mini_ok_short))
+        # --- Aggressive continuation upgrade ---
+        rsi4 = float(_safe_get_local(si, "confirm4h", {}).get("rsi4", 50.0))
+        bb_expanding = bool(_safe_get_local(si, "bb_expanding_ok", False))
+        if cfg.allow_aggressive_continuation and (rsi4 > cfg.aggressive_rsi_thr) and bb_expanding:
+            if (tr > 0 and momo > 0 and vdir >= 0):
+                meta.update({"gate": "continuation", "aggressive": True})
+                return "trend_break", "long", meta
+            if (tr < 0 and momo < 0 and vdir >= 0):
+                meta.update({"gate": "continuation", "aggressive": True})
+                return "trend_break", "short", meta
+
         if (not liq_block) and (bypass_long or bypass_short):
             side_c = "long" if bypass_long else "short"
             meta.update({"gate": "continuation", "bypass_continuation": True})
             return "trend_break", side_c, meta
+            
         if votes3 and (cond_long or cond_short) and (not liq_block):
             side_c = "long" if cond_long else "short"
             meta.update({"gate": "continuation"})
@@ -1088,6 +1110,37 @@ def decide_5_gates(state: str, side: Optional[str], setup: Setup, si: SI, cfg: S
     rr1 = _rr(side, setup.entry, setup.sl, tp1) if tp1 is not None else 0.0
     if rr1 < 1.0:
         reasons.append("rr_too_low")
+
+    # --- Fast-lane high-vol adaptation ---
+    natr_val = float(_safe_get(si, "natr", 0.0) or 0.0)
+    if natr_val >= cfg.fastlane_natr_thr:
+        dec.meta["fastlane_mode"] = True
+        # giảm SL tối thiểu (0.8→0.5 ATR)
+        try:
+            setup.sl = _ensure_sl_gap(setup.entry, setup.sl, float(_safe_get(si, "atr", 0.0)), side, cfg.fastlane_sl_min_atr)
+        except Exception:
+            pass
+        # tăng RR target 30%
+        try:
+            tps = _tp_by_rr(setup.entry, setup.sl, side, tuple(r * cfg.fastlane_rr_boost for r in cfg.rr_targets))
+            if tps:
+                setup.tps = tps
+        except Exception:
+            pass
+
+    # --- Conditional leverage (trend & momo align & volume strong) ---
+    tr_ok = float(dec.meta.get("trend", 0.0) or 0.0)
+    mo_ok = float(dec.meta.get("momo", 0.0) or 0.0)
+    vol_strong = bool(_safe_get(si, "vol_break_strong", False))
+    if (state == "trend_break") and (tr_ok * mo_ok > 0) and vol_strong:
+        dec.meta["leverage_suggest"] = f"x{cfg.leverage_aggressive[0]}–x{cfg.leverage_aggressive[1]}"
+    else:
+        dec.meta["leverage_suggest"] = f"x{cfg.leverage_normal[0]}–x{cfg.leverage_normal[1]}"
+
+    # --- Trailing half scale-out ---
+    if cfg.use_trailing_half and setup.tps:
+        dec.meta["scaleout_style"] = "trailing_half"
+        dec.meta["scaleout_desc"] = "Hold 50% for extended trend (e.g. SOL, LINK, NEAR)"
 
     # Continuation requirement: cần (pullback OR inside OR mini-retest)
     try:
