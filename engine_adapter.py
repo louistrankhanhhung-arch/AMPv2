@@ -31,6 +31,89 @@ def _detect_ranging_market(features_by_tf: Dict[str, Any]) -> bool:
     except Exception:
         return False
 
+# ===============================================================
+#  LOW-VOL / BB-AWARE POST PROCESSING
+# ===============================================================
+
+def _bb_pack(features_by_tf: Dict[str, Any], tf: str = "1H") -> Tuple[float,float,float,float,float]:
+    """Trả (price, atr, bb_lower, bb_mid, bb_upper) của TF (mặc định 1H)."""
+    import math
+    df = ((features_by_tf or {}).get(tf) or {}).get("df")
+    if df is None or len(df) < 5:
+        return float("nan"), float("nan"), float("nan"), float("nan"), float("nan")
+    def _safe(name, idx=-2):
+        try:
+            return float(df[name].iloc[idx])
+        except Exception:
+            return float("nan")
+    price = _safe("close")
+    atr   = _safe("atr14")
+    bl    = _safe("bb_lower")
+    bm    = _safe("bb_mid")
+    bu    = _safe("bb_upper")
+    return price, atr, bl, bm, bu
+
+def _natr_pct(features_by_tf: Dict[str, Any], tf: str = "1H") -> float:
+    """NATR (%) ~ ATR/price*100"""
+    p, atr, *_ = _bb_pack(features_by_tf, tf=tf)
+    if not (p and atr and p>0): return 0.0
+    return (atr/p)*100
+
+def _cap_sl_in_low_vol(entry: float, sl: float, side: str, atr: float, natr_pct: float) -> float:
+    """
+    Giới hạn SL khi NATR thấp:
+      - NATR < 2%  → |SL-entry| ≤ 0.60×ATR
+      - NATR < 3.5%→ |SL-entry| ≤ 0.80×ATR
+    """
+    import math
+    if not (math.isfinite(entry) and math.isfinite(sl) and math.isfinite(atr)): return sl
+    max_mult = None
+    if natr_pct < 2.0: max_mult = 0.6
+    elif natr_pct < 3.5: max_mult = 0.8
+    if max_mult is None: return sl
+    gap = abs(sl - entry)
+    cap_gap = max_mult * atr
+    if gap <= cap_gap: return sl
+    if side == "short": return float(entry + cap_gap)
+    if side == "long":  return float(entry - cap_gap)
+    return sl
+
+def _pull_tp1_inside_band(tp1: float, side: str, bb_lower: float, bb_upper: float, atr: float) -> float:
+    """Kéo TP1 “lọt vào trong dải BB” ~ 0.15×ATR."""
+    import math
+    if not math.isfinite(tp1) or not math.isfinite(atr): return tp1
+    pad = max(0.0, 0.15 * atr)
+    if side == "short" and math.isfinite(bb_lower): return max(tp1, bb_lower + pad)
+    if side == "long"  and math.isfinite(bb_upper): return min(tp1, bb_upper - pad)
+    return tp1
+
+def _rescale_tps_after_tp1_shift(entry: float, tps: list[float], side: str,
+                                 tp1_old: float, tp1_new: float) -> list[float]:
+    """
+    Khi TP1 bị kéo vào trong dải BB → scale lại toàn bộ TP2–TP5 để giữ nhịp RR.
+    """
+    import math
+    if not (tps and math.isfinite(entry) and math.isfinite(tp1_old) and math.isfinite(tp1_new)): return tps
+    if tp1_new == tp1_old or len(tps) < 2: return tps
+    try:
+        if side == "short":
+            scale = (entry - tp1_new) / max(1e-9, (entry - tp1_old))
+        elif side == "long":
+            scale = (tp1_new - entry) / max(1e-9, (tp1_old - entry))
+        else:
+            return tps
+    except Exception:
+        return tps
+    if not math.isfinite(scale): return tps
+
+    new_tps = [tp1_new]
+    for tp in tps[1:]:
+        if side == "short":
+            new_tp = entry - (entry - tp) * scale
+        else:
+            new_tp = entry + (tp - entry) * scale
+        new_tps.append(new_tp)
+    return new_tps
 
 def _range_trading_setup(features_by_tf: Dict[str, Any], side: str) -> Optional[Dict[str, Any]]:
     """Construct a bounce/rejection setup when market is in range."""
@@ -134,6 +217,7 @@ def enhanced_decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Any],
     base = _base_decide(symbol, timeframe, features_by_tf, evidence_bundle)
     base = _relax_guards_for_early_entries(base, features_by_tf)
 
+    # 1️⃣ Nếu WAIT + thị trường đang range → dựng setup bounce/reject
     if base.get("decision") == "WAIT" and _detect_ranging_market(features_by_tf):
         rng_long = _range_trading_setup(features_by_tf, "long")
         rng_short = _range_trading_setup(features_by_tf, "short")
@@ -143,6 +227,45 @@ def enhanced_decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Any],
             base["side"] = chosen["strategy"].split("_")[-1]
             base["setup"] = chosen
             base["meta"]["range_mode"] = True
+
+    # 2️⃣ Hậu xử lý cho range/ATR thấp → thu SL, kéo TP1 vào dải, scale TP2–TP5
+    try:
+        if base.get("decision") == "ENTER":
+            side = base.get("side") or (base.get("setup") or {}).get("side")
+            stp  = base.get("setup") or {}
+            entry = float(stp.get("entry") or 0.0)
+            sl    = float(stp.get("sl") or 0.0)
+            tps   = list(stp.get("tps") or [])
+            p, atr, bb_l, bb_m, bb_u = _bb_pack(features_by_tf, "1H")
+            natr = _natr_pct(features_by_tf, "1H")
+
+            # --- Cap SL trong low-vol regime ---
+            if entry and sl and atr and side in ("long","short"):
+                sl_new = _cap_sl_in_low_vol(entry, sl, side, atr, natr)
+                if sl_new != sl:
+                    sl = sl_new
+
+            # --- TP1 band-snap + rescale ladder ---
+            if tps and atr and side in ("long","short"):
+                tp1_old = float(tps[0])
+                tp1_new = _pull_tp1_inside_band(tp1_old, side, bb_l, bb_u, atr)
+                if tp1_new != tp1_old:
+                    tps = _rescale_tps_after_tp1_shift(entry, tps, side, tp1_old, tp1_new)
+
+            # --- Ghi kết quả ---
+            stp["sl"] = sl
+            stp["tps"] = tps
+            base["setup"] = stp
+            meta = dict(base.get("meta") or {})
+            meta.update({
+                "natr_pct_1h": natr,
+                "sl_capped_lowvol": bool(natr and natr<3.5),
+                "tp1_inside_band": True if (tps and tps[0]) else False,
+                "tp_rescaled_after_band_snap": (True if (tps and len(tps)>1) else False),
+            })
+            base["meta"] = meta
+    except Exception:
+        pass
 
     base["meta"]["strategy_mode"] = _auto_select_preset(features_by_tf)
     base["meta"]["auto_optimized"] = True
