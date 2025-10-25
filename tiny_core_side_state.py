@@ -673,6 +673,14 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
     meta.update(dict(natr=natr, dist_atr=dist_atr, trend=tr, momo=momo, v=vdir))
 
     # --- 0) CONTINUATION gate (trước BREAK/RETEST) ---
+    # Adaptive regime detection
+    reg = str(_safe_get_local(si, "regime", "normal"))
+    bbw = float(_safe_get_local(si, "bbw", float("nan")))
+    adx = float(_safe_get_local(si, "adx", float("nan")))
+    is_range = (reg in ("low", "ranging", "normal") and adx < cfg.adx_trend_thr and bbw < cfg.bbw_squeeze_thr)
+    is_trend = not is_range
+    meta["adaptive_regime"] = "range" if is_range else "trend"
+
     if bool(getattr(cfg, "use_continuation_gate", True)):
         aligned_long  = (tr > 0 and momo > 0 and vdir > 0)
         aligned_short = (tr < 0 and momo < 0 and vdir < 0)
@@ -681,8 +689,16 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
         mini_ok_long  = bool(_safe_get_local(si, "mini_retest_long", False))
         mini_ok_short = bool(_safe_get_local(si, "mini_retest_short", False))
         inside = bool(_safe_get_local(si, "inside_bar", False))
-        cond_long  = aligned_long  and ((inside or mini_ok_long)  if need_candle else True)
-        cond_short = aligned_short and ((inside or mini_ok_short) if need_candle else True)
+        # Adaptive continuation condition
+        if is_range:
+            # Trong range: chỉ dùng retest/mini-retest, tránh inside bar
+            cond_long  = aligned_long  and mini_ok_long
+            cond_short = aligned_short and mini_ok_short
+        else:
+            # Trong trend: cho phép inside hoặc mini
+            cond_long  = aligned_long  and ((inside or mini_ok_long)  if need_candle else True)
+            cond_short = aligned_short and ((inside or mini_ok_short) if need_candle else True)
+
         liq_block  = bool(_safe_get_local(si, "liquidity_floor", False)) or (not bool(_safe_get_local(si, "hvn_ok", True)))
         # BYPASS continuation:
         # Nếu trend & momentum align mạnh và volume tilt >= 0 nhưng thiếu inside/mini,
@@ -770,12 +786,17 @@ def classify_state_with_side(si: SI, cfg: SideCfg) -> Tuple[str, Optional[str], 
             # chặn thanh khoản/HVN/khu vực nặng profile
             if bool(_safe_get_local(si, "liquidity_floor", False)) or (not bool(_safe_get_local(si, "hvn_ok", True))) or bool(_safe_get_local(si, "near_heavy_zone", False)):
                 return "none_state", None, meta
-            # (tuỳ chọn) yêu cầu inside/mini-retest cùng phía
+            # Adaptive early-breakout micro confirm
             if bool(getattr(cfg, "early_breakout_need_inside_or_minitest", True)):
                 inside = bool(_safe_get_local(si, "inside_bar", False))
                 mini_ok_long  = bool(_safe_get_local(si, "mini_retest_long", False))
                 mini_ok_short = bool(_safe_get_local(si, "mini_retest_short", False))
-                micro_ok = inside or (mini_ok_long if side_b == "long" else mini_ok_short)
+                if is_range:
+                    # Trong range: chỉ mini
+                    micro_ok = (mini_ok_long if side_b == "long" else mini_ok_short)
+                else:
+                    # Trong trend: inside hoặc mini
+                    micro_ok = inside or (mini_ok_long if side_b == "long" else mini_ok_short)
                 if not micro_ok:
                     return "none_state", None, meta
 
