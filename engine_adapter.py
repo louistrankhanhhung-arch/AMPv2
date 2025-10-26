@@ -364,6 +364,20 @@ def _guard_recent_1h_opposite(feats: Dict[str, Any], side: str) -> Dict[str, Any
         df1 = ((feats or {}).get("1H") or {}).get("df")
         if df1 is None or len(df1) < 4:
             return out
+
+        # Adaptive skip cho 1H regime hoặc NATR thấp
+        try:
+            df4 = ((feats or {}).get("4H") or {}).get("df")
+            atr = float(df4["atr14"].iloc[-2]) if "atr14" in df4.columns else None
+            price = float(df4["close"].iloc[-2]) if "close" in df4.columns else None
+            natr = (atr / price) * 100 if atr and price and price > 0 else 0
+            if natr < 0.04:
+                return {"block": False, "why": "skip_guard_1h_opposite_lowvol"}
+            meta_tf = str(((feats.get("meta") or {}).get("exec_tf_auto")) or "")
+            if meta_tf == "1H":
+                return {"block": False, "why": "skip_guard_1h_opposite_exec_1H"}
+        except Exception:
+            pass
         import os as _os
         N        = int(_os.getenv("OPP_1H_LOOKBACK", "3"))
         BODYMIN  = float(_os.getenv("OPP_1H_BODY_MIN", "30"))
@@ -546,7 +560,14 @@ def _apply_recent_1h_guard(bundle: Dict[str, Any], side: str, decision_dict: Dic
     try:
         if (decision_dict or {}).get("decision") != "ENTER":
             return decision_dict
-        g = _guard_recent_1h_opposite(bundle.get("features_by_tf") or {}, side)
+        feats = bundle.get("features_by_tf") or {}
+        # Kiểm tra skip guard trong 1H regime
+        meta = (decision_dict.get("meta") or {})
+        exec_tf = str(meta.get("exec_tf_auto", "")) or ""
+        if exec_tf == "1H":
+            return decision_dict
+
+        g = _guard_recent_1h_opposite(feats, side)
         if g.get("block"):
             decision_dict["decision"] = "WAIT"
             meta = dict(decision_dict.get("meta") or {})
@@ -579,6 +600,17 @@ def _guard_intraday_reversal_shock(feats: Dict[str, Any], side: str) -> Dict[str
         df1 = ((feats or {}).get("1H") or {}).get("df")
         if df1 is None or len(df1) < 3:
             return {"block": False, "why": ""}
+        # Adaptive skip khi NATR thấp hoặc đang dùng 1H regime
+        try:
+            df4 = ((feats or {}).get("4H") or {}).get("df")
+            atr = float(df4["atr14"].iloc[-2]) if "atr14" in df4.columns else None
+            price = float(df4["close"].iloc[-2]) if "close" in df4.columns else None
+            natr = (atr / price) * 100 if atr and price and price > 0 else 0
+            meta_tf = str(((feats.get("meta") or {}).get("exec_tf_auto")) or "")
+            if natr < 0.04 or meta_tf == "1H":
+                return {"block": False, "why": "skip_guard_shock_lowvol_or_exec1H"}
+        except Exception:
+            pass
         last = _last_closed_bar(df1)
         prev = df1.iloc[-3] if len(df1) >= 3 else None
         if last is None or prev is None:
