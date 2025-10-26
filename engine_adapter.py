@@ -47,6 +47,38 @@ def _adaptive_timeframe(features_by_tf: Dict[str, Any]) -> str:
 # Context-Aware Guards (Adaptive regime & BB/RSI filters)
 # ===============================================================
 
+def _calc_natr_pct(features_by_tf: Dict[str, Any], tf: str = "4H") -> float:
+    """NATR% = ATR/Close*100 của TF chỉ định, dùng để scale độ nhạy guard."""
+    try:
+        df = ((features_by_tf or {}).get(tf) or {}).get("df")
+        if df is None or len(df) < 3:
+            return 0.0
+        last = _last_closed_bar(df) or df.iloc[-1]
+        atr = float(df.loc[last.name, "atr14"]) if "atr14" in df.columns else float("nan")
+        close = float(df.loc[last.name, "close"])
+        if close and close > 0 and atr == atr:
+            return (atr / close) * 100.0
+    except Exception:
+        pass
+    return 0.0
+
+def _guard_sensitivity(natr_pct: float) -> float:
+    """
+    Quy đổi NATR% -> hệ số độ nhạy guard ∈ [0.3 .. 1.0]
+      - 0.3 = rất 'mềm' (low-vol / range)  → ít block
+      - 1.0 = 'chặt' (high-vol / trend)    → block nghiêm ngặt
+    """
+    try:
+        if natr_pct <= 2.0:   # ~ very low vol
+            return 0.3
+        if natr_pct <= 4.0:   # low vol
+            return 0.5
+        if natr_pct <= 6.0:   # normal
+            return 0.7
+        return 1.0            # high vol
+    except Exception:
+        return 0.7
+
 def _rsi_from_features_tf(feats: Dict[str, Any], tf: str = "1H") -> float:
     try:
         df = ((feats or {}).get(tf) or {}).get("df")
@@ -55,7 +87,7 @@ def _rsi_from_features_tf(feats: Dict[str, Any], tf: str = "1H") -> float:
         return float("nan")
 
 
-def _guard_near_bb_low_4h_and_rsi1h_extreme_improved(side: str, feats: Dict[str, Any], state: str, exec_tf: str = "4H") -> Dict[str, Any]:
+def _guard_near_bb_low_4h_and_rsi1h_extreme_improved(side: str, feats: Dict[str, Any], state: str, exec_tf: str = "4H", *, factor: float = 0.7) -> Dict[str, Any]:
     """
     Chặn continuation/breakout khi RSI cực trị + near BB extreme.
     Cho phép reversal trong range regime hoặc exec_tf=1H.
@@ -78,14 +110,19 @@ def _guard_near_bb_low_4h_and_rsi1h_extreme_improved(side: str, feats: Dict[str,
         bb_low = float(df4["bb_lower"].iloc[-2])
         rsi1 = _rsi_from_features_tf(feats, "1H")
 
-        thr = 0.01  # near-BB threshold
-        near_bb_low = (close - bb_low) / close <= thr
-        near_bb_up = (bb_up - close) / close <= thr
+        # Ngưỡng động:
+        # - RSI extreme 'mềm' hơn khi factor thấp (range) → hạ tiêu chuẩn oversold/overbought.
+        # - Khoảng cách 'near BB' 'khắt khe' hơn khi factor thấp → chỉ block khi thật sự sát mép.
+        rsi_low_thr  = 20.0 * factor + 30.0 * (1.0 - factor)   # factor=1→20 ; factor=0.3→~30
+        rsi_high_thr = 80.0 * factor + 70.0 * (1.0 - factor)   # factor=1→80 ; factor=0.3→~73
+        thr_near     = 0.010 * factor + 0.004 * (1.0 - factor) # factor=1→1.0% ; factor=0.3→~0.65%
+        near_bb_low = (close - bb_low) / close <= thr_near
+        near_bb_up  = (bb_up - close) / close <= thr_near
 
         if state in ("trend_break", "continuation"):
-            if side == "long" and near_bb_low and rsi1 <= 20:
+            if side == "long" and near_bb_low and rsi1 <= rsi_low_thr:
                 return {"block": True, "why": f"continuation_near_bb_low_oversold(RSI={rsi1:.1f})"}
-            if side == "short" and near_bb_up and rsi1 >= 80:
+            if side == "short" and near_bb_up and rsi1 >= rsi_high_thr:
                 return {"block": True, "why": f"continuation_near_bb_up_overbought(RSI={rsi1:.1f})"}
 
         return {"block": False, "why": ""}
@@ -93,7 +130,7 @@ def _guard_near_bb_low_4h_and_rsi1h_extreme_improved(side: str, feats: Dict[str,
         return {"block": False, "why": ""}
 
 
-def _guard_sideway_regime_improved(features_by_tf: Dict[str, Any], side: str, state: str, exec_tf: str = "4H") -> Dict[str, Any]:
+def _guard_sideway_regime_improved(features_by_tf: Dict[str, Any], side: str, state: str, exec_tf: str = "4H", *, factor: float = 0.7) -> Dict[str, Any]:
     """
     Chặn breakout/continuation trong sideway regime.
     Cho phép reversal hoặc range-trade trong sideway.
@@ -106,10 +143,14 @@ def _guard_sideway_regime_improved(features_by_tf: Dict[str, Any], side: str, st
         bbw = float(df4["bb_width_pct"].iloc[-2]) if "bb_width_pct" in df4.columns else float("nan")
         adx = float(df4["adx"].iloc[-2]) if "adx" in df4.columns else float("nan")
 
-        # detect sideway regime
-        if bbw < 1.2 and adx < 20:
+        # Ngưỡng động sideway:
+        #  - factor thấp → yêu cầu sideway "rất rõ" (BBW nhỏ hơn, ADX thấp hơn) mới block breakout
+        #  - factor cao  → siết chặt sớm hơn
+        bbw_lim = 1.40 * factor + 1.00 * (1.0 - factor)  # f=1→1.40 ; f=0.3→~1.12
+        adx_lim = 25.0 * factor + 15.0 * (1.0 - factor)  # f=1→25  ; f=0.3→~18
+        if bbw < bbw_lim and adx < adx_lim:
             if state in ("trend_break", "continuation"):
-                return {"block": True, "why": f"avoid_breakout_in_sideways (BBW={bbw:.2f}%, ADX={adx:.1f})"}
+                return {"block": True, "why": f"avoid_breakout_in_sideways (BBW<{bbw_lim:.2f}, ADX<{adx_lim:.1f})"}
             else:
                 return {"block": False, "why": "sideway_allows_reversal"}
         return {"block": False, "why": ""}
@@ -117,7 +158,7 @@ def _guard_sideway_regime_improved(features_by_tf: Dict[str, Any], side: str, st
         return {"block": False, "why": ""}
 
 
-def _near_soft_level_guard_multi_improved(side: str, feats: Dict[str, Any], state: str, exec_tf: str = "4H") -> Dict[str, Any]:
+def _near_soft_level_guard_multi_improved(side: str, feats: Dict[str, Any], state: str, exec_tf: str = "4H", *, factor: float = 0.7) -> Dict[str, Any]:
     """
     Cho phép retest trừ khi RSI cực trị + quá gần level.
     """
@@ -126,8 +167,11 @@ def _near_soft_level_guard_multi_improved(side: str, feats: Dict[str, Any], stat
             return {"block": False, "why": ""}
 
         rsi1 = _rsi_from_features_tf(feats, "1H")
-        thr_high = 78 if exec_tf == "1H" else 75
-        thr_low = 22 if exec_tf == "1H" else 25
+        base_high = 78 if exec_tf == "1H" else 75
+        base_low  = 22 if exec_tf == "1H" else 25
+        # factor thấp → 'ít chặn' retest hơn: ngưỡng extreme khắt khe hơn (cao hơn cho long, thấp hơn cho short)
+        thr_high = base_high + (82.0 - base_high) * (1.0 - factor)  # f=1→base_high ; f=0.3→dịch tới ~82
+        thr_low  = base_low  - (base_low  - 18.0) * (1.0 - factor)  # f=1→base_low  ; f=0.3→dịch tới ~18
 
         if (side == "long" and rsi1 >= thr_high):
             return {"block": True, "why": f"retest_long_at_extreme_RSI={rsi1:.1f}"}
@@ -150,23 +194,29 @@ def apply_context_aware_guards(decision: Dict[str, Any], features_by_tf: Dict[st
     state = decision.get("state", "")
     meta = dict(decision.get("meta") or {})
     exec_tf = meta.get("exec_tf_auto", "4H")
+    # Tính hệ số độ nhạy guard theo NATR(4H) → dùng chung cho mọi TF
+    natr4 = _calc_natr_pct(features_by_tf, "4H")
+    factor = _guard_sensitivity(natr4)
+    meta["guard_sensitivity"] = factor
+    meta["natr_pct_4h"] = natr4
+    decision["meta"] = meta
 
     # 1️⃣ Sideway regime guard
-    g_sideway = _guard_sideway_regime_improved(features_by_tf, side, state, exec_tf)
+    g_sideway = _guard_sideway_regime_improved(features_by_tf, side, state, exec_tf, factor=factor)
     if g_sideway["block"]:
         decision["decision"] = "WAIT"
         decision.setdefault("meta", {})["why_guard"] = g_sideway["why"]
         return decision
 
     # 2️⃣ BB + RSI extreme guard
-    g_bb = _guard_near_bb_low_4h_and_rsi1h_extreme_improved(side, features_by_tf, state, exec_tf)
+    g_bb = _guard_near_bb_low_4h_and_rsi1h_extreme_improved(side, features_by_tf, state, exec_tf, factor=factor)
     if g_bb["block"]:
         decision["decision"] = "WAIT"
         decision.setdefault("meta", {})["why_guard"] = g_bb["why"]
         return decision
 
     # 3️⃣ Soft-level retest guard
-    g_soft = _near_soft_level_guard_multi_improved(side, features_by_tf, state, exec_tf)
+    g_soft = _near_soft_level_guard_multi_improved(side, features_by_tf, state, exec_tf, factor=factor)
     if g_soft["block"]:
         decision["decision"] = "WAIT"
         decision.setdefault("meta", {})["why_guard"] = g_soft["why"]
