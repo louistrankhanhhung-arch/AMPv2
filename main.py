@@ -882,7 +882,7 @@ def _time_exit_and_breakeven_checks(symbol: str,
                             perfdb.close(t["sid"], reason="STALL_FAIL_AFTER_TRIGGER")
                             # notify
                             mid = int((t.get("message_id") or 0))
-                            msg = "Đóng lệnh sớm - Giá chững lại, có dấu hiệu suy yếu/đảo chiều."
+                            msg = "Đóng lệnh sớm - Giá chững lại, có dấu hiệu đảo chiều."
                             html = render_update({"symbol": t.get("symbol"),
                                                   "DIRECTION": t.get("dir")},
                                                   event=msg,
