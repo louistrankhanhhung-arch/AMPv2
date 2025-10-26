@@ -201,21 +201,21 @@ def apply_context_aware_guards(decision: Dict[str, Any], features_by_tf: Dict[st
     meta["natr_pct_4h"] = natr4
     decision["meta"] = meta
 
-    # 1️⃣ Sideway regime guard
+    # Sideway regime guard
     g_sideway = _guard_sideway_regime_improved(features_by_tf, side, state, exec_tf, factor=factor)
     if g_sideway["block"]:
         decision["decision"] = "WAIT"
         decision.setdefault("meta", {})["why_guard"] = g_sideway["why"]
         return decision
 
-    # 2️⃣ BB + RSI extreme guard
+    # BB + RSI extreme guard
     g_bb = _guard_near_bb_low_4h_and_rsi1h_extreme_improved(side, features_by_tf, state, exec_tf, factor=factor)
     if g_bb["block"]:
         decision["decision"] = "WAIT"
         decision.setdefault("meta", {})["why_guard"] = g_bb["why"]
         return decision
 
-    # 3️⃣ Soft-level retest guard
+    # Soft-level retest guard
     g_soft = _near_soft_level_guard_multi_improved(side, features_by_tf, state, exec_tf, factor=factor)
     if g_soft["block"]:
         decision["decision"] = "WAIT"
@@ -426,7 +426,7 @@ def enhanced_decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Any],
     base = _base_decide(symbol, timeframe, features_by_tf, evidence_bundle)
     base = _relax_guards_for_early_entries(base, features_by_tf)
 
-    # 0️⃣ Auto switch TF execution based on regime
+    # Auto switch TF execution based on regime
     exec_tf = _adaptive_timeframe(features_by_tf)
     try:
         # Đồng bộ config để các hàm tính ATR/SL/TP sử dụng đúng TF
@@ -448,10 +448,56 @@ def enhanced_decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Any],
     logs["adaptive_tf"] = {"selected": exec_tf}
     base["logs"] = logs
 
-    # 1️⃣ Thực thi context-aware guards
+    # Thực thi context-aware guards
     base = apply_context_aware_guards(base, features_by_tf)
 
-    # 1️⃣ Nếu WAIT + thị trường đang range → dựng setup bounce/reject
+    # ================================================================
+    # Graded Setup Adaptation
+    # ---------------------------------------------------------------
+    # Tự động scale SL / TP / Leverage theo biến động (NATR%)
+    # - Kích hoạt khi decision = ENTER
+    # - Ghi kết quả vào meta["graded_setup"] để log dễ đọc
+    # ================================================================
+    if base.get("decision") == "ENTER":
+        try:
+            from tiny_core_side_state import build_setup_adaptive
+            st = base.get("setup", {})
+            side = base.get("side")
+
+            if side and isinstance(st, dict) and "entry" in st and "sl" in st:
+                graded = build_setup_adaptive(
+                    side=side,
+                    entry=float(st.get("entry")),
+                    sl=float(st.get("sl")),
+                    tps=st.get("tps", []),
+                    leverage=float(st.get("leverage", 1.0)),
+                    features_by_tf=features_by_tf,
+                )
+
+                # Cập nhật setup với thông số graded
+                base["setup"].update({
+                    "entry": graded.get("entry", st.get("entry")),
+                    "sl": graded.get("sl", st.get("sl")),
+                    "tps": graded.get("tps", st.get("tps")),
+                    "leverage": graded.get("leverage", st.get("leverage")),
+                })
+
+                # Ghi log graded vào meta để debug trực tiếp
+                meta_g = graded.get("meta", {}).get("graded_params", {})
+                if meta_g:
+                    base.setdefault("meta", {})["graded_setup"] = meta_g
+                    print(f"[graded_setup] NATR={meta_g.get('natr_pct')}% "
+                          f"factor={meta_g.get('factor')} "
+                          f"lev_scale={meta_g.get('lev_scale')} "
+                          f"sl_mult={meta_g.get('sl_atr_mult')} "
+                          f"rr_scale={meta_g.get('rr_scale')}")
+
+        except Exception as e:
+            import traceback
+            print("[adaptive_setup] warning:", e)
+            traceback.print_exc()
+
+    # Nếu WAIT + thị trường đang range → dựng setup bounce/reject
     if base.get("decision") == "WAIT" and _detect_ranging_market(features_by_tf):
         rng_long = _range_trading_setup(features_by_tf, "long")
         rng_short = _range_trading_setup(features_by_tf, "short")
@@ -462,7 +508,7 @@ def enhanced_decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Any],
             base["setup"] = chosen
             base["meta"]["range_mode"] = True
 
-    # 2️⃣ Hậu xử lý cho range/ATR thấp → thu SL, kéo TP1 vào dải, scale TP2–TP5
+    # Hậu xử lý cho range/ATR thấp → thu SL, kéo TP1 vào dải, scale TP2–TP5
     try:
         if base.get("decision") == "ENTER":
             side = base.get("side") or (base.get("setup") or {}).get("side")
