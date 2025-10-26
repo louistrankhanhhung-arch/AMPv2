@@ -38,6 +38,33 @@ def _guard_sensitivity(natr_pct: float) -> float:
         return 0.7
     return 1.0
 
+# ===============================================================
+# Mini Volatility Buffer
+# ---------------------------------------------------------------
+# Giữ factor trung gian 2→3% NATR trước khi chuyển hẳn regime.
+# Tránh flip đột ngột 1H↔4H gây nhiễu setup.
+# ===============================================================
+
+_PREV_NATR = {"val": None, "factor": None}
+
+def _apply_volatility_buffer(natr_pct: float) -> float:
+    global _PREV_NATR
+    prev_val = _PREV_NATR.get("val")
+    prev_factor = _PREV_NATR.get("factor", 0.5)
+
+    # Nếu chưa có dữ liệu trước đó, ghi lại
+    if prev_val is None:
+        _PREV_NATR = {"val": natr_pct, "factor": _guard_sensitivity(natr_pct)}
+        return _guard_sensitivity(natr_pct)
+
+    # Nếu NATR% nằm trong vùng đệm 2–3%, blend dần factor
+    if 2.0 < natr_pct < 3.0:
+        f_new = (prev_factor * 0.7) + (0.3 * _guard_sensitivity(3.0))
+    else:
+        f_new = _guard_sensitivity(natr_pct)
+
+    _PREV_NATR = {"val": natr_pct, "factor": f_new}
+    return f_new
 
 def _graded_setup_params(natr_pct: float) -> Dict[str, float]:
     """
@@ -46,7 +73,7 @@ def _graded_setup_params(natr_pct: float) -> Dict[str, float]:
     - TP rút ngắn khi vol thấp (đỡ miss target)
     - Leverage tăng khi vol thấp (RR hợp lý hơn)
     """
-    f = _guard_sensitivity(natr_pct)
+    f = _apply_volatility_buffer(natr_pct)
     return {
         "sl_atr_mult": 0.8 + 0.4 * f,       # 0.92-1.2×ATR
         "rr_scale": 0.7 + 0.3 * f,          # 0.79-1.0×RR gốc
@@ -67,26 +94,36 @@ def _apply_graded_setup(base_setup: Dict[str, Any], features_by_tf: Dict[str, An
     sl = float(setup.get("sl", 0.0))
     tp_list = list(setup.get("tps", []))
 
-    # 1️⃣ Scale SL theo vol
+    # Scale SL theo vol
     if entry > 0 and sl > 0:
         risk_raw = abs(entry - sl)
         sl_dist = risk_raw * params["sl_atr_mult"]
         sl = entry - sl_dist if setup.get("side") == "long" else entry + sl_dist
         setup["sl"] = round(sl, 6)
 
-    # 2️⃣ Scale TP ladder
+    # Scale TP ladder
     if tp_list:
         rr_scale = params["rr_scale"]
         tp0 = entry
         step = (tp_list[-1] - entry) / len(tp_list) if len(tp_list) > 0 else 0
-        new_tps = [tp0 + (i + 1) * step * rr_scale for i in range(len(tp_list))]
+        new_tps = []
+        for i in range(len(tp_list)):
+            scale_i = rr_scale * (1 + 0.05 * i)  # giãn nhẹ 5% mỗi bậc
+            tp_val = tp0 + (i + 1) * step * scale_i
+            # Guard: nếu có rr_floor (từ guard_sensitivity hoặc cfg), không để TP quá sát entry
+            rr_floor = 0.5
+            rr_cur = abs((tp_val - entry) / max(1e-9, abs(entry - sl)))
+            if rr_cur < rr_floor:
+                adj = rr_floor / max(1e-9, rr_cur)
+                tp_val = entry + (tp_val - entry) * adj
+            new_tps.append(tp_val)
         setup["tps"] = [round(x, 6) for x in new_tps]
 
-    # 3️⃣ Scale leverage (nếu có)
+    # Scale leverage (nếu có)
     lev = float(setup.get("leverage", 1.0))
     setup["leverage"] = max(1.0, min(lev * params["lev_scale"], 10.0))
 
-    # 4️⃣ Ghi chú meta
+    # Ghi chú meta
     setup.setdefault("meta", {})["graded_params"] = {
         "natr_pct": round(natr, 2),
         "factor": round(_guard_sensitivity(natr), 2),
