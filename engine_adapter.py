@@ -43,6 +43,137 @@ def _adaptive_timeframe(features_by_tf: Dict[str, Any]) -> str:
     except Exception:
         return "4H"
 
+# ===============================================================
+# Context-Aware Guards (Adaptive regime & BB/RSI filters)
+# ===============================================================
+
+def _rsi_from_features_tf(feats: Dict[str, Any], tf: str = "1H") -> float:
+    try:
+        df = ((feats or {}).get(tf) or {}).get("df")
+        return float(df["rsi14"].iloc[-2]) if df is not None and "rsi14" in df.columns else float("nan")
+    except Exception:
+        return float("nan")
+
+
+def _guard_near_bb_low_4h_and_rsi1h_extreme_improved(side: str, feats: Dict[str, Any], state: str, exec_tf: str = "4H") -> Dict[str, Any]:
+    """
+    Chặn continuation/breakout khi RSI cực trị + near BB extreme.
+    Cho phép reversal trong range regime hoặc exec_tf=1H.
+    """
+    try:
+        if side not in ("long", "short"):
+            return {"block": False, "why": ""}
+
+        # Nếu đang dùng 1H regime, bỏ qua guard này
+        if exec_tf == "1H":
+            return {"block": False, "why": "skip_BB_RSI_guard_exec_1H"}
+
+        df4 = ((feats or {}).get("4H") or {}).get("df")
+        if df4 is None or len(df4) < 5:
+            return {"block": False, "why": ""}
+
+        bbw = float(df4["bb_width_pct"].iloc[-2]) if "bb_width_pct" in df4.columns else float("nan")
+        close = float(df4["close"].iloc[-2])
+        bb_up = float(df4["bb_upper"].iloc[-2])
+        bb_low = float(df4["bb_lower"].iloc[-2])
+        rsi1 = _rsi_from_features_tf(feats, "1H")
+
+        thr = 0.01  # near-BB threshold
+        near_bb_low = (close - bb_low) / close <= thr
+        near_bb_up = (bb_up - close) / close <= thr
+
+        if state in ("trend_break", "continuation"):
+            if side == "long" and near_bb_low and rsi1 <= 20:
+                return {"block": True, "why": f"continuation_near_bb_low_oversold(RSI={rsi1:.1f})"}
+            if side == "short" and near_bb_up and rsi1 >= 80:
+                return {"block": True, "why": f"continuation_near_bb_up_overbought(RSI={rsi1:.1f})"}
+
+        return {"block": False, "why": ""}
+    except Exception:
+        return {"block": False, "why": ""}
+
+
+def _guard_sideway_regime_improved(features_by_tf: Dict[str, Any], side: str, state: str, exec_tf: str = "4H") -> Dict[str, Any]:
+    """
+    Chặn breakout/continuation trong sideway regime.
+    Cho phép reversal hoặc range-trade trong sideway.
+    """
+    try:
+        df4 = ((features_by_tf or {}).get("4H") or {}).get("df")
+        if df4 is None or len(df4) < 10:
+            return {"block": False, "why": ""}
+
+        bbw = float(df4["bb_width_pct"].iloc[-2]) if "bb_width_pct" in df4.columns else float("nan")
+        adx = float(df4["adx"].iloc[-2]) if "adx" in df4.columns else float("nan")
+
+        # detect sideway regime
+        if bbw < 1.2 and adx < 20:
+            if state in ("trend_break", "continuation"):
+                return {"block": True, "why": f"avoid_breakout_in_sideways (BBW={bbw:.2f}%, ADX={adx:.1f})"}
+            else:
+                return {"block": False, "why": "sideway_allows_reversal"}
+        return {"block": False, "why": ""}
+    except Exception:
+        return {"block": False, "why": ""}
+
+
+def _near_soft_level_guard_multi_improved(side: str, feats: Dict[str, Any], state: str, exec_tf: str = "4H") -> Dict[str, Any]:
+    """
+    Cho phép retest trừ khi RSI cực trị + quá gần level.
+    """
+    try:
+        if state not in ("retest_support", "retest_resistance"):
+            return {"block": False, "why": ""}
+
+        rsi1 = _rsi_from_features_tf(feats, "1H")
+        thr_high = 78 if exec_tf == "1H" else 75
+        thr_low = 22 if exec_tf == "1H" else 25
+
+        if (side == "long" and rsi1 >= thr_high):
+            return {"block": True, "why": f"retest_long_at_extreme_RSI={rsi1:.1f}"}
+        if (side == "short" and rsi1 <= thr_low):
+            return {"block": True, "why": f"retest_short_at_extreme_RSI={rsi1:.1f}"}
+
+        return {"block": False, "why": ""}
+    except Exception:
+        return {"block": False, "why": ""}
+
+
+def apply_context_aware_guards(decision: Dict[str, Any], features_by_tf: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Guard context-aware: chỉ chặn khi thật sự cần (tùy state, regime, RSI/BB).
+    """
+    if (decision or {}).get("decision") != "ENTER":
+        return decision
+
+    side = decision.get("side")
+    state = decision.get("state", "")
+    meta = dict(decision.get("meta") or {})
+    exec_tf = meta.get("exec_tf_auto", "4H")
+
+    # 1️⃣ Sideway regime guard
+    g_sideway = _guard_sideway_regime_improved(features_by_tf, side, state, exec_tf)
+    if g_sideway["block"]:
+        decision["decision"] = "WAIT"
+        decision.setdefault("meta", {})["why_guard"] = g_sideway["why"]
+        return decision
+
+    # 2️⃣ BB + RSI extreme guard
+    g_bb = _guard_near_bb_low_4h_and_rsi1h_extreme_improved(side, features_by_tf, state, exec_tf)
+    if g_bb["block"]:
+        decision["decision"] = "WAIT"
+        decision.setdefault("meta", {})["why_guard"] = g_bb["why"]
+        return decision
+
+    # 3️⃣ Soft-level retest guard
+    g_soft = _near_soft_level_guard_multi_improved(side, features_by_tf, state, exec_tf)
+    if g_soft["block"]:
+        decision["decision"] = "WAIT"
+        decision.setdefault("meta", {})["why_guard"] = g_soft["why"]
+        return decision
+
+    return decision
+
 # ---------- RANGE DETECTION ----------
 def _detect_ranging_market(features_by_tf: Dict[str, Any]) -> bool:
     """Detect sustained ranging conditions via BB width + ADX + range size"""
@@ -266,6 +397,9 @@ def enhanced_decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Any],
     logs = dict(base.get("logs") or {})
     logs["adaptive_tf"] = {"selected": exec_tf}
     base["logs"] = logs
+
+    # 1️⃣ Thực thi context-aware guards
+    base = apply_context_aware_guards(base, features_by_tf)
 
     # 1️⃣ Nếu WAIT + thị trường đang range → dựng setup bounce/reject
     if base.get("decision") == "WAIT" and _detect_ranging_market(features_by_tf):
