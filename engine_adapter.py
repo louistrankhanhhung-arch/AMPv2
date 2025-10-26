@@ -15,6 +15,34 @@ import math
 from dataclasses import dataclass, field
 from typing import Tuple
 
+# ===============================================================
+# Adaptive Timeframe Switch (4H↔1H Execution)
+# ===============================================================
+
+def _adaptive_timeframe(features_by_tf: Dict[str, Any]) -> str:
+    """
+    Tự động chọn TF thực thi (execution) giữa 4H và 1H.
+    - 4H: dùng khi thị trường có trend rõ, biến động mạnh.
+    - 1H: dùng khi sideway, BB co, ATR nhỏ, ADX yếu.
+    """
+    try:
+        df4 = features_by_tf.get("4H", {}).get("df")
+        if df4 is None or len(df4) < 10:
+            return "4H"
+        import math
+        atr = float(df4["atr14"].iloc[-2]) if "atr14" in df4.columns else float("nan")
+        price = float(df4["close"].iloc[-2]) if "close" in df4.columns else float("nan")
+        bbw = float(df4["bb_width_pct"].iloc[-2]) if "bb_width_pct" in df4.columns else float("nan")
+        adx = float(df4["adx"].iloc[-2]) if "adx" in df4.columns else float("nan")
+        natr = (atr / price) * 100 if (price and price > 0) else 0
+
+        # --- Logic chọn TF ---
+        if (bbw < 1.5 and adx < 25) or natr < 0.03:
+            return "1H"   # thị trường chậm / sideway
+        return "4H"
+    except Exception:
+        return "4H"
+
 # ---------- RANGE DETECTION ----------
 def _detect_ranging_market(features_by_tf: Dict[str, Any]) -> bool:
     """Detect sustained ranging conditions via BB width + ADX + range size"""
@@ -216,6 +244,28 @@ def enhanced_decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Any],
     from engine_adapter import decide as _base_decide
     base = _base_decide(symbol, timeframe, features_by_tf, evidence_bundle)
     base = _relax_guards_for_early_entries(base, features_by_tf)
+
+    # 0️⃣ Auto switch TF execution based on regime
+    exec_tf = _adaptive_timeframe(features_by_tf)
+    try:
+        # Đồng bộ config để các hàm tính ATR/SL/TP sử dụng đúng TF
+        from tiny_core_side_state import AdaptiveConfig
+        cfg = AdaptiveConfig().adjust(features_by_tf)
+        cfg.tf_primary = exec_tf
+        cfg.tf_confirm = exec_tf
+        meta = dict(base.get("meta") or {})
+        meta["exec_tf_auto"] = exec_tf
+        meta["exec_tf_cfg"] = {"tf_primary": cfg.tf_primary, "tf_confirm": cfg.tf_confirm}
+        base["meta"] = meta
+    except Exception:
+        meta = dict(base.get("meta") or {})
+        meta["exec_tf_auto"] = exec_tf
+        base["meta"] = meta
+
+    # Gắn nhãn vào log để tiện theo dõi hiệu suất 1H/4H
+    logs = dict(base.get("logs") or {})
+    logs["adaptive_tf"] = {"selected": exec_tf}
+    base["logs"] = logs
 
     # 1️⃣ Nếu WAIT + thị trường đang range → dựng setup bounce/reject
     if base.get("decision") == "WAIT" and _detect_ranging_market(features_by_tf):
