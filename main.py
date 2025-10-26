@@ -33,6 +33,7 @@ from storage import SignalPerfDB, JsonStore, UserDB
 from templates import render_update, render_teaser
 from fb_notifier import FBNotifier
 
+
 # ============================================================
 # FREE FULL SIGNAL (đăng 1 lệnh đầu tiên sau 7:00 sáng mỗi ngày)
 # ============================================================
@@ -1246,6 +1247,15 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     state = out.get("state")
     plan = out.get("plan") or {}
     log.debug(f"[{symbol}] decide done in {elapsed_dec:.2f}s; total {total_time:.2f}s")
+
+    # --- Log decision statistics for adaptive analysis ---
+    try:
+        from decision_monitor import log_decision_stats
+        perfdb = SignalPerfDB(JsonStore(os.getenv("DATA_DIR", "./data")))
+        log_decision_stats(out, feats_by_tf, perfdb)
+    except Exception as e:
+        log.warning(f"[decision_monitor] log skipped: {e}")
+
     # Prefer concise headline from decision_engine if available (already includes DIR/TP ladder)
     headline = out.get("headline")
     if headline:
