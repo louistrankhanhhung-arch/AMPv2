@@ -8,6 +8,93 @@ import math
 # Tiny-Core (Side-Aware State) — dict-safe evidence
 # ===============================================
 
+# ===============================================================
+# Multi-Regime Adaptive Setup (graded by volatility)
+# ===============================================================
+
+def _calc_natr_pct(features_by_tf: Dict[str, Any], tf: str = "4H") -> float:
+    """Tính NATR% = ATR/Close*100 để đánh giá mức biến động."""
+    try:
+        df = ((features_by_tf or {}).get(tf) or {}).get("df")
+        if df is None or len(df) < 3:
+            return 0.0
+        last = df.iloc[-2]
+        atr = float(last["atr14"]) if "atr14" in df.columns else 0.0
+        close = float(last["close"])
+        if close > 0 and atr > 0:
+            return (atr / close) * 100.0
+    except Exception:
+        pass
+    return 0.0
+
+
+def _guard_sensitivity(natr_pct: float) -> float:
+    """Từ NATR% suy ra hệ số độ nhạy [0.3-1.0] dùng cho setup geometry."""
+    if natr_pct <= 2.0:
+        return 0.3
+    if natr_pct <= 4.0:
+        return 0.5
+    if natr_pct <= 6.0:
+        return 0.7
+    return 1.0
+
+
+def _graded_setup_params(natr_pct: float) -> Dict[str, float]:
+    """
+    Trả về hệ số điều chỉnh setup theo biến động.
+    - SL mở rộng khi vol cao (tránh nhiễu)
+    - TP rút ngắn khi vol thấp (đỡ miss target)
+    - Leverage tăng khi vol thấp (RR hợp lý hơn)
+    """
+    f = _guard_sensitivity(natr_pct)
+    return {
+        "sl_atr_mult": 0.8 + 0.4 * f,       # 0.92-1.2×ATR
+        "rr_scale": 0.7 + 0.3 * f,          # 0.79-1.0×RR gốc
+        "entry_buffer": 0.004 + 0.006 * f,  # 0.006-0.010
+        "lev_scale": 1.0 / max(0.5, f)      # f=1→1×; f=0.3→~2×
+    }
+
+
+def _apply_graded_setup(base_setup: Dict[str, Any], features_by_tf: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Gắn thông số graded setup vào kế hoạch giao dịch hiện hành.
+    """
+    natr = _calc_natr_pct(features_by_tf, "4H")
+    params = _graded_setup_params(natr)
+
+    setup = dict(base_setup)
+    entry = float(setup.get("entry", 0.0))
+    sl = float(setup.get("sl", 0.0))
+    tp_list = list(setup.get("tps", []))
+
+    # 1️⃣ Scale SL theo vol
+    if entry > 0 and sl > 0:
+        risk_raw = abs(entry - sl)
+        sl_dist = risk_raw * params["sl_atr_mult"]
+        sl = entry - sl_dist if setup.get("side") == "long" else entry + sl_dist
+        setup["sl"] = round(sl, 6)
+
+    # 2️⃣ Scale TP ladder
+    if tp_list:
+        rr_scale = params["rr_scale"]
+        tp0 = entry
+        step = (tp_list[-1] - entry) / len(tp_list) if len(tp_list) > 0 else 0
+        new_tps = [tp0 + (i + 1) * step * rr_scale for i in range(len(tp_list))]
+        setup["tps"] = [round(x, 6) for x in new_tps]
+
+    # 3️⃣ Scale leverage (nếu có)
+    lev = float(setup.get("leverage", 1.0))
+    setup["leverage"] = max(1.0, min(lev * params["lev_scale"], 10.0))
+
+    # 4️⃣ Ghi chú meta
+    setup.setdefault("meta", {})["graded_params"] = {
+        "natr_pct": round(natr, 2),
+        "factor": round(_guard_sensitivity(natr), 2),
+        "applied": True,
+        **params,
+    }
+    return setup
+           
 @dataclass
 class SideCfg:
     """Config cho phân loại state có xét side (long/short)."""
@@ -1084,6 +1171,39 @@ def build_setup(si: SI, state: str, side: Optional[str], cfg: SideCfg) -> Setup:
 
     return st
 
+# ---------------------------------------
+# Build setup chuẩn hóa + graded adaptation
+# ---------------------------------------
+def build_setup_adaptive(
+    side: str,
+    entry: float,
+    sl: float,
+    tps: List[float],
+    leverage: float,
+    features_by_tf: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Tạo setup chuẩn hóa (trước khi gửi sang decision engine).
+    Tự động áp dụng graded adaptation theo volatility (NATR-based).
+    """
+    setup = {
+        "side": side,
+        "entry": entry,
+        "sl": sl,
+        "tps": tps,
+        "leverage": leverage,
+    }
+
+    # Nếu có dữ liệu volatility → áp dụng graded setup
+    if features_by_tf:
+        try:
+            setup = _apply_graded_setup(setup, features_by_tf)
+        except Exception as e:
+            import traceback
+            print("[graded_setup] warning:", e)
+            traceback.print_exc()
+
+    return setup
 
 # ---------------------------------------
 # Quyết định 5-gates (tối giản, thực dụng)
