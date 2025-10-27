@@ -297,7 +297,56 @@ def _adapt_cfg(cfg_tf: TFThresholds, regime: str) -> TFThresholds:
         c.vol_ratio_thr = float(c.vol_ratio_thr) + 0.20
         c.vol_z_thr     = float(c.vol_z_thr)     + 0.20
     # normal: keep as is
+    # --- Dynamic Thresholds ---
+    try:
+        base = {"low": 0.6, "normal": 0.7, "high": 0.8}.get(regime, 0.7)
+        natr = getattr(cfg_tf, "natr_pct", 0.03)
+        adj = 0.1 if natr > 0.05 else (-0.1 if natr < 0.02 else 0.0)
+        dyn_factor = base + adj
+        c.rsi_long = max(45.0, min(70.0, c.rsi_long * dyn_factor))
+        c.rsi_short = max(30.0, min(55.0, c.rsi_short * (2 - dyn_factor)))
+        c.vol_ratio_thr = max(0.8, c.vol_ratio_thr * dyn_factor)
+        c.vol_z_thr = max(0.5, c.vol_z_thr * dyn_factor)
+    except Exception:
+        pass
     return c
+
+# ------------------------------
+# Weighted scoring module & debug summary
+# ------------------------------
+def weighted_score(evidences: Dict[str, Any], weights: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+    """
+    Combine multi-evidence confidence with weight-based scoring.
+    weights: {'momentum':0.3, 'volume':0.2, 'trend':0.2, 'liquidity':0.1, ...}
+    """
+    if not evidences:
+        return {"total_score": 0.0, "components": {}}
+    if weights is None:
+        weights = {"momentum": 0.25, "volume": 0.2, "trend": 0.2, "liquidity": 0.1, "retest": 0.15, "candle": 0.1}
+    total = 0.0
+    parts = {}
+    for k, ev in evidences.items():
+        w = weights.get(k, 0.1)
+        s = float(ev.get("score", 0.0))
+        total += w * s
+        parts[k] = round(w * s, 3)
+    conf = min(1.0, round(total, 3))
+    return {"total_score": conf, "components": parts}
+
+
+def debug_summary(bundle: Dict[str, Any], evidences: Dict[str, Any]) -> str:
+    """
+    Generate concise debug string for evidence confidence inspection.
+    """
+    try:
+        summary = []
+        for k, v in evidences.items():
+            sc = v.get("score", None)
+            if sc is not None:
+                summary.append(f"{k}:{sc:.2f}")
+        return " | ".join(summary) + f" | regime={bundle.get('regime','n/a')}"
+    except Exception:
+        return ""
 
 def _slow_market_guards(bbw_now: float, bbw_med: float,
                         vol_now: float, vol_med: float,
