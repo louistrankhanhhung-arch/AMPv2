@@ -547,28 +547,20 @@ def collect_side_indicators(features_by_tf: Dict[str, Dict[str, Any]], eb: Dict[
         return +1 if rsi > 50 else (-1 if rsi < 50 else 0)
 
     def _vol_dir_from_features(ff) -> int:
-        vol = (ff.get('volume', {}) or {})
-        vz = float(vol.get('vol_z20', 0.0) or 0.0)
-        vr = float((ff.get('volume', {}) or {}).get('vol_ratio', 1.0) or 1.0)
-        contraction = bool(vol.get('contraction', False))
-        strong = bool(vol.get('break_vol_strong', False))
-        ok = bool(vol.get('break_vol_ok', False))
-
-        # Dead-zone để giảm nhiễu
-        pos = 0
-        neg = 0
-        # z-score: ±1.0 là ngưỡng có ý nghĩa
-        if vz >= 1.0:  pos += 1
-        elif vz <= -1.0: neg += 1
-        # ratio: ≥1.5 bùng nổ, ≤0.67 suy yếu
-        if vr >= 1.5:  pos += 1
-        elif vr <= 0.67: neg += 1
-
-        # Nếu đang contraction và CHƯA có break → neutral
-        if contraction and not (ok or strong):
-            return 0
-
-        return 1 if pos > neg else (-1 if neg > pos else 0)
+        """
+        Simplified volume direction evaluator:
+        - vol_z20 ≥ 1.0 or vol_ratio ≥ 1.3 → +1
+        - vol_z20 ≤ -0.8 or vol_ratio ≤ 0.8 → -1
+        - else → 0
+        """
+        vol = (ff.get("volume", {}) or {})
+        vz = float(vol.get("vol_z20", 0.0) or 0.0)
+        vr = float(vol.get("vol_ratio", 1.0) or 1.0)
+        if (vz >= 1.0) or (vr >= 1.3):
+            return +1
+        if (vz <= -0.8) or (vr <= 0.8):
+            return -1
+        return 0
 
     trend_strength = _trend_dir_from_features(f1)
     momo_strength = _momo_dir_from_features(f1)
