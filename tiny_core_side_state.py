@@ -331,9 +331,9 @@ def _ensure_sl_gap(entry: float, sl: float, atr: float, side: str, min_atr: floa
 def _apply_sl_upgrades(side_meta: Any, side: str, entry: float, sl: float, cfg: SideCfg) -> float:
     """
     1) Ensure SL gap theo regime (low/normal/high) từ evidence_adaptive.regime:contentReference[oaicite:4]{index=4}
-    2) Tôn trọng swing gần nhất: 
-       - long: nếu có LL gần dưới entry, ưu tiên đặt SL < LL (trừ 0.1*ATR)
-       - short: nếu có HH gần trên entry, ưu tiên đặt SL > HH (cộng 0.1*ATR)
+    2) Ưu tiên swing cấu trúc khung 1H:
+       - long: SL < LL_1H - 0.05*ATR, sau đó kiểm tra an toàn 4H (LL_4H & EMA50)
+       - short: SL > HH_1H + 0.05*ATR, sau đó kiểm tra an toàn 4H (HH_4H & EMA50)
     """
     # side_meta có thể là dict hoặc SI object
     atr = float(_safe_get(side_meta, "atr", 0.0) or 0.0)
@@ -347,7 +347,7 @@ def _apply_sl_upgrades(side_meta: Any, side: str, entry: float, sl: float, cfg: 
 
     sl_new = _ensure_sl_gap(entry, sl, atr, side, min_atr=min_atr)  # đã có sẵn trong core:contentReference[oaicite:5]{index=5}
 
-    # nearest swing (4H ưu tiên; fallback 1H)
+    # ---- Ưu tiên swing cấu trúc 1H trước, kiểm tra an toàn 4H ----
     import math
     def _nearest(vals, ref):
         try:
@@ -358,17 +358,30 @@ def _apply_sl_upgrades(side_meta: Any, side: str, entry: float, sl: float, cfg: 
             return None
         return min(vals, key=lambda v: abs(v - ref))
 
-    last_LL = _nearest(_safe_get(side_meta, "last_LL_4h") or _safe_get(side_meta, "last_LL_1h"), entry)
-    last_HH = _nearest(_safe_get(side_meta, "last_HH_4h") or _safe_get(side_meta, "last_HH_1h"), entry)
+    ll_1h = _nearest(_safe_get(side_meta, "last_LL_1h"), entry)
+    hh_1h = _nearest(_safe_get(side_meta, "last_HH_1h"), entry)
+    ll_4h = _nearest(_safe_get(side_meta, "last_LL_4h"), entry)
+    hh_4h = _nearest(_safe_get(side_meta, "last_HH_4h"), entry)
 
-    if side == "long" and last_LL is not None:
-        sl_floor = float(last_LL) - 0.1 * atr
-        if sl_new > sl_floor:
-            sl_new = sl_floor
-    if side == "short" and last_HH is not None:
-        sl_ceiling = float(last_HH) + 0.1 * atr
-        if sl_new < sl_ceiling:
-            sl_new = sl_ceiling
+    # 1H structure first
+    if side == "long" and ll_1h is not None:
+        sl_struct = float(ll_1h) - 0.05 * atr
+        if sl_new > sl_struct:
+            sl_new = sl_struct
+    elif side == "short" and hh_1h is not None:
+        sl_struct = float(hh_1h) + 0.05 * atr
+        if sl_new < sl_struct:
+            sl_new = sl_struct
+
+    # 4H safety check
+    if side == "long" and ll_4h is not None:
+        sl_safety = float(ll_4h) - 0.1 * atr
+        if sl_new > sl_safety:
+            sl_new = sl_safety
+    elif side == "short" and hh_4h is not None:
+        sl_safety = float(hh_4h) + 0.1 * atr
+        if sl_new < sl_safety:
+            sl_new = sl_safety
 
     # 3) EMA50 4H cushion (optional, regime-adaptive + NATR floor)
     if getattr(cfg, "use_ema50_sl_cushion", True):
