@@ -16,6 +16,36 @@ from dataclasses import dataclass, field
 from typing import Tuple
 
 # ===============================================================
+# Range Width Classifier (tight vs wide)
+#   - Dựa trên BB width %, ADX, NATR(4H) và biên độ 10-bar range
+#   - Kết quả: "tight" | "wide" | None
+# ===============================================================
+def _classify_range_width(features_by_tf: Dict[str, Any]) -> Optional[str]:
+    try:
+        df4 = ((features_by_tf or {}).get("4H") or {}).get("df")
+        if df4 is None or len(df4) < 20:
+            return None
+        bbw = float(df4["bb_width_pct"].iloc[-2]) if "bb_width_pct" in df4.columns else float("nan")
+        adx = float(df4["adx"].iloc[-2]) if "adx" in df4.columns else float("nan")
+        atr = float(df4["atr14"].iloc[-2]) if "atr14" in df4.columns else float("nan")
+        px  = float(df4["close"].iloc[-2])
+        natr_pct = (atr/px)*100 if (px and px>0 and atr==atr) else 0.0
+        hi10 = float(df4["high"].tail(10).max())
+        lo10 = float(df4["low"].tail(10).min())
+        range_pct10 = (hi10 - lo10) / max(lo10, 1e-9) * 100.0
+
+        # ---- Heuristic:
+        # tight: BB bó rất hẹp + ADX yếu + NATR rất thấp + biên độ 10 bar nhỏ
+        if (bbw < 1.20) and (adx < 22 or not adx == adx) and (natr_pct < 2.0) and (range_pct10 < 4.0):
+            return "tight"
+        # wide: BB hẹp-vừa, ADX yếu-vừa, biên độ dao động đủ để trade trong range
+        if (1.20 <= bbw <= 2.20) and (adx < 28 or not adx == adx) and (4.0 <= range_pct10 <= 12.0):
+            return "wide"
+    except Exception:
+        return None
+    return None
+
+# ===============================================================
 # Adaptive Timeframe Switch (4H↔1H Execution)
 # ===============================================================
 
@@ -447,6 +477,63 @@ def enhanced_decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Any],
     logs = dict(base.get("logs") or {})
     logs["adaptive_tf"] = {"selected": exec_tf}
     base["logs"] = logs
+
+    # -------- Range Regime Handling (tight vs wide) --------
+    try:
+        # Nhận diện thị trường đang sideway tổng quát
+        in_range = _detect_ranging_market(features_by_tf)
+        rng_class = _classify_range_width(features_by_tf) if in_range else None
+        base.setdefault("meta", {})["range_mode"] = rng_class or ("none" if not in_range else "unknown")
+
+        if rng_class == "tight":
+            # Ép WAIT tuyệt đối trong tight range để tránh whipsaw,
+            # trừ khi caller phía trước đã convert sang early_trend (chúng ta giữ nguyên ENTER nếu đã đổi state=early_trend)
+            if base.get("decision") == "ENTER" and base.get("state") != "early_trend":
+                base["decision"] = "WAIT"
+                base.setdefault("meta", {})["why_guard"] = "tight_range_force_WAIT"
+            elif base.get("decision") != "ENTER":
+                base["decision"] = "WAIT"
+                base.setdefault("meta", {})["why_guard"] = "tight_range_wait"
+
+        elif rng_class == "wide":
+            # Ưu tiên bật setup 'range_bounce'/'range_reject' nếu hiện tại chưa có quyết định ENTER khả thi
+            if base.get("decision") != "ENTER":
+                # Dựng setup bounce/reject theo 1H biên ATR±0.3 quanh mép range
+                # Thử cả 2 phía, chọn RR hợp lý hơn.
+                st_long  = _range_trading_setup(features_by_tf, "long")
+                st_short = _range_trading_setup(features_by_tf, "short")
+                pick = None
+                def _rr(entry, sl, tp1):
+                    try:
+                        r = abs(entry - sl)
+                        if r <= 0: return 0.0
+                        reward = abs(tp1 - entry)
+                        return reward / r
+                    except Exception:
+                        return 0.0
+                rrL = _rr(st_long["entry"], st_long["sl"], st_long["tp1"]) if st_long else 0.0
+                rrS = _rr(st_short["entry"], st_short["sl"], st_short["tp1"]) if st_short else 0.0
+                # Chọn hướng có RR tốt hơn, cần tối thiểu ~0.8R ở TP1 để tránh quá sát
+                if rrL >= 0.8 or rrS >= 0.8:
+                    pick = st_long if rrL >= rrS else st_short
+                if pick:
+                    side = "long" if pick is st_long else "short"
+                    # Chuẩn hóa setup -> dạng mà core đang dùng
+                    tps = [pick["tp1"], pick["tp2"]]
+                    base.update({
+                        "decision": "ENTER",
+                        "side": side,
+                        "state": pick.get("strategy","range_bounce"),
+                        "setup": {
+                            "entry": float(pick["entry"]),
+                            "sl":    float(pick["sl"]),
+                            "tps":   tps,
+                            "leverage": base.get("setup",{}).get("leverage", 2.0),
+                        }
+                    })
+                    base.setdefault("meta", {})["range_pick"] = {"class":"wide","rr_tp1": rrL if side=="long" else rrS}
+    except Exception:
+        pass
 
     # Thực thi context-aware guards
     base = apply_context_aware_guards(base, features_by_tf)
