@@ -20,7 +20,6 @@ import ccxt  # type: ignore
 # Timeframe mapping (friendly -> ccxt)
 # ---------------------------------
 TIMEFRAME_MAP: Dict[str, str] = {
-    "15M": "15m",
     "1H": "1h",
     "4H": "4h",
     "1D": "1d",
@@ -201,10 +200,6 @@ def fetch_ohlcv(
             # chỉ cắt nến chưa đóng nếu là timeframe 1H (và cờ drop_partial bật)
             if drop_partial and timeframe.upper() == "1H" and not df.empty:
                 df = _drop_partial_bar(df, _bar_ms(_ex, tf_str))
-                # fallback khi cắt hết dữ liệu (tránh mất signal)
-                if df.empty:
-                    print(f"[fetch_ohlcv] fallback: keeping partial bar for {symbol}")
-                    df = _to_dataframe(raw)
             return df
         except (ccxt.NetworkError, ccxt.ExchangeNotAvailable, ccxt.RequestTimeout) as e:
             if attempt >= max_retries:
