@@ -21,42 +21,24 @@ from typing import Tuple
 
 def _adaptive_timeframe(features_by_tf: Dict[str, Any]) -> str:
     """
-    Tự động chọn TF thực thi: 15M / 1H / 4H theo độ rộng range & biến động.
-    - 15M: range rất hẹp trên 1H
-    - 1H : range hẹp / sideway
-    - 4H : trend/vol rõ
+    Tự động chọn TF thực thi (execution) giữa 4H và 1H.
+    - 4H: dùng khi thị trường có trend rõ, biến động mạnh.
+    - 1H: dùng khi sideway, BB co, ATR nhỏ, ADX yếu.
     """
     try:
         df4 = features_by_tf.get("4H", {}).get("df")
         if df4 is None or len(df4) < 10:
             return "4H"
+        import math
         atr = float(df4["atr14"].iloc[-2]) if "atr14" in df4.columns else float("nan")
         price = float(df4["close"].iloc[-2]) if "close" in df4.columns else float("nan")
         bbw = float(df4["bb_width_pct"].iloc[-2]) if "bb_width_pct" in df4.columns else float("nan")
         adx = float(df4["adx"].iloc[-2]) if "adx" in df4.columns else float("nan")
         natr = (atr / price) * 100 if (price and price > 0) else 0
 
-        # Độ rộng range theo 1H để phân nhánh 15M/1H
-        try:
-            df1 = features_by_tf.get("1H", {}).get("df")
-            if df1 is not None and len(df1) >= 6:
-                rh = df1["high"].tail(6).max()
-                rl = df1["low"].tail(6).min()
-                r1h = (rh - rl) / max(rl, 1e-9) * 100
-            else:
-                r1h = None
-        except Exception:
-            r1h = None
-
         # --- Logic chọn TF ---
-        if r1h is not None:
-            if r1h < 1.5:      # range rất hẹp → 15M
-                return "15M"
-            if r1h < 3.0:      # range hẹp → 1H
-                return "1H"
-        # Nếu không có r1h, fallback theo BBW/ADX/NATR 4H
         if (bbw < 1.5 and adx < 25) or natr < 0.03:
-            return "1H"
+            return "1H"   # thị trường chậm / sideway
         return "4H"
     except Exception:
         return "4H"
@@ -257,60 +239,6 @@ def _detect_ranging_market(features_by_tf: Dict[str, Any]) -> bool:
         return (bb_width < 2.0 and (adx < 25 or not adx == adx) and range_pct < 8.0)
     except Exception:
         return False
-
-def _enhance_wide_range_detection(features_by_tf: Dict[str, Any]) -> bool:
-    """Range rộng 3–8% (giảm false breakout). Dùng 4H 10 nến gần nhất."""
-    try:
-        df4 = features_by_tf.get("4H", {}).get("df")
-        if df4 is None or len(df4) < 20:
-            return False
-        recent_high = df4["high"].tail(10).max()
-        recent_low  = df4["low"].tail(10).min()
-        range_pct   = (recent_high - recent_low) / max(recent_low, 1e-9) * 100
-        return 3.0 <= range_pct <= 8.0
-    except Exception:
-        return False
-
-def _should_use_15m_for_tight_range(features_by_tf: Dict[str, Any]) -> bool:
-    """
-    Range hẹp <2% ở 1H → cần dùng 15M để timing entry chính xác hơn.
-    """
-    try:
-        df1 = features_by_tf.get("1H", {}).get("df")
-        if df1 is None or len(df1) < 10:
-            return False
-        rh = df1["high"].tail(6).max()
-        rl = df1["low"].tail(6).min()
-        range_pct = (rh - rl) / max(rl, 1e-9) * 100
-        # Nếu biên độ nhỏ hơn 2% → coi là range hẹp
-        if range_pct < 2.0:
-            print(f"[RangeModule] Tight 1H range detected ({range_pct:.2f}%) → use 15M TF")
-            return True
-        return False
-    except Exception as e:
-        print(f"[RangeModule] Error in _should_use_15m_for_tight_range: {e}")
-        return False
-
-
-# ===============================================================
-# Range-Aware Setup Selector
-# ===============================================================
-
-def detect_and_prepare_tf(features_by_tf: Dict[str, Any]) -> str:
-    """
-    Tự động phát hiện khi range 1H hẹp để chuyển sang 15M.
-    Kết hợp cùng _adaptive_timeframe để tránh fetch thừa.
-    """
-    try:
-        # Ưu tiên logic range hẹp
-        if _should_use_15m_for_tight_range(features_by_tf):
-            return "15M"
-
-        # Nếu không, dùng adaptive TF gốc
-        return _adaptive_timeframe(features_by_tf)
-    except Exception as e:
-        print(f"[RangeModule] Fallback to 4H due to error: {e}")
-        return "4H"
 
 # ===============================================================
 #  LOW-VOL / BB-AWARE POST PROCESSING
@@ -622,103 +550,6 @@ def enhanced_decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Any],
     base["meta"]["strategy_mode"] = _auto_select_preset(features_by_tf)
     base["meta"]["auto_optimized"] = True
     return base
-
-# =====================================================
-# RANGE TRADING MODULE RIÊNG
-# =====================================================
-
-def _range_trading_decision(features_by_tf: Dict[str, Any], symbol: str) -> Optional[Dict]:
-    """
-    Setup chuyên biệt cho range trading.
-    - Nếu giá gần hỗ trợ (support + 0.3*ATR) → range_bounce (LONG)
-    - Nếu giá gần kháng cự (resistance - 0.3*ATR) → range_rejection (SHORT)
-    """
-    try:
-        df4 = features_by_tf.get("4H", {}).get("df")
-        df1 = features_by_tf.get("1H", {}).get("df")
-        if df4 is None or df1 is None or len(df4) < 20 or len(df1) < 10:
-            return None
-
-        resistance = df4["high"].tail(20).max()
-        support = df4["low"].tail(20).min()
-        current = float(df1["close"].iloc[-1])
-        atr = float(df1["atr14"].iloc[-2]) if "atr14" in df1.columns else 0
-
-        if atr <= 0 or resistance <= 0 or support <= 0:
-            return None
-
-        # Range bounce setup
-        if current <= support + 0.3 * atr:
-            return {
-                "decision": "ENTER",
-                "side": "long",
-                "entry": round(current, 4),
-                "sl": round(support - 0.5 * atr, 4),
-                "tp1": round((support + resistance) / 2, 4),
-                "tp2": round(resistance - 0.3 * atr, 4),
-                "strategy": "range_bounce",
-                "symbol": symbol,
-            }
-
-        # Range rejection setup
-        elif current >= resistance - 0.3 * atr:
-            return {
-                "decision": "ENTER",
-                "side": "short",
-                "entry": round(current, 4),
-                "sl": round(resistance + 0.5 * atr, 4),
-                "tp1": round((support + resistance) / 2, 4),
-                "tp2": round(support + 0.3 * atr, 4),
-                "strategy": "range_rejection",
-                "symbol": symbol,
-            }
-
-    except Exception:
-        return None
-    return None
-
-
-# =====================================================
-# HOOK RANGE MODULE VÀO QUY TRÌNH DECISION
-# =====================================================
-
-def enhanced_decide_with_range(symbol: str, exec_tf: str, features_by_tf: Dict[str, Any], bundle: Optional[Dict]=None):
-    """
-    Wrapper mở rộng của enhanced_decide() — thêm range module riêng biệt.
-    Nếu thị trường đang range (hẹp hoặc rộng), kích hoạt setup range_bounce / range_rejection rõ ràng.
-    """
-    try:
-        from engine_adapter import enhanced_decide as _base_enhanced_decide
-        base = _base_enhanced_decide(symbol, exec_tf, features_by_tf, bundle or {})
-
-        # Kiểm tra range regime
-        if _detect_ranging_market(features_by_tf) or _enhance_wide_range_detection(features_by_tf):
-            range_decision = _range_trading_decision(features_by_tf, symbol)
-            if range_decision is not None:
-                base["range_mode"] = True
-                base["range_decision"] = range_decision
-                base["meta"] = base.get("meta", {})
-                base["meta"]["strategy"] = range_decision.get("strategy")
-                base["meta"]["range_type"] = (
-                    "wide" if _enhance_wide_range_detection(features_by_tf) else "tight"
-                )
-                # Tùy chọn: ghi đè quyết định chính để kích hoạt ngay
-                base.update({
-                    "decision": "ENTER",
-                    "side": range_decision["side"],
-                    "setup": {
-                        "entry": range_decision["entry"],
-                        "sl": range_decision["sl"],
-                        "tps": [range_decision["tp1"], range_decision["tp2"]],
-                        "strategy": range_decision["strategy"],
-                    },
-                })
-        return base
-
-    except Exception as e:
-        import traceback
-        tb = traceback.format_exc()
-        return {"decision": "ERROR", "error": str(e), "traceback": tb}
 
 def _last_closed_bar(df):
     """
