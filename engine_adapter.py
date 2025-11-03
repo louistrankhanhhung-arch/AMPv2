@@ -21,24 +21,42 @@ from typing import Tuple
 
 def _adaptive_timeframe(features_by_tf: Dict[str, Any]) -> str:
     """
-    Tự động chọn TF thực thi (execution) giữa 4H và 1H.
-    - 4H: dùng khi thị trường có trend rõ, biến động mạnh.
-    - 1H: dùng khi sideway, BB co, ATR nhỏ, ADX yếu.
+    Tự động chọn TF thực thi: 15M / 1H / 4H theo độ rộng range & biến động.
+    - 15M: range rất hẹp trên 1H
+    - 1H : range hẹp / sideway
+    - 4H : trend/vol rõ
     """
     try:
         df4 = features_by_tf.get("4H", {}).get("df")
         if df4 is None or len(df4) < 10:
             return "4H"
-        import math
         atr = float(df4["atr14"].iloc[-2]) if "atr14" in df4.columns else float("nan")
         price = float(df4["close"].iloc[-2]) if "close" in df4.columns else float("nan")
         bbw = float(df4["bb_width_pct"].iloc[-2]) if "bb_width_pct" in df4.columns else float("nan")
         adx = float(df4["adx"].iloc[-2]) if "adx" in df4.columns else float("nan")
         natr = (atr / price) * 100 if (price and price > 0) else 0
 
+        # Độ rộng range theo 1H để phân nhánh 15M/1H
+        try:
+            df1 = features_by_tf.get("1H", {}).get("df")
+            if df1 is not None and len(df1) >= 6:
+                rh = df1["high"].tail(6).max()
+                rl = df1["low"].tail(6).min()
+                r1h = (rh - rl) / max(rl, 1e-9) * 100
+            else:
+                r1h = None
+        except Exception:
+            r1h = None
+
         # --- Logic chọn TF ---
+        if r1h is not None:
+            if r1h < 1.5:      # range rất hẹp → 15M
+                return "15M"
+            if r1h < 3.0:      # range hẹp → 1H
+                return "1H"
+        # Nếu không có r1h, fallback theo BBW/ADX/NATR 4H
         if (bbw < 1.5 and adx < 25) or natr < 0.03:
-            return "1H"   # thị trường chậm / sideway
+            return "1H"
         return "4H"
     except Exception:
         return "4H"
@@ -237,6 +255,32 @@ def _detect_ranging_market(features_by_tf: Dict[str, Any]) -> bool:
         recent_low = df4["low"].tail(10).min()
         range_pct = (recent_high - recent_low) / recent_low * 100
         return (bb_width < 2.0 and (adx < 25 or not adx == adx) and range_pct < 8.0)
+    except Exception:
+        return False
+
+def _enhance_wide_range_detection(features_by_tf: Dict[str, Any]) -> bool:
+    """Range rộng 3–8% (giảm false breakout). Dùng 4H 10 nến gần nhất."""
+    try:
+        df4 = features_by_tf.get("4H", {}).get("df")
+        if df4 is None or len(df4) < 20:
+            return False
+        recent_high = df4["high"].tail(10).max()
+        recent_low  = df4["low"].tail(10).min()
+        range_pct   = (recent_high - recent_low) / max(recent_low, 1e-9) * 100
+        return 3.0 <= range_pct <= 8.0
+    except Exception:
+        return False
+
+def _should_use_15m_for_tight_range(features_by_tf: Dict[str, Any]) -> bool:
+    """Range hẹp <2% ở 1H → cần 15M để timing entry."""
+    try:
+        df1 = features_by_tf.get("1H", {}).get("df")
+        if df1 is None or len(df1) < 10:
+            return False
+        recent_high = df1["high"].tail(6).max()
+        recent_low  = df1["low"].tail(6).min()
+        range_pct   = (recent_high - recent_low) / max(recent_low, 1e-9) * 100
+        return range_pct < 2.0
     except Exception:
         return False
 
