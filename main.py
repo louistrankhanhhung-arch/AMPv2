@@ -1220,15 +1220,34 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     if '1H' in feats_by_tf:
         feats_by_tf['1H']['df'] = dfs.get('1H')
 
+    # (NEW) Nếu range 1H quá hẹp → nạp thêm 15M
+    try:
+        from engine_adapter import _should_use_15m_for_tight_range  # helper mới
+        if _should_use_15m_for_tight_range(feats_by_tf):
+            df15 = fetch_ohlcv(symbol, timeframe="15M", drop_partial=False, ex=ex)
+            if df15 is not None and not df15.empty:
+                from indicators import enrich_indicators, enrich_more
+                df15 = enrich_more(enrich_indicators(df15))
+                dfs["15M"] = df15
+                # rebuild features cho 15M riêng, rồi gắn meta/df
+                from feature_primitives import compute_features_by_tf as _comp
+                f15 = _comp({"15M": df15})
+                feats_by_tf["15M"] = f15["15M"]
+                feats_by_tf["15M"]["df"] = df15
+                log.debug(f"[{symbol}] tight-range: added 15M frame")
+    except Exception as e:
+        log.debug(f"[{symbol}] 15M add skipped: {e}")
+
     # evidence bundle (STRUCT JSON)
     t3 = time.time()
     bundle = build_evidence_bundle(symbol, feats_by_tf, cfg)
     log.debug(f"[{symbol}] bundle done in {time.time()-t3:.2f}s")
 
-    # decide on 4H as execution TF (1H trigger, 4H execution, 1D context)
+    # decide với adaptive TF (15M/1H/4H) — dùng wrapper enhanced_decide
     t4 = time.time()
     try:
-        out = decide(symbol, "4H", feats_by_tf, bundle)
+        from engine_adapter import enhanced_decide
+        out = enhanced_decide(symbol, "4H", feats_by_tf, bundle)
     except Exception as e:
         log.exception(f"[{symbol}] decide failed: {e}")
         # Fallback để tiếp tục vòng lặp, không làm gãy block
