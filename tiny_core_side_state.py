@@ -223,7 +223,9 @@ class AdaptiveConfig:
     base_config: SideCfg = field(default_factory=SideCfg)
 
     def detect_regime(self, features_by_tf: Dict[str, Any]) -> str:
-        """Detect market regime based on ATR% and BB width."""
+        """Detect market regime based on ATR% and BB width.
+        Bổ sung phân loại: 'ranging_tight' | 'ranging_wide'
+        """
         try:
             df4 = features_by_tf.get("4H", {}).get("df")
             if df4 is None:
@@ -236,8 +238,11 @@ class AdaptiveConfig:
                 return "high_volatility"
             if natr < 0.02:
                 return "low_volatility"
-            if bbw < 1.5:
-                return "ranging"
+            # Phân rã ranging → tight / wide
+            if bbw < 1.20 and natr < 2.0:
+                return "ranging_tight"
+            if 1.20 <= bbw <= 2.20:
+                return "ranging_wide"
         except Exception:
             pass
         return "normal"
@@ -252,10 +257,20 @@ class AdaptiveConfig:
         elif regime == "low_volatility":
             cfg.dist_atr_thr_low = 0.4
             cfg.sl_min_atr_low = 0.4
-        elif regime == "ranging":
+        elif regime == "ranging_tight":
+            # Siết chặt trong tight range: hạn chế break/cont, ưu tiên WAIT
+            cfg.use_continuation_gate = False
+            cfg.retest_long_threshold = 0.7
+            cfg.retest_short_threshold = 0.7
+            cfg.enable_tp1_band_snap = True
+            cfg.tp1_band_pad_atr = 0.20
+        elif regime == "ranging_wide":
+            # Range rộng → cho phép trade bounce/reject dễ thở hơn
             cfg.use_continuation_gate = False
             cfg.retest_long_threshold = 0.6
             cfg.retest_short_threshold = 0.6
+            cfg.enable_tp1_band_snap = True
+            cfg.tp1_band_pad_atr = 0.15
         return cfg
 
 # Kết quả setup/decision để tương thích engine_adapter.py
