@@ -25,7 +25,7 @@ from universe import get_universe_from_env  # uses DEFAULT_UNIVERSE if SYMBOLS n
 from kucoin_api import fetch_batch, _exchange  # spot-only; 1H drop-partial
 from indicators import enrich_indicators, enrich_more
 from feature_primitives import compute_features_by_tf
-from engine_adapter import enhanced_decide_with_range, detect_and_prepare_tf
+from engine_adapter import decide
 from evidence_evaluators import build_evidence_bundle, Config, _reversal_signal
 
 from notifier_telegram import TelegramNotifier
@@ -1220,54 +1220,24 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     if '1H' in feats_by_tf:
         feats_by_tf['1H']['df'] = dfs.get('1H')
 
-    # (NEW) Nếu range 1H quá hẹp → nạp thêm 15M
-    try:
-        from engine_adapter import _should_use_15m_for_tight_range
-        if _should_use_15m_for_tight_range(feats_by_tf):
-            log.info(f"[{symbol}] Detected tight 1H range <2% → fetching 15M TF")
-            dfs_15m = fetch_batch(
-                symbol,
-                timeframes=["15M"],
-                limit=limit,
-                drop_partial=False,
-                sleep_between_tf=sleep_between_tf,
-                ex=ex
-            )
-            df15 = (dfs_15m or {}).get("15M")
-            if df15 is not None and not df15.empty:
-                df15 = enrich_more(enrich_indicators(df15))
-                from feature_primitives import compute_features_by_tf as _comp
-                feats15 = _comp({"15M": df15})
-                feats_by_tf["15M"] = feats15["15M"]
-                feats_by_tf["15M"]["df"] = df15
-                dfs["15M"] = df15
-                log.debug(f"[{symbol}] Added adaptive 15M TF for tight-range market")
-            else:
-                log.warning(f"[{symbol}] 15M fetch returned empty")
-        else:
-            log.debug(f"[{symbol}] Range width >=2% → skip 15M fetch")
-    except Exception as e:
-        log.warning(f"[{symbol}] Adaptive 15M fetch failed: {e}")
-
     # evidence bundle (STRUCT JSON)
     t3 = time.time()
     bundle = build_evidence_bundle(symbol, feats_by_tf, cfg)
     log.debug(f"[{symbol}] bundle done in {time.time()-t3:.2f}s")
 
-    # --- Decision phase (adaptive range-aware) ---
+    # decide on 4H as execution TF (1H trigger, 4H execution, 1D context)
     t4 = time.time()
     try:
-        exec_tf = detect_and_prepare_tf(feats_by_tf)
-        out = enhanced_decide_with_range(symbol, exec_tf, feats_by_tf, bundle)
+        out = decide(symbol, "4H", feats_by_tf, bundle)
     except Exception as e:
-        import traceback
-        tb = traceback.format_exc()
-        log.warning(f"[SignalGen] enhanced_decide_with_range failed for {symbol}: {e}")
+        log.exception(f"[{symbol}] decide failed: {e}")
+        # Fallback để tiếp tục vòng lặp, không làm gãy block
         out = {
             "symbol": symbol,
-            "decision": "ERROR",
-            "error": str(e),
-            "traceback": tb,
+            "decision": "AVOID",
+            "state": None,
+            "plan": {},
+            "logs": {"AVOID": {"reasons": ["internal_error"]}},
         }
         print(json.dumps(out, ensure_ascii=False), flush=True)
         return
