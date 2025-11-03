@@ -516,7 +516,6 @@ def compute_soft_levels(df: pd.DataFrame) -> Dict[str, List[Dict[str, float]]]:
 
 # cấu hình Volume Profile theo từng khung
 TF_VP = {
-    "15M": dict(window_bars=480, bins=40, top_k=10),   # ~5 ngày 15M
     "1H": dict(window_bars=240, bins=40, top_k=10),   # ~10 ngày 1H
     "4H": dict(window_bars=240, bins=30, top_k=10),   # ~40 ngày 4H
     "1D": dict(window_bars=180, bins=24, top_k=8),    # ~6 tháng 1D
