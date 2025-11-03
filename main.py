@@ -1222,21 +1222,32 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
 
     # (NEW) Nếu range 1H quá hẹp → nạp thêm 15M
     try:
-        from engine_adapter import _should_use_15m_for_tight_range  # helper mới
+        from engine_adapter import _should_use_15m_for_tight_range
         if _should_use_15m_for_tight_range(feats_by_tf):
-            df15 = fetch_ohlcv(symbol, timeframe="15M", drop_partial=False, ex=ex)
+            log.info(f"[{symbol}] Detected tight 1H range <2% → fetching 15M TF")
+            dfs_15m = fetch_batch(
+                symbol,
+                timeframes=["15M"],
+                limit=limit,
+                drop_partial=False,
+                sleep_between_tf=sleep_between_tf,
+                ex=ex
+            )
+            df15 = (dfs_15m or {}).get("15M")
             if df15 is not None and not df15.empty:
-                from indicators import enrich_indicators, enrich_more
                 df15 = enrich_more(enrich_indicators(df15))
-                dfs["15M"] = df15
-                # rebuild features cho 15M riêng, rồi gắn meta/df
                 from feature_primitives import compute_features_by_tf as _comp
-                f15 = _comp({"15M": df15})
-                feats_by_tf["15M"] = f15["15M"]
+                feats15 = _comp({"15M": df15})
+                feats_by_tf["15M"] = feats15["15M"]
                 feats_by_tf["15M"]["df"] = df15
-                log.debug(f"[{symbol}] tight-range: added 15M frame")
+                dfs["15M"] = df15
+                log.debug(f"[{symbol}] Added adaptive 15M TF for tight-range market")
+            else:
+                log.warning(f"[{symbol}] 15M fetch returned empty")
+        else:
+            log.debug(f"[{symbol}] Range width >=2% → skip 15M fetch")
     except Exception as e:
-        log.debug(f"[{symbol}] 15M add skipped: {e}")
+        log.warning(f"[{symbol}] Adaptive 15M fetch failed: {e}")
 
     # evidence bundle (STRUCT JSON)
     t3 = time.time()
