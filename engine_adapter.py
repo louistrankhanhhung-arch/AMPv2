@@ -271,7 +271,10 @@ def _enhance_wide_range_detection(features_by_tf: Dict[str, Any]) -> bool:
     except Exception:
         return False
 
-"""Range hẹp <2% ở 1H → cần 15M để timing entry."""
+def _should_use_15m_for_tight_range(features_by_tf: Dict[str, Any]) -> bool:
+    """
+    Range hẹp <2% ở 1H → cần dùng 15M để timing entry chính xác hơn.
+    """
     try:
         df1 = features_by_tf.get("1H", {}).get("df")
         if df1 is None or len(df1) < 10:
@@ -280,7 +283,10 @@ def _enhance_wide_range_detection(features_by_tf: Dict[str, Any]) -> bool:
         rl = df1["low"].tail(6).min()
         range_pct = (rh - rl) / max(rl, 1e-9) * 100
         # Nếu biên độ nhỏ hơn 2% → coi là range hẹp
-        return range_pct < 2.0
+        if range_pct < 2.0:
+            print(f"[RangeModule] Tight 1H range detected ({range_pct:.2f}%) → use 15M TF")
+            return True
+        return False
     except Exception as e:
         print(f"[RangeModule] Error in _should_use_15m_for_tight_range: {e}")
         return False
