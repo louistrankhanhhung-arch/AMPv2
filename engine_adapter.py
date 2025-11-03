@@ -271,18 +271,40 @@ def _enhance_wide_range_detection(features_by_tf: Dict[str, Any]) -> bool:
     except Exception:
         return False
 
-def _should_use_15m_for_tight_range(features_by_tf: Dict[str, Any]) -> bool:
-    """Range hẹp <2% ở 1H → cần 15M để timing entry."""
+"""Range hẹp <2% ở 1H → cần 15M để timing entry."""
     try:
         df1 = features_by_tf.get("1H", {}).get("df")
         if df1 is None or len(df1) < 10:
             return False
-        recent_high = df1["high"].tail(6).max()
-        recent_low  = df1["low"].tail(6).min()
-        range_pct   = (recent_high - recent_low) / max(recent_low, 1e-9) * 100
+        rh = df1["high"].tail(6).max()
+        rl = df1["low"].tail(6).min()
+        range_pct = (rh - rl) / max(rl, 1e-9) * 100
+        # Nếu biên độ nhỏ hơn 2% → coi là range hẹp
         return range_pct < 2.0
-    except Exception:
+    except Exception as e:
+        print(f"[RangeModule] Error in _should_use_15m_for_tight_range: {e}")
         return False
+
+
+# ===============================================================
+# Range-Aware Setup Selector
+# ===============================================================
+
+def detect_and_prepare_tf(features_by_tf: Dict[str, Any]) -> str:
+    """
+    Tự động phát hiện khi range 1H hẹp để chuyển sang 15M.
+    Kết hợp cùng _adaptive_timeframe để tránh fetch thừa.
+    """
+    try:
+        # Ưu tiên logic range hẹp
+        if _should_use_15m_for_tight_range(features_by_tf):
+            return "15M"
+
+        # Nếu không, dùng adaptive TF gốc
+        return _adaptive_timeframe(features_by_tf)
+    except Exception as e:
+        print(f"[RangeModule] Fallback to 4H due to error: {e}")
+        return "4H"
 
 # ===============================================================
 #  LOW-VOL / BB-AWARE POST PROCESSING
