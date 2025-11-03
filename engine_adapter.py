@@ -595,6 +595,103 @@ def enhanced_decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Any],
     base["meta"]["auto_optimized"] = True
     return base
 
+# =====================================================
+# RANGE TRADING MODULE RIÊNG
+# =====================================================
+
+def _range_trading_decision(features_by_tf: Dict[str, Any], symbol: str) -> Optional[Dict]:
+    """
+    Setup chuyên biệt cho range trading.
+    - Nếu giá gần hỗ trợ (support + 0.3*ATR) → range_bounce (LONG)
+    - Nếu giá gần kháng cự (resistance - 0.3*ATR) → range_rejection (SHORT)
+    """
+    try:
+        df4 = features_by_tf.get("4H", {}).get("df")
+        df1 = features_by_tf.get("1H", {}).get("df")
+        if df4 is None or df1 is None or len(df4) < 20 or len(df1) < 10:
+            return None
+
+        resistance = df4["high"].tail(20).max()
+        support = df4["low"].tail(20).min()
+        current = float(df1["close"].iloc[-1])
+        atr = float(df1["atr14"].iloc[-2]) if "atr14" in df1.columns else 0
+
+        if atr <= 0 or resistance <= 0 or support <= 0:
+            return None
+
+        # Range bounce setup
+        if current <= support + 0.3 * atr:
+            return {
+                "decision": "ENTER",
+                "side": "long",
+                "entry": round(current, 4),
+                "sl": round(support - 0.5 * atr, 4),
+                "tp1": round((support + resistance) / 2, 4),
+                "tp2": round(resistance - 0.3 * atr, 4),
+                "strategy": "range_bounce",
+                "symbol": symbol,
+            }
+
+        # Range rejection setup
+        elif current >= resistance - 0.3 * atr:
+            return {
+                "decision": "ENTER",
+                "side": "short",
+                "entry": round(current, 4),
+                "sl": round(resistance + 0.5 * atr, 4),
+                "tp1": round((support + resistance) / 2, 4),
+                "tp2": round(support + 0.3 * atr, 4),
+                "strategy": "range_rejection",
+                "symbol": symbol,
+            }
+
+    except Exception:
+        return None
+    return None
+
+
+# =====================================================
+# HOOK RANGE MODULE VÀO QUY TRÌNH DECISION
+# =====================================================
+
+def enhanced_decide_with_range(symbol: str, exec_tf: str, features_by_tf: Dict[str, Any], bundle: Optional[Dict]=None):
+    """
+    Wrapper mở rộng của enhanced_decide() — thêm range module riêng biệt.
+    Nếu thị trường đang range (hẹp hoặc rộng), kích hoạt setup range_bounce / range_rejection rõ ràng.
+    """
+    try:
+        from engine_adapter import enhanced_decide as _base_enhanced_decide
+        base = _base_enhanced_decide(symbol, exec_tf, features_by_tf, bundle or {})
+
+        # Kiểm tra range regime
+        if _detect_ranging_market(features_by_tf) or _enhance_wide_range_detection(features_by_tf):
+            range_decision = _range_trading_decision(features_by_tf, symbol)
+            if range_decision is not None:
+                base["range_mode"] = True
+                base["range_decision"] = range_decision
+                base["meta"] = base.get("meta", {})
+                base["meta"]["strategy"] = range_decision.get("strategy")
+                base["meta"]["range_type"] = (
+                    "wide" if _enhance_wide_range_detection(features_by_tf) else "tight"
+                )
+                # Tùy chọn: ghi đè quyết định chính để kích hoạt ngay
+                base.update({
+                    "decision": "ENTER",
+                    "side": range_decision["side"],
+                    "setup": {
+                        "entry": range_decision["entry"],
+                        "sl": range_decision["sl"],
+                        "tps": [range_decision["tp1"], range_decision["tp2"]],
+                        "strategy": range_decision["strategy"],
+                    },
+                })
+        return base
+
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        return {"decision": "ERROR", "error": str(e), "traceback": tb}
+
 def _last_closed_bar(df):
     """
     Return the last *closed* bar for streaming safety:
