@@ -25,7 +25,7 @@ from universe import get_universe_from_env  # uses DEFAULT_UNIVERSE if SYMBOLS n
 from kucoin_api import fetch_batch, _exchange  # spot-only; 1H drop-partial
 from indicators import enrich_indicators, enrich_more
 from feature_primitives import compute_features_by_tf
-from engine_adapter import decide
+from engine_adapter import enhanced_decide_with_range, detect_and_prepare_tf
 from evidence_evaluators import build_evidence_bundle, Config, _reversal_signal
 
 from notifier_telegram import TelegramNotifier
@@ -1254,20 +1254,20 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     bundle = build_evidence_bundle(symbol, feats_by_tf, cfg)
     log.debug(f"[{symbol}] bundle done in {time.time()-t3:.2f}s")
 
-    # decide với adaptive TF (15M/1H/4H) — dùng wrapper enhanced_decide
+    # --- Decision phase (adaptive range-aware) ---
     t4 = time.time()
     try:
-        from engine_adapter import enhanced_decide_with_range
-        out = enhanced_decide_with_range(symbol, "4H", feats_by_tf, bundle)
+        exec_tf = detect_and_prepare_tf(feats_by_tf)
+        out = enhanced_decide_with_range(symbol, exec_tf, feats_by_tf, bundle)
     except Exception as e:
-        log.exception(f"[{symbol}] decide failed: {e}")
-        # Fallback để tiếp tục vòng lặp, không làm gãy block
+        import traceback
+        tb = traceback.format_exc()
+        log.warning(f"[SignalGen] enhanced_decide_with_range failed for {symbol}: {e}")
         out = {
             "symbol": symbol,
-            "decision": "AVOID",
-            "state": None,
-            "plan": {},
-            "logs": {"AVOID": {"reasons": ["internal_error"]}},
+            "decision": "ERROR",
+            "error": str(e),
+            "traceback": tb,
         }
         print(json.dumps(out, ensure_ascii=False), flush=True)
         return
