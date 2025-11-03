@@ -70,8 +70,6 @@ def enrich_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["vol_sma20"] = pd.to_numeric(df["volume"], errors="coerce").rolling(20).mean()
     df["vol_ratio"] = df["volume"] / df["vol_sma20"]
 
-    # Drop NaN ở cuối chuỗi để đảm bảo dữ liệu đầu ra sạch (đặc biệt ATR/EMA)
-    df = df.dropna(subset=["close", "ema20", "ema50", "rsi14", "atr14"], how="any")
     return df
 
 
