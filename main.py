@@ -1246,8 +1246,8 @@ def process_symbol(symbol: str, cfg: Config, limit: int, ex=None):
     # decide với adaptive TF (15M/1H/4H) — dùng wrapper enhanced_decide
     t4 = time.time()
     try:
-        from engine_adapter import enhanced_decide
-        out = enhanced_decide(symbol, "4H", feats_by_tf, bundle)
+        from engine_adapter import enhanced_decide_with_range
+        out = enhanced_decide_with_range(symbol, "4H", feats_by_tf, bundle)
     except Exception as e:
         log.exception(f"[{symbol}] decide failed: {e}")
         # Fallback để tiếp tục vòng lặp, không làm gãy block
