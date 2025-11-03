@@ -18,8 +18,7 @@ def _calc_natr_pct(features_by_tf: Dict[str, Any], tf: str = "4H") -> float:
         df = ((features_by_tf or {}).get(tf) or {}).get("df")
         if df is None or len(df) < 3:
             return 0.0
-        # dùng hàng cuối cùng nếu df chỉ có 1 dòng (tránh mất dữ liệu do drop_partial)
-        last = df.iloc[-1] if len(df) < 2 else df.iloc[-2]
+        last = df.iloc[-2]
         atr = float(last["atr14"]) if "atr14" in df.columns else 0.0
         close = float(last["close"])
         if close > 0 and atr > 0:
