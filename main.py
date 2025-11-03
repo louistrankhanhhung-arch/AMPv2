@@ -25,7 +25,7 @@ from universe import get_universe_from_env  # uses DEFAULT_UNIVERSE if SYMBOLS n
 from kucoin_api import fetch_batch, _exchange  # spot-only; 1H drop-partial
 from indicators import enrich_indicators, enrich_more
 from feature_primitives import compute_features_by_tf
-from engine_adapter import decide
+from engine_adapter import enhanced_decide as decide
 from evidence_evaluators import build_evidence_bundle, Config, _reversal_signal
 
 from notifier_telegram import TelegramNotifier
