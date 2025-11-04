@@ -451,6 +451,28 @@ def enhanced_decide(symbol: str, timeframe: str, features_by_tf: Dict[str, Any],
     # Thực thi context-aware guards
     base = apply_context_aware_guards(base, features_by_tf)
 
+    # --- RANGE WIDTH GUARD PATCH ---
+    # (to be inserted near the end of enhanced_decide before Graded Setup Adaptation)
+    
+    # --- RANGE WIDTH GUARD (ép WAIT khi range hẹp) ---
+    try:
+        if base.get("decision") == "ENTER":
+            df4 = ((features_by_tf or {}).get("4H") or {}).get("df")
+            if df4 is not None and len(df4) > 5:
+                bbw = float(df4["bb_width_pct"].iloc[-2]) if "bb_width_pct" in df4.columns else 999
+                adx = float(df4["adx"].iloc[-2]) if "adx" in df4.columns else 999
+                natr = _calc_natr_pct(features_by_tf, "4H")
+    
+                # Ép WAIT nếu vol và range đều hẹp
+                if (bbw < 1.2 and adx < 20) or natr < 2.0:
+                    base["decision"] = "WAIT"
+                    base.setdefault("meta", {})["why_guard"] = (
+                        f"tight_range_detected (BBW={bbw:.2f}, ADX={adx:.1f}, NATR={natr:.2f}%)"
+                    )
+                    print(f"[tight_range_guard] WAIT due to narrow range (BBW={bbw:.2f}, ADX={adx:.1f}, NATR={natr:.2f}%)")
+    except Exception as e:
+        print("[tight_range_guard] warning:", e)
+
     # ================================================================
     # Graded Setup Adaptation
     # ---------------------------------------------------------------
